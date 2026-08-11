@@ -41,6 +41,7 @@ import { readCfAccessLoginIdentity, verifyCfAccessJwt, type CfAccessFetch } from
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
+import { wrapDoStubForTelemetry } from "./do-telemetry";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -101,11 +102,12 @@ type FamilyCapabilityGuard = {
 @validateRpc()
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
-      private user: DurableObjectStub<UserDurableObject>,
+      userId: DurableObjectId,
       private abortSession: (reason: Error) => void,
       private familyGuard?: FamilyCapabilityGuard) {
     super();
 
+    this.#userId = userId;
     this.overseers = this.ctx.exports.OverseerDurableObject;
     this.adminSettings = this.ctx.exports.AdminSettings;
     this.users = this.ctx.exports.UserDurableObject;
@@ -114,6 +116,13 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   private overseers: DurableObjectNamespace<OverseerDurableObject>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   private users: DurableObjectNamespace<UserDurableObject>;
+
+  #userId: DurableObjectId;
+
+  // Resolve a fresh stub for each call so a reset User DO cannot wedge the session.
+  get #user(): DurableObjectStub<UserDurableObject> {
+    return wrapDoStubForTelemetry(this.users.get(this.#userId));
+  }
 
   async #assertFamilyCapability(): Promise<void> {
     if (this.familyGuard) await this.familyGuard.assertCurrent();
@@ -134,7 +143,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   #isAdmin(): boolean {
-    let name = this.user.id.name;
+    let name = this.#userId.name;
     let admins = this.env.ADMINS;
 
     if (!name || !admins) return false;
@@ -154,50 +163,50 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async whoami(): Promise<AiChatAuthorInfo> {
     await this.#assertFamilyCapability();
-    return this.user.whoami();
+    return this.#user.whoami();
   }
   setOwnDisplayName(name: string): Promise<void> {
-    return this.user.setOwnDisplayName(name);
+    return this.#user.setOwnDisplayName(name);
   }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
-    return this.user.changePassword(oldHash, newHash);
+    return this.#user.changePassword(oldHash, newHash);
   }
   hasPasswordLogin(): Promise<boolean> {
-    return this.user.hasPasswordLogin();
+    return this.#user.hasPasswordLogin();
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.user.listModels();
+    return this.#user.listModels();
   }
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<FamilyRpcResult<void>> {
     let gate = await this.#adultFamilyResult();
     if (!gate.ok) return gate;
-    await this.user.addModel(profile, config);
+    await this.#user.addModel(profile, config);
     return { ok: true, value: undefined };
   }
   async deleteModel(id: string): Promise<FamilyRpcResult<void>> {
     let gate = await this.#adultFamilyResult();
     if (!gate.ok) return gate;
-    await this.user.deleteModel(id);
+    await this.#user.deleteModel(id);
     return { ok: true, value: undefined };
   }
   async setQuickModel(id: string | null): Promise<FamilyRpcResult<void>> {
     let gate = await this.#adultFamilyResult();
     if (!gate.ok) return gate;
-    await this.user.setQuickModel(id);
+    await this.#user.setQuickModel(id);
     return { ok: true, value: undefined };
   }
   getQuickModel(): Promise<null | string> {
-    return this.user.getQuickModel();
+    return this.#user.getQuickModel();
   }
 
   getPreferredModel(): Promise<string | null> {
-    return this.user.getPreferredModel();
+    return this.#user.getPreferredModel();
   }
   async setPreferredModel(id: string | null): Promise<FamilyRpcResult<void>> {
     let gate = await this.#adultFamilyResult();
     if (!gate.ok) return gate;
     try {
-      await this.user.setPreferredModel(id);
+      await this.#user.setPreferredModel(id);
     } catch (error) {
       logger.warn("setPreferredModel failed", {
         event: "user.preferred-model.set.failed", modelId: id ?? "", error,
@@ -207,11 +216,11 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return { ok: true, value: undefined };
   }
   isOnboardingCompleted(): Promise<boolean> {
-    return this.user.isOnboardingCompleted();
+    return this.#user.isOnboardingCompleted();
   }
   async completeOnboarding(): Promise<void> {
     try {
-      await this.user.completeOnboarding();
+      await this.#user.completeOnboarding();
     } catch (error) {
       logger.warn("completeOnboarding failed", {
         event: "user.onboarding.complete.failed", error,
@@ -221,17 +230,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
-    return getUsageInfo(this.env, this.user);
+    return getUsageInfo(this.env, this.#user);
   }
 
   async listCloudflareAccounts(): Promise<CloudflareAccountOption[]> {
     await this.#assertAdultFamilyCapability();
-    return listConnectedAccounts(this.env, this.user);
+    return listConnectedAccounts(this.env, this.#user);
   }
 
   async selectCloudflareAccount(accountId: string): Promise<void> {
     await this.#assertAdultFamilyCapability();
-    return selectAccount(this.env, this.user, accountId);
+    return selectAccount(this.env, this.#user, accountId);
   }
 
   async setAvatar(data: Uint8Array | null): Promise<void> {
@@ -251,7 +260,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }
     // Avatar data lives in KV (global), not the user's DO storage, so we
     // read/write it directly here to avoid routing through the DO location.
-    let userId = this.user.id.name!;
+    let userId = this.#userId.name!;
     if (data) {
       await this.env.AVATARS.put(userId, data);
     } else {
@@ -277,7 +286,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   getUiFeatureFlags(): Promise<UiFeatureFlags> {
-    return resolveUiFeatureFlags(this.env, this.user.id.name!);
+    return resolveUiFeatureFlags(this.env, this.#userId.name!);
   }
 
   async #openGadgetInternal(id: string, shareKey?: string,
@@ -285,8 +294,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       : Promise<NativeRpcStub<Overseer>> {
     await this.#assertFamilyCapability();
     if (shareKey) await this.#assertAdultFamilyCapability();
-    let userId = this.user.id.toString();
-    let profileId = this.user.id.name!;
+    let userId = this.#userId.toString();
+    let profileId = this.#userId.name!;
     let overseerId;
     try {
       overseerId = this.overseers.idFromString(id);
@@ -340,7 +349,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries
       // they click; others stay frozen at revocation, as a disconnected collaborator gets no pushes.
       if (getOpenGadgetErrorCode(err) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied) {
-        await this.user.forgetSharedGadget(id);
+        await this.#user.forgetSharedGadget(id);
       }
       throw err;
     }
@@ -365,10 +374,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async newGadget(): Promise<RpcStub<Overseer>> {
     await this.#assertFamilyCapability();
     let id = this.overseers.newUniqueId().toString();
-    await this.user.newGadget(id, "Untitled Workspace");
+    await this.#user.newGadget(id, "Untitled Workspace");
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
-      user_id: this.user.id.toString(),
+      user_id: this.#userId.toString(),
       gadget_id: id,
       source: "blank",
     });
@@ -381,18 +390,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async getInternalWorkspaceId(): Promise<string | null> {
     await this.#assertFamilyCapability();
-    return this.user.getInternalWorkspaceId();
+    return this.#user.getInternalWorkspaceId();
   }
 
   async getOrCreateInternalWorkspace(): Promise<RpcStub<Overseer>> {
     await this.#assertFamilyCapability();
-    let before = await this.user.getInternalWorkspaceId();
+    let before = await this.#user.getInternalWorkspaceId();
     let proposed = before ?? this.overseers.newUniqueId().toString();
-    let id = await this.user.ensureInternalWorkspace(proposed);
+    let id = await this.#user.ensureInternalWorkspace(proposed);
     if (!before && id === proposed) {
       recordAnalytics(this.ctx, this.env, {
         event_name: "gadget_created",
-        user_id: this.user.id.toString(),
+        user_id: this.#userId.toString(),
         gadget_id: id,
         source: "blank",
       });
@@ -405,11 +414,11 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return this.user.listGadgets();
+    return this.#user.listGadgets();
   }
 
   listOutputs(): Promise<ListOutputsResult> {
-    return this.user.listOutputs();
+    return this.#user.listOutputs();
   }
 
   async listOutputFormats(): Promise<OutputFormatOffer[]> {
@@ -422,77 +431,77 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     await this.#assertFamilyCapability();
     // Connector discovery is adult-only; children get an empty catalog (no Cap'n Web throw).
     if (this.familyGuard?.childProfile) return [];
-    return this.user.listGatekeeperVendors(filter);
+    return this.#user.listGatekeeperVendors(filter);
   }
 
   async connectAccount(vendorId: string, resourceUrlPatterns?: string[])
       : Promise<FamilyRpcResult<{url: string}>> {
     let gate = await this.#adultFamilyResult();
     if (!gate.ok) return gate;
-    return { ok: true, value: await this.user.connectAccount(vendorId, resourceUrlPatterns) };
+    return { ok: true, value: await this.#user.connectAccount(vendorId, resourceUrlPatterns) };
   }
 
   async ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
     await this.#assertAdultFamilyCapability();
-    return this.user.ensureAccountResources(accountId, resourceUrlPatterns);
+    return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
   }
 
   async listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
     await this.#assertAdultFamilyCapability();
-    return this.user.listAddableGatekeepers();
+    return this.#user.listAddableGatekeepers();
   }
 
   async provisionAmbientAccount(vendorId: string): Promise<void> {
     await this.#assertAdultFamilyCapability();
-    return this.user.provisionAmbientAccount(vendorId);
+    return this.#user.provisionAmbientAccount(vendorId);
   }
 
   async subscribeConnectedAccounts(
       subscriber: RpcStub<ConnectedAccountsSubscriber>, filter?: ConnectedAccountsFilter)
       : Promise<RpcStub<{}>> {
     await this.#assertAdultFamilyCapability();
-    return this.user.subscribeConnectedAccounts(subscriber, filter);
+    return this.#user.subscribeConnectedAccounts(subscriber, filter);
   }
 
   async disconnectAccount(accountId: number): Promise<void> {
     await this.#assertAdultFamilyCapability();
-    return this.user.disconnectAccount(accountId);
+    return this.#user.disconnectAccount(accountId);
   }
 
   async reconnectAccount(accountId: number): Promise<{url: string}> {
     await this.#assertAdultFamilyCapability();
-    return this.user.reconnectAccount(accountId);
+    return this.#user.reconnectAccount(accountId);
   }
 
   async startResourceConfigurator(
       accountId: number,
       resourceUrlPattern: string) {
     await this.#assertAdultFamilyCapability();
-    return this.user.startResourceConfigurator(accountId, resourceUrlPattern);
+    return this.#user.startResourceConfigurator(accountId, resourceUrlPattern);
   }
 
   async dismissSharedGadget(gadgetId: string): Promise<void> {
-    return this.user.forgetSharedGadget(gadgetId);
+    return this.#user.forgetSharedGadget(gadgetId);
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
-    return this.user.listBlueprints();
+    return this.#user.listBlueprints();
   }
 
   async getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null> {
-    return this.user.getBlueprint(blueprintId);
+    return this.#user.getBlueprint(blueprintId);
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {
-    return this.user.listLibraryBlueprints();
+    return this.#user.listLibraryBlueprints();
   }
 
   async setBlueprintPinned(blueprintId: string, pinned: boolean): Promise<void> {
-    return this.user.setBlueprintPinned(blueprintId, pinned);
+    return this.#user.setBlueprintPinned(blueprintId, pinned);
   }
 
   async isBlueprintPinned(blueprintId: string): Promise<boolean> {
-    return this.user.isBlueprintPinned(blueprintId);
+    return this.#user.isBlueprintPinned(blueprintId);
   }
 
   async listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]> {
@@ -501,15 +510,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async addBlueprintToLibrary(blueprintId: string): Promise<void> {
-    return this.user.addBlueprintToLibrary(blueprintId);
+    return this.#user.addBlueprintToLibrary(blueprintId);
   }
 
   async removeBlueprintFromLibrary(blueprintId: string): Promise<void> {
-    return this.user.removeBlueprintFromLibrary(blueprintId);
+    return this.#user.removeBlueprintFromLibrary(blueprintId);
   }
 
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null> {
-    return this.user.isBlueprintInLibrary(blueprintId);
+    return this.#user.isBlueprintInLibrary(blueprintId);
   }
 
   async importBlueprint(archive: ReadableStream<Uint8Array>): Promise<string> {
@@ -528,16 +537,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
       let kvRecord: BlueprintKvRecord = {
         metadata,
-        ownerId: this.user.id.toString(),
+        ownerId: this.#userId.toString(),
       };
 
       await this.env.BLUEPRINTS.put(blueprintId, JSON.stringify(kvRecord));
 
-      await this.user.importBlueprint(blueprintId, metadata);
+      await this.#user.importBlueprint(blueprintId, metadata);
 
       recordAnalytics(this.ctx, this.env, {
         event_name: "blueprint_imported",
-        user_id: this.user.id.toString(),
+        user_id: this.#userId.toString(),
         blueprint_id: blueprintId,
       });
 
@@ -565,7 +574,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     // 3. Create new Overseer DO (same as newGadget()).
     let id = this.overseers.newUniqueId().toString();
-    await this.user.newGadget(id, kvRecord.metadata.title);
+    await this.#user.newGadget(id, kvRecord.metadata.title);
     let overseerResult = await this.#openGadgetInternal(id);
 
     // 4. Initialize from blueprint code.
@@ -659,7 +668,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
-      user_id: this.user.id.toString(),
+      user_id: this.#userId.toString(),
       gadget_id: id,
       blueprint_id: blueprintId,
       source: "blueprint",
@@ -671,7 +680,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async deleteOrphanedBlueprint(blueprintId: string): Promise<void> {
-    return this.user.deleteOwnedBlueprint(blueprintId);
+    return this.#user.deleteOwnedBlueprint(blueprintId);
   }
 
   // --- Gatekeeper management apps ---
@@ -686,7 +695,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (this.familyGuard?.childProfile) return [];
     // listProvidedAccounts provisions auto-provisioned accounts first (idempotent), so their apps
     // appear in the nav even before the user opens a gadget — in a single round trip.
-    let accounts = await this.user.listProvidedAccounts();
+    let accounts = await this.#user.listProvidedAccounts();
     return accounts
         .filter(account => account.description.providesUi)
         .map(account => ({
@@ -700,11 +709,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     await this.#assertAdultFamilyCapability();
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
-    let accounts = await this.user.listProvidedAccounts();
+    let user = this.#user;  // one stub for both calls
+    let accounts = await user.listProvidedAccounts();
     let app = accounts.find(account => account.vendorId === id && account.description.providesUi);
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
-    return this.user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
+    return user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
   }
 
   // --- Deployment admin ---
@@ -719,7 +729,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (!this.#isAdmin()) return null;
     // #isAdmin() guarantees a non-empty user id name. Forwarded to gatekeepers when listing the
     // resource catalog so RBAC-gated ones still surface for this admin.
-    let adminUserId = this.user.id.name!;
+    let adminUserId = this.#userId.name!;
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
     //     system doesn't know this.
     return new AdminApiImpl(this.adminSettings.getByName(""), adminUserId);
@@ -795,7 +805,7 @@ class FamilyEntryImpl extends RpcTarget implements FamilyEntry {
       },
     };
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible.
-    return { ok: true, value: new AuthenticatedApiImpl(this.ctx, this.env, user, this.abortSession, familyGuard) };
+    return { ok: true, value: new AuthenticatedApiImpl(this.ctx, this.env, user.id, this.abortSession, familyGuard) };
   }
 
   setHouseholdPasscode(passcode: string): Promise<FamilyRpcResult<FamilyState>> {
@@ -917,14 +927,13 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     }
 
     let userId = this.users.idFromName(split[0]);
-    let stub = this.users.get(userId);
-    await stub.authenticate(split[1]);
+    await this.users.get(userId).authenticate(split[1]);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
       source: "session_token",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
   }
 
   async authenticateFromCfAccess(): Promise<RpcStub<FamilyEntry>> {
@@ -969,9 +978,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     username = normalizeUsername(username);
 
     let id = this.users.idFromName(username);
-    let user = this.users.get(id);
-
-    let token = await user.login(passwordHash);
+    let token = await this.users.get(id).login(passwordHash);
     if (!token) return null;
 
     recordAnalytics(this.ctx, this.env, {
@@ -1088,7 +1095,7 @@ export default {
           // that stays connected. This is one HTTP request, so the session is closed here rather
           // than left for the response to outlive -- its teardown talks back to the workspace, and
           // a context that has already returned cannot answer.
-          let api = new AuthenticatedApiImpl(ctx, env, owner(ownerEmail), () => {});
+          let api = new AuthenticatedApiImpl(ctx, env, owner(ownerEmail).id, () => {});
           let workspaceId: string;
           {
             using overseer = await api.newGadgetFromBlueprint(BOOK_BLUEPRINT_ID, {

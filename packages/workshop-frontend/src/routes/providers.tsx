@@ -1,5 +1,5 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
 import {
@@ -213,7 +213,12 @@ function ProvidersPage() {
     }
   }
 
+  // Overlapping setQuickModel calls have no ordering guarantee, so ignore clicks while one is
+  // in flight.
+  const quickInFlight = useRef(false)
   const handleSetQuick = async (modelId: string) => {
+    if (quickInFlight.current) return
+    quickInFlight.current = true
     const next = quickModel === modelId ? null : modelId
     setQuickModel(next)
     try {
@@ -225,6 +230,8 @@ function ProvidersPage() {
         title: familyLabel('Failed to update default model', familyUi.failedUpdateDefaultModel),
         variant: 'error',
       })
+    } finally {
+      quickInFlight.current = false
     }
   }
 
