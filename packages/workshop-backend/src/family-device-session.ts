@@ -54,13 +54,20 @@ export class FamilyDeviceSessionDurableObject extends DurableObject<Cloudflare.E
     let serverSocket = pair[0];
     serverSocket.accept();
 
+    let rpcSession: ReturnType<typeof newWebSocketRpcSession> | undefined;
+    let aborted = false;
     let abortSession = (reason: Error) => {
       logger.warn("aborting family device session", { event: "family.device-session.abort", error: reason });
-      serverSocket.close(1008, reason.message.slice(0, 123));
+      if (!rpcSession) {
+        aborted = true;
+        return;
+      }
+      rpcSession[Symbol.dispose]();
     };
 
     let api = factory(this.ctx, this.env, abortSession, { email, sub }, deviceId, loginIat, deviceSessionId);
-    newWebSocketRpcSession(serverSocket, api);
+    rpcSession = newWebSocketRpcSession(serverSocket, api);
+    if (aborted) rpcSession[Symbol.dispose]();
     let headers = new Headers();
     headers.set(FAMILY_DEVICE_SESSION_ID_HEADER, deviceSessionId);
     return new Response(null, { status: 101, webSocket: pair[1], headers });

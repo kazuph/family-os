@@ -1201,16 +1201,15 @@ export default {
 
       // Keep the server side of the WebSocket so profile transitions sever the whole Cap'n Web
       // session, including capabilities that were already derived from it.
-      let serverSocket: WebSocket | undefined;
+      let rpcSession: RpcStub<unknown> | undefined;
       let aborted = false;
       let abortSession = (reason: Error) => {
         logger.warn("aborting api session", { event: "session.abort", error: reason });
-        let boundedReason = reason.message.slice(0, 123);
-        if (!serverSocket) {
+        if (!rpcSession) {
           aborted = true;
           return;
         }
-        serverSocket.close(1008, boundedReason);
+        rpcSession[Symbol.dispose]();
       };
 
       let deviceSessionId = env.CF_ACCESS_AUD && deviceId ? crypto.randomUUID() : undefined;
@@ -1227,9 +1226,9 @@ export default {
         resp = await deviceSession.fetch(new Request(req.url, { headers }));
       } else if (isWebSocket) {
         let pair = new WebSocketPair();
-        serverSocket = pair[0];
+        let serverSocket = pair[0];
         serverSocket.accept();
-        newWebSocketRpcSession(serverSocket, api);
+        rpcSession = newWebSocketRpcSession(serverSocket, api);
         resp = new Response(null, { status: 101, webSocket: pair[1] });
       } else {
         resp = await newWorkersRpcResponse(req, api);
@@ -1242,7 +1241,7 @@ export default {
       }
 
       if (aborted) {
-        serverSocket?.close(1008, "Family OS session aborted before the RPC response was ready.");
+        rpcSession?.[Symbol.dispose]();
       }
       return resp;
     }
