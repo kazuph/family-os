@@ -25,6 +25,7 @@ import {
 import { useDocumentTitle } from "../useDocumentTitle";
 import { homePromptFromSearch } from "../homePrompt";
 import { familyLabel, familyUi } from "../familyUi";
+import { composerDraftStorageKey } from "../composerDraft";
 
 type HomeSearch = { prompt?: string };
 
@@ -45,7 +46,7 @@ function HomePage() {
 export function HomePageContent({ prompt }: HomeSearch) {
   useDocumentTitle(familyLabel("Home", familyUi.home));
 
-  const { authenticatedApi } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser } = useAuthenticatedApi();
   const navigate = useNavigate();
   const toasts = useKumoToastManager();
 
@@ -218,6 +219,9 @@ export function HomePageContent({ prompt }: HomeSearch) {
           seedText={draftText}
           seedNonce={seedNonce}
           onDraftChange={setDraftText}
+          draftStorageKey={currentUser
+            ? composerDraftStorageKey(currentUser.id, "home")
+            : undefined}
           beforeAttach={
             <HomeWorkspaceSelector
               selectedId={destinationId}

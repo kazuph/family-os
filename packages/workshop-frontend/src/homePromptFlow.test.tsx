@@ -20,11 +20,13 @@ const testState = vi.hoisted(() => {
       getInternalWorkspaceId,
       listGadgets,
     },
+    currentUser: { id: "user-a", name: "User A" },
     listModels,
     navigate: vi.fn<(options: unknown) => void>(),
     newGadget,
     getOrCreateInternalWorkspace,
     seeds: [] as Array<{ text?: string; nonce?: number }>,
+    draftStorageKeys: [] as Array<string | undefined>,
   };
 });
 
@@ -40,12 +42,18 @@ vi.mock("@cloudflare/kumo", () => ({
 vi.mock("./AuthContext", () => ({
   useAuthenticatedApi: () => ({
     authenticatedApi: testState.authenticatedApi,
+    currentUser: testState.currentUser,
   }),
 }));
 
 vi.mock("./ChatInterface", () => ({
-  ChatInput: ({ seedText, seedNonce }: { seedText?: string; seedNonce?: number }) => {
+  ChatInput: ({ seedText, seedNonce, draftStorageKey }: {
+    seedText?: string;
+    seedNonce?: number;
+    draftStorageKey?: string;
+  }) => {
     testState.seeds.push({ text: seedText, nonce: seedNonce });
+    testState.draftStorageKeys.push(draftStorageKey);
     return <textarea aria-label="Prompt" readOnly value={seedText ?? ""} />;
   },
 }));
@@ -69,6 +77,7 @@ describe("Home prompt route flow", () => {
     container?.remove();
     localStorage.clear();
     testState.seeds.length = 0;
+    testState.draftStorageKeys.length = 0;
     vi.clearAllMocks();
   });
 
@@ -85,5 +94,6 @@ describe("Home prompt route flow", () => {
     expect(testState.navigate).toHaveBeenCalledWith({ to: "/", search: {}, replace: true });
     expect(testState.newGadget).not.toHaveBeenCalled();
     expect(testState.getOrCreateInternalWorkspace).not.toHaveBeenCalled();
+    expect(testState.draftStorageKeys).toContain("gadgets:composer-draft:v1:user-a:home");
   });
 });
