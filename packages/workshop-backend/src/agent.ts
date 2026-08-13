@@ -451,6 +451,8 @@ document.body.appendChild(document.createTextNode(greeting));
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
+Make Gadget UIs responsive and usable on both desktop and phones by default.
+
 After writing or changing client.js, ALWAYS call \`browserVerify\` before reporting completion. Pass
 CSS selectors for the UI elements the task requires. The result contains a concise DOM landmark
 summary, counts for those selectors, image load totals and failed sources, console warnings and
@@ -460,6 +462,8 @@ page exceptions are both zero, every image loaded, and every expected selector h
 elements. For an asynchronously-rendered view, pass waitForSelector for an element that proves the
 view is ready. Pass locationHash when the requested UI lives at a hash route. Fix failures and run
 \`browserVerify\` again; do not claim that an unverified UI works.
+
+Every Gadget UI can be exported to PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. When asked to support or improve PDF export, only add standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the PDF remains readable.
 
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
