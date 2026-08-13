@@ -9,31 +9,35 @@
 
 import type { McpTool } from "./client.js";
 
-// The portal's built-in server-listing tool. Its presence in `tools/list` is what identifies an
-// endpoint as a portal.
-//
-// Calling it yields display names, ordering and enabled state, but not authority: membership is
-// decided by the `{server_id}_` prefix on each tool name, which is what `scopeAllows` enforces. A
-// server the listing omits still owns its prefixed tools, and one it invents owns nothing. See
-// `reconcilePortalServers`.
+/**
+ * The portal's built-in server-listing tool. Its presence in `tools/list` is what identifies an
+ * endpoint as a portal.
+ *
+ * Calling it yields display names, ordering and enabled state, but not authority: membership is
+ * decided by the `{server_id}_` prefix on each tool name, which is what `scopeAllows` enforces. A
+ * server the listing omits still owns its prefixed tools, and one it invents owns nothing. See
+ * `reconcilePortalServers`.
+ */
 export const PORTAL_LIST_SERVERS_TOOL = "portal_list_servers";
 
 // Prefix the portal reserves for its own session-management tools.
 const PORTAL_NATIVE_PREFIX = "portal_";
 
-// One upstream server behind a portal, as the portal itself reports it.
+/** One upstream server behind a portal, as the portal itself reports it. */
 export type PortalServer = {
-  // The server id that prefixes every one of its tool names.
+  /** The server id that prefixes every one of its tool names. */
   id: string;
-  // Display name, falling back to the id.
+  /** Display name, falling back to the id. */
   name: string;
-  // Whether the server is currently enabled in this portal session.
+  /** Whether the server is currently enabled in this portal session. */
   enabled: boolean;
 };
 
-// True for the portal's own tools, which are excluded from every grant: `portal_toggle_servers` and
-// friends change which upstream servers the session can reach, so granting one would let a Gadget
-// widen its own authority.
+/**
+ * True for the portal's own tools, which are excluded from every grant: `portal_toggle_servers` and
+ * friends change which upstream servers the session can reach, so granting one would let a Gadget
+ * widen its own authority.
+ */
 export function isPortalNativeTool(name: string): boolean {
   return name.startsWith(PORTAL_NATIVE_PREFIX);
 }
@@ -66,8 +70,10 @@ function serverIdOfTool(name: string): string | null {
   return name.slice(0, separator);
 }
 
-// Whether `toolName` belongs to upstream server `serverId`. Syntactic, so enforcing a server scope
-// never depends on reaching the portal.
+/**
+ * Whether `toolName` belongs to upstream server `serverId`. Syntactic, so enforcing a server scope
+ * never depends on reaching the portal.
+ */
 export function toolBelongsToServer(toolName: string, serverId: string): boolean {
   return serverIdOfTool(toolName) === serverId;
 }

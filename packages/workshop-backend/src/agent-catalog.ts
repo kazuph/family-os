@@ -79,16 +79,18 @@ export async function completeAgentCatalogSnapshot(
   };
 }
 
-// The catalog as a JSON blob for inclusion in a prompt, on its own line, or "" if empty.
+/** The catalog as a JSON blob for inclusion in a prompt, on its own line, or "" if empty. */
 export function formatAgentCatalogPrompt(catalog: AgentCatalog | null): string {
   if (!catalog?.entries.length) return "";
   return `\n${JSON.stringify(catalog)}`;
 }
 
-// Build the system-prompt section that tells the agent which always-available resource bindings it
-// has (their `env.NAME` entries) plus each one's discovery catalog, and how to use them. This
-// describes the agent's environment rather than anything the user said, so it lives in the system
-// prompt alongside the bindings list rather than as a synthetic user turn.
+/**
+ * Build the system-prompt section that tells the agent which always-available resource bindings it
+ * has (their `env.NAME` entries) plus each one's discovery catalog, and how to use them. This
+ * describes the agent's environment rather than anything the user said, so it lives in the system
+ * prompt alongside the bindings list rather than as a synthetic user turn.
+ */
 export function formatAlwaysAvailableResourcesPrompt(resources: Array<{
   title: string;
   name: string;

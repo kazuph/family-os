@@ -19,7 +19,7 @@ import {
   type ServerTrust,
 } from "./tools.js";
 
-// How long a fetched tool catalog is reused before the server is asked again.
+/** How long a fetched tool catalog is reused before the server is asked again. */
 export const CATALOG_TTL_MS = 5 * 60 * 1000;
 
 // Cached tool catalog plus the revision it was fetched at.
@@ -33,24 +33,28 @@ type CachedCatalog = {
   truncated?: boolean;
 };
 
-// The key-value storage a facet lends this module. Structural so it does not depend on either
-// connector's Durable Object type; `ctx.storage.kv` satisfies it.
+/**
+ * The key-value storage a facet lends this module. Structural so it does not depend on either
+ * connector's Durable Object type; `ctx.storage.kv` satisfies it.
+ */
 export interface CatalogStore {
   get<T>(key: string): T | undefined;
   put<T>(key: string, value: T): void;
 }
 
-// What resolving a catalog needs. Everything here is owned by the calling facet.
+/** What resolving a catalog needs. Everything here is owned by the calling facet. */
 export type CatalogRequest = {
   store: CatalogStore;
   log: McpLog;
   env: ConnectionEnv;
   account: ConnectionAccount;
   endpoint: string;
-  // How much of the endpoint this binding may call.
+  /** How much of the endpoint this binding may call. */
   scope: ToolScope;
-  // Read from the deployment's current configuration on every call, never from stored account
-  // state, so withdrawing the tier takes effect without a reconnect. See `ServerTrust`.
+  /**
+   * Read from the deployment's current configuration on every call, never from stored account
+   * state, so withdrawing the tier takes effect without a reconnect. See `ServerTrust`.
+   */
   trust: ServerTrust;
   /** Absolute deadline shared with the facet operation that requested this catalog. */
   deadline?: number;

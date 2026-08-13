@@ -117,7 +117,7 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
 <p>Please see the README.md for instructions on configuring an OAuth client ID and secret.</p>
 </body></html>`;
 
-// Main HTTP entrypoint — used only to initiate and complete the OAuth flow.
+/** Main HTTP entrypoint — used only to initiate and complete the OAuth flow. */
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(req.url);
@@ -326,8 +326,10 @@ export class UserAccount extends DurableObject<Env> {
     return this.ctx.storage.kv.get<string>("refreshToken") !== undefined;
   }
 
-  // Returns a usable access token (refreshing if needed), or null if the credentials are gone or
-  // can no longer be refreshed (in which case the workshop is notified via credentialsExpired()).
+  /**
+   * Returns a usable access token (refreshing if needed), or null if the credentials are gone or
+   * can no longer be refreshed (in which case the workshop is notified via credentialsExpired()).
+   */
   async getAccessToken(): Promise<string | null> {
     const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
     if (!refreshToken) return null;

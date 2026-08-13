@@ -17,9 +17,11 @@ function initials(title: string | undefined): string {
   return t.slice(0, 2)
 }
 
-// One row in the sidebar's Favorites / Recent list. Compact, with a monogram avatar, a truncated
-// title, and an overflow menu (favorite, rename, share, delete). Favorite/rename/share/delete
-// callbacks are passed in by the parent so this row stays a pure presentational component.
+/**
+ * One row in the sidebar's Favorites / Recent list. Compact, with a monogram avatar, a truncated
+ * title, and an overflow menu (favorite, rename, share, delete). Favorite/rename/share/delete
+ * callbacks are passed in by the parent so this row stays a pure presentational component.
+ */
 export default function SidebarGadgetRow({
   gadget,
   collapsed = false,

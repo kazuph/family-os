@@ -28,13 +28,13 @@ export type SkillIndexEntry = {
   description: string;
 };
 
-// Skills grouped by collection.
+/** Skills grouped by collection. */
 export type CollectionSkills = {
   collection: EnabledCollectionInfo;
   skills: SkillIndexEntry[];
 };
 
-// Build slash command entries for the picker.
+/** Build slash command entries for the picker. */
 export function buildAgentSkillCommands(
     loaded: CollectionSkills[]): SlashCommandDescriptor[] {
   let commands: SlashCommandDescriptor[] = [];
@@ -52,7 +52,7 @@ export function buildAgentSkillCommands(
   return commands;
 }
 
-// Build Agent Catalog entries. Their IDs can be passed to ContextLibrary.read().
+/** Build Agent Catalog entries. Their IDs can be passed to ContextLibrary.read(). */
 export function buildAgentSkillCatalogEntries(
     loaded: CollectionSkills[]): Array<{id: string, title: string, description: string}> {
   let entries: Array<{id: string, title: string, description: string}> = [];
@@ -126,7 +126,7 @@ const SkillFrontmatterSchema = z.object({
           .max(1024, "Skill description must be at most 1024 characters.")),
 }).passthrough();
 
-// Check whether the last path segment is exactly SKILL.md.
+/** Check whether the last path segment is exactly SKILL.md. */
 export function isSkillManifestPath(path: string): boolean {
   return path.split("/").at(-1) === "SKILL.md";
 }
@@ -170,7 +170,7 @@ function formatFrontmatterError(error: z.ZodError): string {
   return issue?.message ?? "Skill frontmatter is invalid.";
 }
 
-// Read and validate the skill frontmatter.
+/** Read and validate the skill frontmatter. */
 export function parseSkillManifest(path: string, source: string): SkillManifestMetadata {
   if (!isSkillManifestPath(path)) {
     throw new Error("Skill manifest filename must be SKILL.md.");

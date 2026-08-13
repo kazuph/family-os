@@ -73,8 +73,10 @@ export async function listAccounts(token: string): Promise<CloudflareAccount[]> 
   return accounts;
 }
 
-// Fetch the account's AI Gateway credit balance in USD. Returns null on any upstream failure so
-// callers can distinguish "unknown" from a genuine $0 balance.
+/**
+ * Fetch the account's AI Gateway credit balance in USD. Returns null on any upstream failure so
+ * callers can distinguish "unknown" from a genuine $0 balance.
+ */
 export async function fetchCreditBalance(token: string, accountId: string): Promise<number | null> {
   const result = await cfGet<{ balance?: number }>(
     token, `/accounts/${accountId}/ai-gateway-billing/credit_balance`,

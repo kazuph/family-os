@@ -45,8 +45,10 @@ export interface CloudflareOAuthConfig {
   redirectUri: string;
 }
 
-// Build the OAuth config from the gatekeeper's env. `redirectUri` is the gatekeeper's own /oauth
-// endpoint. Returns null if the client credentials aren't configured.
+/**
+ * Build the OAuth config from the gatekeeper's env. `redirectUri` is the gatekeeper's own /oauth
+ * endpoint. Returns null if the client credentials aren't configured.
+ */
 export function getOAuthConfig(
   clientId: string | undefined, clientSecret: string | undefined, baseUrl: string,
 ): CloudflareOAuthConfig | null {
@@ -65,7 +67,7 @@ function b64urlEncode(bytes: ArrayBuffer | Uint8Array): string {
   return btoa(String.fromCharCode(...arr)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-// Generate a PKCE verifier and its S256 challenge.
+/** Generate a PKCE verifier and its S256 challenge. */
 export async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
   const verifier = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
@@ -106,7 +108,7 @@ function basicAuth(config: CloudflareOAuthConfig): string {
   return "Basic " + btoa(`${config.clientId}:${config.clientSecret}`);
 }
 
-// Exchange an authorization code (with its PKCE verifier) for tokens.
+/** Exchange an authorization code (with its PKCE verifier) for tokens. */
 export async function exchangeCode(
   config: CloudflareOAuthConfig, code: string, verifier: string,
 ): Promise<TokenResponse | null> {
@@ -118,7 +120,7 @@ export async function exchangeCode(
   }));
 }
 
-// Refresh an access token using a refresh token.
+/** Refresh an access token using a refresh token. */
 export async function refreshTokens(
   config: CloudflareOAuthConfig, refreshToken: string,
 ): Promise<TokenResponse | null> {

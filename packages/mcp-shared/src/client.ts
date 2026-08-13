@@ -29,15 +29,17 @@ import type {
   ToolAnnotations,
 } from "@modelcontextprotocol/client";
 
-// MCP revision this client speaks. Sent in `initialize` and the `MCP-Protocol-Version` header.
+/** MCP revision this client speaks. Sent in `initialize` and the `MCP-Protocol-Version` header. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
-// A server's tool catalog, and whether listing it ran out of room.
-//
-// `truncated` has to travel with the tools because absence of evidence is not evidence of absence:
-// code that decides what an endpoint *is* from the tools it advertises (`looksLikePortal`) would
-// otherwise read a cut-short catalog as a complete one and conclude the endpoint lacks a tool that
-// is merely past the cut.
+/**
+ * A server's tool catalog, and whether listing it ran out of room.
+ *
+ * `truncated` has to travel with the tools because absence of evidence is not evidence of absence:
+ * code that decides what an endpoint *is* from the tools it advertises (`looksLikePortal`) would
+ * otherwise read a cut-short catalog as a complete one and conclude the endpoint lacks a tool that
+ * is merely past the cut.
+ */
 export type ToolCatalog = {
   tools: McpTool[];
   truncated: boolean;
@@ -91,15 +93,17 @@ const MAX_SCANNED_TOOL_BYTES = 4 * 1024 * 1024;
 const MAX_SCANNED_TOOLS = 5000;
 const encoder = new TextEncoder();
 
-// Content block returned by a tool call.
+/** Content block returned by a tool call. */
 export type McpContentBlock = ContentBlock;
 
-// Per-tool behaviour hints from the server (MCP `ToolAnnotations`). Claims the server makes about
-// itself, not guarantees: `readOnlyHint` classifies reads on every server, but the remaining hints
-// influence auto-approval only for an administrator-configured endpoint. See `classifyTool()`.
+/**
+ * Per-tool behaviour hints from the server (MCP `ToolAnnotations`). Claims the server makes about
+ * itself, not guarantees: `readOnlyHint` classifies reads on every server, but the remaining hints
+ * influence auto-approval only for an administrator-configured endpoint. See `classifyTool()`.
+ */
 export type McpToolAnnotations = ToolAnnotations;
 
-// One entry of the server's `tools/list` response.
+/** One entry of the server's `tools/list` response. */
 export type McpWireTool = Tool;
 
 /** Selects which wire tools count toward a bounded catalog. */
@@ -114,7 +118,7 @@ export type McpTool = {
   annotations?: McpToolAnnotations;
 };
 
-// The subset of JSON Schema this gatekeeper understands when generating TypeScript.
+/** The subset of JSON Schema this gatekeeper understands when generating TypeScript. */
 export type JsonSchema = {
   type?: string | string[];
   description?: string;
@@ -133,15 +137,15 @@ export type JsonSchema = {
   [key: string]: unknown;
 };
 
-// Result of `tools/call` as returned by the server.
+/** Result of `tools/call` as returned by the server. */
 export type McpToolCallResult = CallToolResult;
 
-// Server identity and capabilities reported by `initialize`.
+/** Server identity and capabilities reported by `initialize`. */
 export type McpServerInfo = Partial<Pick<
   InitializeResult, "protocolVersion" | "serverInfo" | "instructions" | "capabilities"
 >>;
 
-// Thrown when the server demands OAuth. Carries the RFC 9728 resource-metadata URL if advertised.
+/** Thrown when the server demands OAuth. Carries the RFC 9728 resource-metadata URL if advertised. */
 export class McpAuthRequiredError extends Error {
   readonly resourceMetadataUrl: string | null;
   constructor(message: string, resourceMetadataUrl: string | null) {
@@ -151,7 +155,7 @@ export class McpAuthRequiredError extends Error {
   }
 }
 
-// Thrown when the server dropped our transport session; the caller should re-initialize.
+/** Thrown when the server dropped our transport session; the caller should re-initialize. */
 export class McpSessionExpiredError extends Error {
   constructor() {
     super("The MCP server no longer recognizes this session.");
@@ -178,11 +182,13 @@ export class McpCallNotDispatchedError extends Error {
  */
 export type CallOutcome = "declined" | "unknown";
 
-// Thrown for JSON-RPC error responses and transport-level failures.
+/** Thrown for JSON-RPC error responses and transport-level failures. */
 export class McpProtocolError extends Error {
   readonly code: number | undefined;
-  // Defaults to `"unknown"`, so a throw site that has not thought about it is treated as unsafe to
-  // retry rather than silently assumed harmless.
+  /**
+   * Defaults to `"unknown"`, so a throw site that has not thought about it is treated as unsafe to
+   * retry rather than silently assumed harmless.
+   */
   readonly outcome: CallOutcome;
   constructor(message: string, code?: number, outcome: CallOutcome = "unknown") {
     super(message);
@@ -192,11 +198,13 @@ export class McpProtocolError extends Error {
   }
 }
 
-// Whether a failed call might already have taken effect on the server.
-//
-// Fails safe: anything this cannot positively identify as declined is treated as possibly performed.
-// The cost of being wrong that way is a call the user has to stage again; the cost of being wrong
-// the other way is a duplicated write that MCP offers no way to undo.
+/**
+ * Whether a failed call might already have taken effect on the server.
+ *
+ * Fails safe: anything this cannot positively identify as declined is treated as possibly performed.
+ * The cost of being wrong that way is a call the user has to stage again; the cost of being wrong
+ * the other way is a duplicated write that MCP offers no way to undo.
+ */
 export function callMayHaveTakenEffect(err: unknown): boolean {
   if (err instanceof McpCallNotDispatchedError) return false;
   // The server demanded authorization, so it never reached the tool.
@@ -363,8 +371,10 @@ export function clampToolSummary(tool: McpWireTool | McpTool): McpTool {
 /** Supplies a bearer token for an MCP method, or null for a public server. */
 export type AuthorizationProvider = (method: string) => Promise<string | null>;
 
-// A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
-// across calls is the transport session id, which the caller owns (see `sessionId`).
+/**
+ * A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
+ * across calls is the transport session id, which the caller owns (see `sessionId`).
+ */
 export class McpClient {
   #endpoint: string;
   #getAuthorization: AuthorizationProvider;
@@ -372,7 +382,7 @@ export class McpClient {
   #requestPrefix = crypto.randomUUID();
   #requestId = 0;
 
-  // Transport session id, assigned by the server during `initialize`. Persist and pass it back.
+  /** Transport session id, assigned by the server during `initialize`. Persist and pass it back. */
   sessionId: string | null;
 
   constructor(
@@ -526,7 +536,7 @@ export class McpClient {
     await this.#post({ jsonrpc: "2.0", method, params }).catch(() => undefined);
   }
 
-  // Performs the `initialize` handshake and the follow-up `notifications/initialized`.
+  /** Performs the `initialize` handshake and the follow-up `notifications/initialized`. */
   async initialize(clientName: string): Promise<McpServerInfo> {
     const info = await this.#call<InitializeResult>("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
@@ -669,7 +679,7 @@ export class McpClient {
     return scanLimit();
   }
 
-  // Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error.
+  /** Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error. */
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
     return this.#call<McpToolCallResult>("tools/call", { name, arguments: args });
   }

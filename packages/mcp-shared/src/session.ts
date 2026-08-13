@@ -31,36 +31,44 @@ import type {
   McpToolSummary,
 } from "./types";
 
-// A queued tool call, awaiting a decision. Persisted by the host in its own storage; the session
-// only ever reads one back by id.
+/**
+ * A queued tool call, awaiting a decision. Persisted by the host in its own storage; the session
+ * only ever reads one back by id.
+ */
 export type StoredAction = {
   id: number;
   toolName: string;
   args: Record<string, unknown>;
-  // `applying` is the window between an approval arriving and the call returning. It exists so a
-  // second `applyAction` for the same id cannot find the record still `pending` and call the tool a
-  // second time; see `ActionStore.apply`.
+  /**
+   * `applying` is the window between an approval arriving and the call returning. It exists so a
+   * second `applyAction` for the same id cannot find the record still `pending` and call the tool a
+   * second time; see `ActionStore.apply`.
+   */
   state: "pending" | "applying" | "applied" | "rejected" | "failed";
   submittedAt: number;
-  // When the in-flight apply was claimed, for recovering a claim whose Durable Object died mid-call.
+  /** When the in-flight apply was claimed, for recovering a claim whose Durable Object died mid-call. */
   claimedAt?: number;
-  // Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
-  // written before this field existed. False marks a failure that left the outcome unknown: the
-  // request may already have been carried out, so another attempt could duplicate a write that MCP
-  // gives no way to undo. See `ActionStore.apply`.
+  /**
+   * Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
+   * written before this field existed. False marks a failure that left the outcome unknown: the
+   * request may already have been carried out, so another attempt could duplicate a write that MCP
+   * gives no way to undo. See `ActionStore.apply`.
+   */
   retryable?: boolean;
-  // Populated once applied; delivered to the Gadget as an observation.
+  /** Populated once applied; delivered to the Gadget as an observation. */
   result?: Extract<McpCallResult, { status: "ok" }>;
   /** Terminal failure reason retained for later collection. */
   error?: string;
 };
 
-// What a session needs from the gatekeeper facet that owns it. Narrow: the session is handed to a
-// Gadget, so anything reachable from here is one `followPath` away from untrusted code.
+/**
+ * What a session needs from the gatekeeper facet that owns it. Narrow: the session is handed to a
+ * Gadget, so anything reachable from here is one `followPath` away from untrusted code.
+ */
 export interface McpSessionHost {
   readonly serverName: string;
   readonly endpoint: string;
-  // How much of the endpoint this binding may call. Only used to word the "no such tool" error.
+  /** How much of the endpoint this binding may call. Only used to word the "no such tool" error. */
   readonly scope: ToolScope;
 
   /** Returns the bounded described catalog. */
@@ -75,7 +83,7 @@ export interface McpSessionHost {
     options?: WithClientOptions,
   ): Promise<T>;
 
-  // The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers.
+  /** The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers. */
   actionKindFor(toolName: string): ActionKind;
 
   stageAction(toolName: string, args: Record<string, unknown>): StoredAction;
