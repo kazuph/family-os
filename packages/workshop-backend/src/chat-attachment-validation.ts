@@ -33,6 +33,7 @@ const isTextImageOrPdfMime = (mimeType: string) =>
 // application/pdf inline data as-is, and Anthropic/OpenAI payloads are rewritten in flight (see
 // chat-attachment-pdf.ts). Workers AI and Ollama chat endpoints have no document input at all.
 const ATTACHMENT_SUPPORT_BY_PROVIDER = {
+  "opencode-go": isTextLikeAttachmentMimeType,
   anthropic: isTextImageOrPdfMime,
   openai: isTextImageOrPdfMime,
   google: isTextImageOrPdfMime,

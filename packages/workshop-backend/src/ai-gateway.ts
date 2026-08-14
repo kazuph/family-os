@@ -34,7 +34,8 @@ export class AiGatewayConfig {
       ? undefined
       : env.CF_AI_GATEWAY_WAI || this.gateway;
     this.providers = new Set(
-      (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
+      (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim())
+        .filter(s => s !== "" && s !== "opencode-go")
     );
   }
 

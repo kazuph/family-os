@@ -20,8 +20,27 @@ connect the account's capabilities. There's no single switch — the pieces turn
 The primary account key is always the user's **verified email**: signing in with any allowlisted
 gatekeeper that yields the same verified email maps to the same account.
 
-For local development, set the required variables in a root `.dev.vars` file (gitignored,
-`KEY=VALUE` per line); `pnpm run dev-server` loads it automatically. A minimal example:
+For local development, keep the variables in a dotenvx-encrypted root `.env` file. Create an empty
+file once with `touch .env`, then update it with `dotenvx set` (the generated `.env.keys` is
+gitignored) and run the server through
+dotenvx so the decrypted values exist only in the process environment:
+
+```
+dotenvx set CF_AI_GATEWAY default
+dotenvx set CF_AI_GATEWAY_PROVIDERS openai
+dotenvx set CF_AI_GATEWAY_ACCOUNT_ID ...
+dotenvx set CF_AI_GATEWAY_API_TOKEN ...
+dotenvx run -f .env --overload -- pnpm run dev-server --remote-ai
+```
+
+To use a deployment's OpenCode Go subscription, store its token with
+`dotenvx set -f .env -fk .env.keys OPENCODE_GO_API_TOKEN -- "<token>"`. When that secret is
+present, DeepSeek V4 Flash is the first model in the picker and connects directly to OpenCode Go;
+it is not routed through Cloudflare AI Gateway. The same name should be registered as a Worker
+secret after the target Worker exists.
+
+Do not keep both `.dev.vars` and `.env`; Wrangler gives `.dev.vars` precedence. A minimal
+configuration is:
 
 ```
 ENABLE_CLOUDFLARE_LIMITS=true
