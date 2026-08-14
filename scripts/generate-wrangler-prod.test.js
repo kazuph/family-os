@@ -71,7 +71,17 @@ describe("loadProductionDeployment", () => {
         ...VALID_ENV,
         FAMILY_PUBLIC_BASE_URL: "https://home-os.example.workers.dev/some/path",
       }),
-      /https origin/,
+      /FAMILY_PUBLIC_BASE_URL must be an https origin/,
+    );
+  });
+
+  it("names issuer validation errors after CF_ACCESS_ISS", () => {
+    assert.throws(
+      () => loadProductionDeployment({
+        ...VALID_ENV,
+        CF_ACCESS_ISS: "https://example.cloudflareaccess.com/extra",
+      }),
+      /CF_ACCESS_ISS must be an https origin/,
     );
   });
 
