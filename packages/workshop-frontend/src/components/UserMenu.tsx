@@ -13,7 +13,7 @@ import FamilyMonsterPicker from './FamilyMonsterPicker'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './menuStyles'
 
 export default function UserMenu() {
-  const { familyEntry, logout, isAdmin, activateFamilyProfile, isFamilyChild } = useAuthenticatedApi()
+  const { familyEntry, logout, isAdmin, isFamilyChild } = useAuthenticatedApi()
   const navigate = useNavigate()
   const [familyState, setFamilyState] = useState<FamilyState | null>(null)
   const [passcode, setPasscode] = useState('')
@@ -57,25 +57,6 @@ export default function UserMenu() {
   }
 
 
-  const refreshFamilyProfile = () => {
-    if (!familyEntry) return
-    void familyEntry.getState().then((nextState) => {
-      setFamilyState(nextState)
-      setPasscode('')
-      setFamilyError(null)
-    })
-  }
-
-  const adoptFamilyProfile = () => {
-    if (!familyEntry) return
-    void familyEntry.getAuthenticatedApi().then((apiResult) => {
-      applyFamilyRpcResult(apiResult, (api) => {
-        activateFamilyProfile(api)
-        refreshFamilyProfile()
-      }, handleFamilyError)
-    })
-  }
-
   const createChildProfile = () => {
     if (!familyEntry) return
     void familyEntry.createChildProfile(childName).then((result) => {
@@ -94,7 +75,7 @@ export default function UserMenu() {
           <button
             className="w-7 h-7 cursor-pointer rounded-full flex items-center justify-center bg-kumo-tint hover:bg-kumo-fill transition-colors overflow-hidden"
             title={isFamilyMode ? familyUi.openProfileMenu : 'Open profile menu'}
-            aria-label={isFamilyMode ? familyUi.openProfileMenu : 'Open family profile menu'}
+            aria-label={isFamilyMode ? familyUi.openProfileMenu : 'Open profile menu'}
           >
             {avatarId ? (
               <img src={`/family-avatars/${avatarId}.png`} alt="" className="w-full h-full object-cover" />
@@ -165,7 +146,7 @@ export default function UserMenu() {
                     onClick={() => {
                       void familyEntry.selectChildProfile(profile.id).then((result) => {
                         if (!result.ok) handleFamilyRpcFailure(result.error, handleFamilyError)
-                        else adoptFamilyProfile()
+                        else window.location.reload()
                       })
                     }}
                     className={MENU_ITEM}>
@@ -186,7 +167,7 @@ export default function UserMenu() {
                 <button type="button" onClick={() => {
                   void familyEntry.switchToAdultProfile(passcode).then((result) => {
                     if (!result.ok) handleFamilyRpcFailure(result.error, handleFamilyError)
-                    else adoptFamilyProfile()
+                    else window.location.reload()
                   })
                 }} className="text-xs text-kumo-brand">
                   {familyUi.switchToAdult}

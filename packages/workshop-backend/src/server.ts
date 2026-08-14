@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newWebSocketRpcSession, newWorkersRpcResponse } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, FamilyEntry, FamilyState, type FamilyMonsterAvatarId, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, createFamilyError, FAMILY_ERROR_CODES } from '@gadgets/workshop-shared/api';
+import { PublicApi, AuthenticatedApi, FamilyEntry, FamilyState, type FamilyMonsterAvatarId, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, createFamilyError, FAMILY_ERROR_CODES, getFamilyErrorCode } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import type { FamilyRpcResult } from "@gadgets/workshop-shared/api";
 import { unwrapFamilyRpcResult } from "@gadgets/workshop-shared/api";
@@ -315,7 +315,19 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let result;
     try {
       result = await overseer.open(userId, profileId, notifyClosed, shareKey, configureObservers,
-          this.familyGuard?.childProfile === true);
+          this.familyGuard?.childProfile === true,
+          this.familyGuard
+            ? new NativeRpcStub(async (): Promise<FamilyRpcResult<void>> => {
+                try {
+                  await this.familyGuard!.assertCurrent();
+                  return { ok: true, value: undefined };
+                } catch (error) {
+                  let code = getFamilyErrorCode(error);
+                  if (!code) throw error;
+                  return { ok: false, error: code };
+                }
+              })
+            : undefined);
     } catch (err) {
       // A denial proves this user's listing for the workspace is stale: revocation tries to drop it
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries

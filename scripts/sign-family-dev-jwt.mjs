@@ -1,4 +1,9 @@
-/** Signs a local Family OS Access JWT matching the integration-test emulator keys. */
+/** Signs a local Family OS Access JWT matching the integration-test emulator keys.
+ *
+ * TEST FIXTURE ONLY. The RSA JWK below is the counterpart of the public key in
+ * `local-access-emulator.js` / `family-rpc.test.ts` for issuer
+ * `https://access.integration.test`. It is not a household or production Access key.
+ */
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

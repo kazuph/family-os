@@ -100,6 +100,10 @@ describe("Family OS Access device generation", () => {
     let child = unwrapFamilyRpcResult(await first.family.createChildProfile("Child")).childProfiles[0];
     if (!child) throw new Error("Expected child profile.");
 
+    let sameSessionAdult = unwrapFamilyRpcResult(await first.family.getAuthenticatedApi());
+    sameSessionAdult.onRpcBroken(() => {});
+    using sameSessionWorkspace = await sameSessionAdult.newGadget();
+    sameSessionWorkspace.onRpcBroken(() => {});
     let second = await connect(100, 2, first.cookie);
     let staleAdult = unwrapFamilyRpcResult(await second.family.getAuthenticatedApi());
     staleAdult.onRpcBroken(() => {});
@@ -111,6 +115,11 @@ describe("Family OS Access device generation", () => {
     otherDeviceApi.onRpcBroken(() => {});
     unwrapFamilyRpcResult(await first.family.selectChildProfile(child.id));
     await second.closed;
+    expectFamilyRpcError(
+      await sameSessionWorkspace.createShareLink("build"),
+      FAMILY_ERROR_CODES.profileCapabilityRevoked,
+    );
+    sameSessionAdult[Symbol.dispose]();
     await expect(otherDeviceApi.whoami()).resolves.toMatchObject({ type: 'user' });
     second.api[Symbol.dispose]();
     otherDeviceApi[Symbol.dispose]();
