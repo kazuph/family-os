@@ -7273,11 +7273,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async setTitle(title: string): Promise<void> {
+    await this.#assertFamilyCurrent();
     this.impl.storage.title.put(title);
     await this.owner.updateTitle(this.impl.ctx.id.toString(), title);
   }
 
   async setPinned(pinned: boolean): Promise<void> {
+    await this.#assertFamilyCurrent();
     await this.clientUser.updatePinned(this.impl.ctx.id.toString(), pinned);
   }
 
@@ -7287,6 +7289,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createGadget(title: string, chatId?: number, bindingName?: string)
       : Promise<RpcStub<GadgetClient>> {
+    await this.#assertFamilyCurrent();
     // When creating within a chat, names already claimed in that chat's scope (its frozen seed
     // plus log-derived bindings) are off-limits too: the chat's binding map is keyed by name,
     // so on replay the existing binding would win and the new gadget would never be addressable
@@ -7352,6 +7355,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async deleteSelf(): Promise<void> {
+    await this.#assertFamilyCurrent();
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can delete it.");
     }
@@ -9079,12 +9083,14 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   }
 
   async setTitle(title: string): Promise<void> {
+    if (this.assertFamilyCurrent) unwrapFamilyRpcResult(await this.assertFamilyCurrent());
     let record = this.impl.getGadgetRecord(this.id);
     record.title = title;
     this.impl.storage.gadgets.put(record);
   }
 
   async remove(): Promise<void> {
+    if (this.assertFamilyCurrent) unwrapFamilyRpcResult(await this.assertFamilyCurrent());
     return this.impl.removeGadget(this.id);
   }
 
