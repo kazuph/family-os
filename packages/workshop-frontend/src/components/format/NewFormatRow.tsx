@@ -3,6 +3,7 @@
 
 import { FormatGlyph } from './FormatVisuals'
 import { useOutputFormats } from './useOutputFormats'
+import { familyLabel, familyUi, formatNounLabel } from '../../familyUi'
 
 export default function NewFormatRow({ label = 'Start with' }: { label?: string }) {
   const { formats, creating, create } = useOutputFormats()
@@ -15,23 +16,29 @@ export default function NewFormatRow({ label = 'Start with' }: { label?: string 
         {label}
       </span>
       <div className="flex flex-wrap items-center justify-center gap-2">
-        {formats.map((format) => (
-          <button
-            key={format.blueprintId}
-            type="button"
-            disabled={creating !== null}
-            onClick={() => create(format)}
-            title={format.description || undefined}
-            className="press flex cursor-pointer items-center gap-2 rounded-full border border-kumo-line bg-kumo-base px-3.5 py-2 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors duration-150 ease-out hover:bg-kumo-tint disabled:cursor-default disabled:opacity-60"
-          >
-            <FormatGlyph
-              output={format.output}
-              size="md"
-              className={creating === format.blueprintId ? 'animate-pulse' : 'text-kumo-subtle'}
-            />
-            {creating === format.blueprintId ? `Creating…` : `New ${format.output.noun}`}
-          </button>
-        ))}
+        {formats.map((format) => {
+          const noun = formatNounLabel(format.output.noun)
+          return (
+            <button
+              key={format.blueprintId}
+              type="button"
+              disabled={creating !== null}
+              onClick={() => create(format)}
+              // Family mode: never surface upstream English format blurbs as tooltips.
+              title={undefined}
+              className="press flex cursor-pointer items-center gap-2 rounded-full border border-kumo-line bg-kumo-base px-3.5 py-2 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors duration-150 ease-out hover:bg-kumo-tint disabled:cursor-default disabled:opacity-60"
+            >
+              <FormatGlyph
+                output={format.output}
+                size="md"
+                className={creating === format.blueprintId ? 'animate-pulse' : 'text-kumo-subtle'}
+              />
+              {creating === format.blueprintId
+                ? familyLabel('Creating…', familyUi.creatingEllipsis)
+                : familyLabel(`New ${format.output.noun}`, `新しい${noun}`)}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

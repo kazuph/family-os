@@ -1,67 +1,84 @@
-import { describe, expect, it, vi } from "vitest";
-import { accessRateLimitKey, verifyCfAccessJwt } from "../src/access.js";
-
-const joseMocks = vi.hoisted(() => ({
-  createRemoteJWKSet: vi.fn(() => vi.fn()),
-  jwtVerify: vi.fn().mockResolvedValue({ payload: { sub: "user-1" } }),
-}));
-
-vi.mock("jose", () => joseMocks);
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { describe, expect, it } from "vitest";
+import { accessRateLimitKey, readCfAccessLoginIdentity, verifyCfAccessJwt } from "../src/access.js";
 
 const accessEnv = {
   CF_ACCESS_AUD: "workshop-audience",
   CF_ACCESS_ISS: "https://team.cloudflareaccess.com",
 };
 
-describe("verifyCfAccessJwt", () => {
-  it("reuses the remote JWK set for requests with the same issuer", async () => {
-    const request = new Request("https://workshop.example/api", {
-      headers: { "cf-access-jwt-assertion": "signed-token" },
-    });
-    const otherEnv = {
-      ...accessEnv,
-      CF_ACCESS_ISS: "https://other-team.cloudflareaccess.com",
+describe("Cloudflare Access assertions", () => {
+  it("verifies a real signed assertion and reuses the local Access JWKS transport", async () => {
+    let { publicKey, privateKey } = await generateKeyPair("RS256");
+    let publicJwk = await exportJWK(publicKey);
+    publicJwk.kid = "test-key";
+    let token = await new SignJWT({ sub: "user-1", email: "person@example.com" })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setIssuer(accessEnv.CF_ACCESS_ISS)
+      .setAudience(accessEnv.CF_ACCESS_AUD)
+      .setIssuedAt()
+      .setExpirationTime("1h")
+      .sign(privateKey);
+    let jwksRequests = 0;
+    let accessTransport: typeof fetch = async input => {
+      let url = new URL(input.toString());
+      if (url.pathname !== "/cdn-cgi/access/certs") return new Response(null, { status: 404 });
+      jwksRequests++;
+      return Response.json({ keys: [publicJwk] });
     };
+    let request = new Request("https://workshop.example/api", {
+      headers: { "cf-access-jwt-assertion": token },
+    });
 
-    await verifyCfAccessJwt(request, accessEnv);
-    await verifyCfAccessJwt(request, accessEnv);
-    await verifyCfAccessJwt(request, otherEnv);
-
-    expect(joseMocks.createRemoteJWKSet).toHaveBeenCalledTimes(2);
-    expect(joseMocks.createRemoteJWKSet).toHaveBeenNthCalledWith(
-      1, new URL("https://team.cloudflareaccess.com/cdn-cgi/access/certs"),
-    );
-    expect(joseMocks.createRemoteJWKSet).toHaveBeenNthCalledWith(
-      2, new URL("https://other-team.cloudflareaccess.com/cdn-cgi/access/certs"),
-    );
+    await expect(verifyCfAccessJwt(request, accessEnv, undefined, accessTransport)).resolves
+      .toMatchObject({ sub: "user-1", email: "person@example.com" });
+    await expect(verifyCfAccessJwt(request, accessEnv, undefined, accessTransport)).resolves.not.toBeNull();
+    expect(jwksRequests).toBe(1);
   });
 
   it("rejects missing and invalid assertions", async () => {
     const requestWithoutToken = new Request("https://workshop.example/api/client-errors");
-    const verifier = vi.fn();
-    const missing = await verifyCfAccessJwt(requestWithoutToken, accessEnv, verifier);
-    expect(missing).toBeNull();
-    expect(verifier).not.toHaveBeenCalled();
+    await expect(verifyCfAccessJwt(requestWithoutToken, accessEnv)).resolves.toBeNull();
 
     const requestWithToken = new Request("https://workshop.example/api/client-errors", {
       headers: { "cf-access-jwt-assertion": "invalid" },
     });
-    verifier.mockRejectedValue(new Error("invalid signature"));
-    const invalid = await verifyCfAccessJwt(requestWithToken, accessEnv, verifier);
-    expect(invalid).toBeNull();
+    await expect(verifyCfAccessJwt(requestWithToken, accessEnv)).resolves.toBeNull();
   });
 
-  it("returns claims only after verification", async () => {
-    const request = new Request("https://workshop.example/api", {
-      headers: { "cf-access-jwt-assertion": "signed-token" },
+  it("accepts only matching Access identity data and forwards only CF_Authorization", async () => {
+    let request = new Request("https://workshop.example/api", {
+      headers: { Cookie: "unrelated=value; CF_Authorization=identity-cookie" },
     });
-    const verifier = vi.fn().mockResolvedValue({
+    let sentCookie: string | null = null;
+    let accessTransport: typeof fetch = async (_input, init) => {
+      sentCookie = new Headers(init?.headers).get("Cookie");
+      return Response.json({ id: "user-1", email: "person@example.com", iat: 100 });
+    };
+    await expect(readCfAccessLoginIdentity(request, accessEnv, {
       sub: "user-1", email: "person@example.com",
-    });
+    }, accessTransport)).resolves.toBe(100);
+    expect(sentCookie).toBe("CF_Authorization=identity-cookie");
+    await expect(readCfAccessLoginIdentity(request, accessEnv, {
+      sub: "user-1", email: "other@example.com",
+    }, accessTransport)).resolves.toBeNull();
+  });
 
-    await expect(verifyCfAccessJwt(request, accessEnv, verifier)).resolves.toEqual({
-      sub: "user-1", email: "person@example.com",
+  it("accepts production Access get-identity payloads that use user_uuid", async () => {
+    let request = new Request("https://workshop.example/api", {
+      headers: { Cookie: "CF_Authorization=identity-cookie" },
     });
+    let accessTransport: typeof fetch = async () => Response.json({
+      user_uuid: "bc601fc0-ba60-520f-b917-805bc3e12b41",
+      email: "person@example.com",
+      iat: 1786629080,
+    });
+    await expect(readCfAccessLoginIdentity(request, accessEnv, {
+      sub: "bc601fc0-ba60-520f-b917-805bc3e12b41", email: "person@example.com",
+    }, accessTransport)).resolves.toBe(1786629080);
+    await expect(readCfAccessLoginIdentity(request, accessEnv, {
+      sub: "other-subject", email: "person@example.com",
+    }, accessTransport)).resolves.toBeNull();
   });
 });
 

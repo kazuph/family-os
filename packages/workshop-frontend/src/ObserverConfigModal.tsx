@@ -7,6 +7,7 @@ import {
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   ObserverAccountChoice,
+  unwrapFamilyRpcResult,
 } from '@gadgets/workshop-shared/api'
 import {
   AccountDescription,
@@ -213,10 +214,10 @@ export default function ObserverConfigModal({
         await authenticatedApi.provisionAmbientAccount(vendorId)
       } else {
         const required = requiredResourceUrlPatterns(need, vendor)
-        const { url } = await authenticatedApi.connectAccount(
+        const { url } = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(
           vendorId,
           required.length > 0 ? required : undefined,
-        )
+        ))
         window.open(url, '_blank', 'noopener,noreferrer')
       }
     } catch (err) {

@@ -6,6 +6,8 @@
 // Flags:
 //   --use-workers-ai-binding   Include the Workers AI binding in
 //                               workshop-backend (requires Cloudflare login).
+//   --remote-ai                Connect the Workers AI binding to the remote service
+//                               while keeping the Worker runtime local.
 //
 // Env:
 //   VITE_BACKEND_HOST=localhost:9000  Also pass --port 9000 to wrangler dev.
@@ -43,7 +45,8 @@ function loadDevVars() {
 }
 loadDevVars();
 
-const useWorkersAi = process.argv.includes("--use-workers-ai-binding");
+const useRemoteAi = process.argv.includes("--remote-ai");
+const useWorkersAi = process.argv.includes("--use-workers-ai-binding") || useRemoteAi;
 
 // Generate the format blueprint module before Wrangler tries to bundle the backend. The output is
 // gitignored, so it will not exist on a clean checkout.
@@ -102,6 +105,11 @@ function spawnDevWatcher(label, command, args) {
 }
 
 for (const gk of gatekeepers) {
+  // Evidence / Access-local stacks often set FAMILY_SKIP_GATEKEEPERS=1 and do not load gatekeeper
+  // Workers. Skip their UI rebuild/watchers so wrangler's custom build is not raced by unrelated
+  // Vite app watchers rewriting packages/*/src/generated while validate output is being checked.
+  if (process.env.FAMILY_SKIP_GATEKEEPERS === "1") continue;
+
   // Configurator UI (compiled by build-gatekeeper-configurator.mjs).
   if (existsSync(join(gk.dir, "src", "configurator"))) {
     const script = join(ROOT, "scripts", "build-gatekeeper-configurator.mjs");
@@ -245,8 +253,30 @@ for (const gk of gatekeepers) {
     // ACCOUNT_ID/API_TOKEN pair is required whenever CF_AI_GATEWAY is set (all inference goes
     // over HTTPS with tokens).
     "CF_AI_GATEWAY", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_ACCOUNT_ID",
-    "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_WAI", "CF_AI_GATEWAY_WAI_DIRECT",
+    "CF_AI_GATEWAY_WAI", "CF_AI_GATEWAY_WAI_DIRECT",
+    "CF_ACCESS_AUD", "CF_ACCESS_ISS",
   ];
+  // Keep the Gateway token out of generated wrangler.dev.jsonc vars. Wrangler loads required
+  // local secrets from the inherited process environment, which lets dotenvx decrypt it only
+  // for this run instead of persisting it in a generated config file.
+  if (process.env.CF_AI_GATEWAY) {
+    config.secrets = {
+      ...config.secrets,
+      required: [...new Set([
+        ...(config.secrets?.required || []),
+        "CF_AI_GATEWAY_API_TOKEN",
+      ])],
+    };
+  }
+  if (process.env.OPENCODE_GO_API_TOKEN) {
+    config.secrets = {
+      ...config.secrets,
+      required: [...new Set([
+        ...(config.secrets?.required || []),
+        "OPENCODE_GO_API_TOKEN",
+      ])],
+    };
+  }
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).
   for (const name of OPTIONAL_FEATURE_VARS) {
@@ -268,7 +298,7 @@ for (const gk of gatekeepers) {
   }
 
   if (useWorkersAi) {
-    config.ai = { binding: "WORKERS_AI" };
+    config.ai = { binding: "WORKERS_AI", ...(useRemoteAi ? { remote: true } : {}) };
   }
 
   // In run-local mode, serve the pre-built frontend bundle as static assets directly from the
@@ -285,6 +315,17 @@ for (const gk of gatekeepers) {
 
   config.build = { ...config.build, cwd: WORKSHOP_BACKEND_DIR };
 
+  if (process.env.CF_ACCESS_AUD) {
+    config.services.push({ binding: "ACCESS_IDENTITY", service: "local-access-emulator" });
+    const emulatorPath = join(WORKSHOP_BACKEND_DIR, "wrangler.dev-access-emulator.jsonc");
+    writeFileSync(emulatorPath, JSON.stringify({
+      name: "local-access-emulator",
+      main: "__integration__/local-access-emulator.js",
+      compatibility_date: "2026-02-02",
+    }, null, 2) + "\n");
+    console.log(`generated: ${emulatorPath}`);
+  }
+
   const outPath = join(ROOT, "packages", "workshop-backend", "wrangler.dev.jsonc");
   writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
   console.log(`generated: ${outPath}`);
@@ -297,7 +338,12 @@ for (const gk of gatekeepers) {
 const configs = [
   "wrangler.dev.jsonc",
   join("packages", "workshop-backend", "wrangler.dev.jsonc"),
-  ...gatekeepers.map(gk => join(gk.dir, "wrangler.dev.jsonc")),
+  ...(process.env.CF_ACCESS_AUD && process.env.FAMILY_EXTERNAL_ACCESS_EMULATOR !== "1"
+    ? [join("packages", "workshop-backend", "wrangler.dev-access-emulator.jsonc")]
+    : []),
+  ...(process.env.FAMILY_SKIP_GATEKEEPERS === "1"
+    ? []
+    : gatekeepers.map(gk => join(gk.dir, "wrangler.dev.jsonc"))),
 ];
 
 const args = configs.flatMap(c => ["-c", c]);
@@ -318,6 +364,10 @@ if (backendHost) {
         "VITE_BACKEND_HOST did not include a port, so run-dev-server.js could not derive " +
         "a Wrangler --port override.");
   }
+}
+// Optional isolated Durable Object / local state root (e.g. clean Family evidence household).
+if (process.env.FAMILY_PERSIST_TO) {
+  args.push("--persist-to", process.env.FAMILY_PERSIST_TO);
 }
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 

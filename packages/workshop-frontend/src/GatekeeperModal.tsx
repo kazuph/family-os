@@ -17,6 +17,7 @@ import {
   AiChatAuthorInfo,
   GatekeeperClient,
   Overseer,
+  unwrapFamilyRpcResult,
 } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
 import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
@@ -594,7 +595,7 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
+      const result = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
       window.open(result.url, '_blank', 'noopener,noreferrer')
       toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })
     } catch (error) {

@@ -2,7 +2,7 @@ import { logRpcFailure } from './rpcErrors'
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
-import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
@@ -199,7 +199,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId)
+      const result = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId))
       window.open(result.url, '_blank', 'noopener,noreferrer')
       toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })
     } catch (err) {

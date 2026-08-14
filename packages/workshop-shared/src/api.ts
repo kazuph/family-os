@@ -61,8 +61,8 @@ export interface PublicApi extends RpcTarget {
   // Like authenticate() but the server is expected to be sitting behind Cloudflare Access, and the
   // client is expected to have already authenticated with Access (before they could load the
   // application in their browser at all). The credentials from the Cloudflare Access session will
-  // be used to authenticate the user.
-  authenticateFromCfAccess(): Promise<AuthenticatedApi>;
+  // be used to authenticate the adult and return a Family OS entry capability for that browser.
+  authenticateFromCfAccess(): Promise<RpcStub<FamilyEntry>>;
 
   // Login with username and password.
   //
@@ -189,6 +189,22 @@ export function validateBindingName(name: string): void {
   }
 }
 
+/** Default title written when a chat is created, before the agent names it with `setChatTitle`. */
+export const DEFAULT_CHAT_TITLE = "New Chat";
+
+/**
+ * Normalize a chat title: strip control characters, collapse whitespace, trim.
+ * Throws if the result is empty. Same shape as gadget-title checks (`createGadget`); there is no
+ * separate numeric cap — agent length guidance stays the existing "2-8 words" phrase.
+ */
+export function normalizeChatTitle(title: string): string {
+  let normalized = title.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    throw new Error("A chat requires a non-empty title.");
+  }
+  return normalized;
+}
+
 // Why a previously-configured observer binding failed verification on this open attempt. Attached to
 // the ObserverBindingNeed the overseer re-prompts with, so the client can explain what went wrong
 // instead of dead-ending the open.
@@ -292,6 +308,7 @@ export const getOpenGadgetErrorCode = openGadgetErrors.getCode;
 export const AUTH_ERROR_CODES = {
   invalidSessionToken: "INVALID_SESSION_TOKEN",
   notAuthenticatedWithAccess: "NOT_AUTHENTICATED_WITH_ACCESS",
+  accessAuthenticationRequired: "ACCESS_AUTHENTICATION_REQUIRED",
 } as const;
 
 /** An expected authentication failure code. */
@@ -302,6 +319,7 @@ export type AuthErrorCode = typeof AUTH_ERROR_CODES[keyof typeof AUTH_ERROR_CODE
 export const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
   [AUTH_ERROR_CODES.invalidSessionToken]: "invalid session token",
   [AUTH_ERROR_CODES.notAuthenticatedWithAccess]: "Not authenticated with Access.",
+  [AUTH_ERROR_CODES.accessAuthenticationRequired]: "This deployment requires Cloudflare Access authentication.",
 };
 
 const authErrors = codedErrorFamily(AUTH_ERROR_MESSAGES);
@@ -311,6 +329,119 @@ export const createAuthError = authErrors.create;
 
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
+
+/** Digit length of the shared household adult passcode in Family OS. */
+export const FAMILY_ADULT_PASSCODE_LENGTH = 6;
+
+/** True when `value` is exactly the shared Family OS adult passcode format (six digits). */
+export function isFamilyAdultPasscode(value: string): boolean {
+  return new RegExp(`^\\d{${FAMILY_ADULT_PASSCODE_LENGTH}}$`).test(value);
+}
+
+/** Stable error codes returned by Family OS profile transitions. */
+export const FAMILY_ERROR_CODES = {
+  passcodeRequired: "FAMILY_PASSCODE_REQUIRED",
+  passcodeInvalid: "FAMILY_PASSCODE_INVALID",
+  passcodeReauthenticationRequired: "FAMILY_PASSCODE_REAUTHENTICATION_REQUIRED",
+  profileSelectionRequired: "FAMILY_PROFILE_SELECTION_REQUIRED",
+  profileNotFound: "FAMILY_PROFILE_NOT_FOUND",
+  adultProfileRequired: "FAMILY_ADULT_PROFILE_REQUIRED",
+  profileCapabilityRevoked: "FAMILY_PROFILE_CAPABILITY_REVOKED",
+} as const;
+
+/** A stable Family OS profile-transition error code. */
+export type FamilyErrorCode = typeof FAMILY_ERROR_CODES[keyof typeof FAMILY_ERROR_CODES];
+/** Result envelope for expected Family OS profile failures crossing the RPC boundary. */
+export type FamilyRpcResult<T> = { ok: true; value: T } | { ok: false; error: FamilyErrorCode };
+
+/** Human-readable fallback messages for Family OS profile-transition errors. */
+export const FAMILY_ERROR_MESSAGES: Record<FamilyErrorCode, string> = {
+  [FAMILY_ERROR_CODES.passcodeRequired]: "子どもプロフィールを選ぶ前に、共有パスコードを設定してください。",
+  [FAMILY_ERROR_CODES.passcodeInvalid]: "共有パスコードが正しくありません。",
+  [FAMILY_ERROR_CODES.passcodeReauthenticationRequired]: "Cloudflare Accessでの再認証が必要です。",
+  [FAMILY_ERROR_CODES.profileSelectionRequired]: "続ける前に家族プロフィールを選んでください。",
+  [FAMILY_ERROR_CODES.profileNotFound]: "選択した家族プロフィールは存在しません。",
+  [FAMILY_ERROR_CODES.adultProfileRequired]: "この操作には大人プロフィールが必要です。",
+  [FAMILY_ERROR_CODES.profileCapabilityRevoked]: "この家族プロフィールの権限はすでに無効です。",
+};
+
+const familyErrors = codedErrorFamily(FAMILY_ERROR_MESSAGES);
+
+/** Creates a Family OS profile-transition error with a machine-readable code. */
+export const createFamilyError = familyErrors.create;
+
+/** Reads the machine-readable code from a Family OS profile-transition error. */
+export const getFamilyErrorCode = familyErrors.getCode;
+
+/** Unwraps a Family OS RPC result, throwing a coded error when the server reports failure. */
+export function unwrapFamilyRpcResult<T>(result: FamilyRpcResult<T>): T {
+  if (!result.ok) throw createFamilyError(result.error);
+  return result.value;
+}
+
+/** The 32 approved Family OS monster avatar asset identifiers (8 shapes × 4 color phases). */
+export const FAMILY_MONSTER_AVATAR_IDS = [
+  "monster-01-warm", "monster-01-cool", "monster-01-violet", "monster-01-cyan",
+  "monster-02-warm", "monster-02-cool", "monster-02-violet", "monster-02-cyan",
+  "monster-03-warm", "monster-03-cool", "monster-03-violet", "monster-03-cyan",
+  "monster-04-warm", "monster-04-cool", "monster-04-violet", "monster-04-cyan",
+  "monster-05-warm", "monster-05-cool", "monster-05-violet", "monster-05-cyan",
+  "monster-06-warm", "monster-06-cool", "monster-06-violet", "monster-06-cyan",
+  "monster-07-warm", "monster-07-cool", "monster-07-violet", "monster-07-cyan",
+  "monster-08-warm", "monster-08-cool", "monster-08-violet", "monster-08-cyan",
+] as const;
+
+/** One approved Family OS monster avatar asset identifier. */
+export type FamilyMonsterAvatarId = typeof FAMILY_MONSTER_AVATAR_IDS[number];
+
+/** A selectable child or direct adult profile in one Family OS deployment. */
+export type FamilyProfile =
+  | { kind: "unselected"; id: "unselected" }
+  | { kind: "adult"; id: "adult"; monsterAvatarId?: FamilyMonsterAvatarId }
+  | { kind: "child"; id: string; name: string; monsterAvatarId?: FamilyMonsterAvatarId };
+
+/** The Family OS profile state bound to the current browser device. */
+export type FamilyState = {
+  activeProfile: FamilyProfile;
+  childProfiles: Extract<FamilyProfile, { kind: "child" }>[];
+  /** The Access adult's approved monster avatar when one has been chosen for this household member. */
+  adultMonsterAvatarId?: FamilyMonsterAvatarId;
+  passcodeConfigured: boolean;
+  requiresAccessReauthentication: boolean;
+};
+
+/**
+ * Server-issued Family OS entry capability bound to one verified Access adult and browser device.
+ * It never exposes an adult API while that device is in child mode or requires reauthentication.
+ */
+export interface FamilyEntry extends RpcTarget {
+  /** Returns the current device's selected profile and all child profiles in this household. */
+  getState(): Promise<FamilyState>;
+
+  /** Mints an API capability only for the profile currently selected on this browser device. */
+  getAuthenticatedApi(): Promise<FamilyRpcResult<RpcStub<AuthenticatedApi>>>;
+
+  /** Selects the verified Access adult after a newer login event or the shared passcode check. */
+  selectAdultProfile(passcode?: string): Promise<FamilyRpcResult<void>>;
+
+  /** Sets the one shared six-digit household passcode while an adult profile is active. */
+  setHouseholdPasscode(passcode: string): Promise<FamilyRpcResult<FamilyState>>;
+
+  /** Creates a child profile without an email or Access identity. */
+  createChildProfile(name: string): Promise<FamilyRpcResult<FamilyState>>;
+
+  /** Sets the active adult or child profile's approved monster avatar. */
+  setMonsterAvatar(avatarId: FamilyMonsterAvatarId): Promise<FamilyRpcResult<FamilyState>>;
+
+  /** Selects a child profile and invalidates the current API session before the next reconnect. */
+  selectChildProfile(profileId: string): Promise<FamilyRpcResult<void>>;
+
+  /**
+   * Attempts to leave child mode. A valid shared passcode is required; three failed attempts force
+   * a newer Cloudflare Access authentication before any API capability can be minted.
+   */
+  switchToAdultProfile(passcode: string): Promise<FamilyRpcResult<void>>;
+}
 
 // Top-level API exposed to the user after they have authenticated.
 export interface AuthenticatedApi extends RpcTarget {
@@ -336,15 +467,17 @@ export interface AuthenticatedApi extends RpcTarget {
   listModels(): Promise<AiChatAuthorInfo[]>;
 
   // Adds a new model to the user's configured set. The ID must be unique among the user's
-  // configured models.
-  addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void>;
+  // configured models. Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` instead of
+  // mutating — model setup stays adult-only while list/get reads remain available for AI use.
+  addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<FamilyRpcResult<void>>;
 
-  // Deletes a configured model.
-  deleteModel(id: string): Promise<void>;
+  // Deletes a configured model. Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+  deleteModel(id: string): Promise<FamilyRpcResult<void>>;
 
   // Set the model to use for simple quick tasks, like generating chat titles. Set null to
   // disable quick model use (e.g. chats will be titled "New Chat").
-  setQuickModel(id: string | null): Promise<void>;
+  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+  setQuickModel(id: string | null): Promise<FamilyRpcResult<void>>;
 
   // Get the quick model setting.
   getQuickModel(): Promise<null | string>;
@@ -361,7 +494,8 @@ export interface AuthenticatedApi extends RpcTarget {
   getPreferredModel(): Promise<string | null>;
 
   // Set the user's preferred model. Pass null to indicate "No agent".
-  setPreferredModel(id: string | null): Promise<void>;
+  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+  setPreferredModel(id: string | null): Promise<FamilyRpcResult<void>>;
 
   // Returns true if the user has completed the onboarding wizard.
   isOnboardingCompleted(): Promise<boolean>;
@@ -457,7 +591,9 @@ export interface AuthenticatedApi extends RpcTarget {
   // `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
   // grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
   // authorization for all of the vendor's resource types is requested.
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}>;
+  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (connector setup is adult-only).
+  connectAccount(vendorId: string, resourceUrlPatterns?: string[])
+      : Promise<FamilyRpcResult<{url: string}>>;
 
   // Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
   // on a connected account, expanding if needed. Returns a URL to open in a new tab to authorize
@@ -698,7 +834,7 @@ export const MAX_SITE_NAME_LENGTH = 40;
 
 // What this deployment calls itself when the admin has not set a custom `siteName`. Also the
 // product's own name, so it appears in prose the server and UI address to the user.
-export const DEFAULT_SITE_NAME = "Cloudflare OS";
+export const DEFAULT_SITE_NAME = "Family OS";
 
 // The name to display for this deployment. Accepts an unset or not-yet-loaded `siteName` so both
 // the server (reading admin config) and the client (reading ServerConfig) resolve it identically.
@@ -944,7 +1080,8 @@ export type CloudflareAccountOption = {
 };
 
 // Supported AI providers.
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
+export type AiModelProvider =
+  "opencode-go" | "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
 
 // Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`.
 export type AiGatewayInfo = {
@@ -986,6 +1123,11 @@ export const SUGGESTED_MODELS: Record<
   AiModelProvider,
   Record<string, {name: string, contextWindow: number, outputLimit?: number}>
 > = {
+  "opencode-go": {
+    "deepseek-v4-flash": {
+      name: "DeepSeek V4 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
+    },
+  },
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
@@ -1562,8 +1704,8 @@ export interface Overseer extends RpcTarget {
   // Delete an uploaded attachment that the user explicitly removed before sending the message.
   deleteChatAttachment(id: string): Promise<void>;
 
-  // Update the title of a chat. Usually not needed as a title is generated automatically from
-  // the first message.
+  // Update the title of a chat. The coding agent also has a `setChatTitle` tool, a capability on
+  // the current thread only, so it can replace `DEFAULT_CHAT_TITLE` from the conversation itself.
   setChatTitle(chatId: number, title: string): Promise<void>;
 
   // Indicates that the user has requested that proposed changes through the given sequence number
@@ -1697,8 +1839,9 @@ export interface Overseer extends RpcTarget {
   // caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
   // access level granted to anyone who redeems the link; the caller may not grant a role higher
   // than their own effective role.
+  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (sharing is adult-only).
   createShareLink(role: CollaboratorRole, note?: string)
-      : Promise<{ key: string; linkId: string }>;
+      : Promise<FamilyRpcResult<{ key: string; linkId: string }>>;
 
   // Mint a fresh secret for an existing link so the user can copy a new URL without creating a
   // whole new link. The old secrets remain valid, and revoking the link revokes them all together.
@@ -1787,6 +1930,9 @@ export type AiChatAuthorInfo = {
 
   // Display name for author, e.g. "Kenton Varda" or "GPT"
   name: string;
+
+  /** True when this model profile is supplied and controlled by the deployment. */
+  managedByDeployment?: true;
 
   // Note: the avatar is intentionally not included here to keep this type lightweight (it's
   // embedded in every chat message). Fetch user avatars separately via
@@ -2192,6 +2338,15 @@ export type AiToolCall = {
     bindingName?: string;
   };
   output?: string;
+} | {
+  // Rename the current chat. The tool takes no chat id: it is a capability on this thread only.
+  // Recorded so replay does not re-apply the rename.
+  toolName: "setChatTitle";
+  input: {
+    // Human-readable title for this chat. Required, non-empty after `normalizeChatTitle()`.
+    title: string;
+  };
+  output?: {title: string};
 });
 
 // TODO: Extend AiToolCall for code-mode tool calls.
@@ -2824,7 +2979,9 @@ export interface GadgetClient extends WorkpieceClient {
   // Steps: generate ID, snapshot code, collect binding metadata, store locally, propagate
   // to User DO + KV + R2. Maintenance of existing blueprints stays on Overseer (see
   // Overseer.updateBlueprint() etc.).
-  createBlueprint(title?: string, description?: string, screenshot?: BlueprintScreenshotUpload): Promise<BlueprintGadgetSummary>;
+  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (publishing is adult-only).
+  createBlueprint(title?: string, description?: string, screenshot?: BlueprintScreenshotUpload)
+      : Promise<FamilyRpcResult<BlueprintGadgetSummary>>;
 }
 
 // Capability representing one gatekeeper (connection) workpiece. Note that binding-edge

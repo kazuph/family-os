@@ -79,7 +79,8 @@ function account(id: number, uniqueName: string, grantedResourceUrlPatterns?: st
 }
 
 type ApiOverrides = {
-  connectAccount?: Mock<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>>
+  connectAccount?: Mock<(vendorId: string, resourceUrlPatterns?: string[]) =>
+    Promise<{ ok: true; value: { url: string } }>>
   ensureAccountResources?: Mock<(
     accountId: number,
     resourceUrlPatterns: string[],
@@ -106,7 +107,8 @@ function fakeApi(
     }],
     listAddableGatekeepers: async () => [],
     connectAccount: overrides.connectAccount ??
-      vi.fn<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>>(),
+      vi.fn<(vendorId: string, resourceUrlPatterns?: string[]) =>
+        Promise<{ ok: true; value: { url: string } }>>(),
     ensureAccountResources: overrides.ensureAccountResources ??
       vi.fn<(accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>>(),
     reconnectAccount: overrides.reconnectAccount ??
@@ -168,8 +170,9 @@ describe('ObserverConfigModal account selection', () => {
 
   it('requests the resource scope when connecting a new account', async () => {
     const connectAccount = vi.fn<
-      (vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>
-    >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
+      (vendorId: string, resourceUrlPatterns?: string[]) =>
+        Promise<{ ok: true; value: { url: string } }>
+    >().mockResolvedValue({ ok: true, value: { url: 'https://accounts.google.test/oauth' } })
     vi.spyOn(window, 'open').mockImplementation(() => null)
     const rendered = await render([], {
       api: fakeApi([], { connectAccount }),

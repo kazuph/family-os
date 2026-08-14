@@ -21,6 +21,7 @@ import {
   SidebarWorkspacesLists,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
+import { familyLabel, familyUi } from '../../familyUi'
 
 // The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
 // the user can always reach Search, primary nav, and the bottom utility strip no matter how many
@@ -47,7 +48,7 @@ export default function Sidebar({
 
   return (
     <aside
-      aria-label="Primary"
+      aria-label={familyLabel('Primary', 'メイン')}
       className={[
         // Sidebar is the app chrome: a hair greyer than the (lighter) content canvas so the two
         // surfaces read as distinct without a heavy divider.
@@ -78,8 +79,8 @@ export default function Sidebar({
             <button
               type="button"
               onClick={() => openCommandPalette()}
-              aria-label="Search"
-              title="Search (⌘K)"
+              aria-label={familyLabel('Search', familyUi.search)}
+              title={familyLabel('Search (⌘K)', `${familyUi.search}（⌘K）`)}
               className="press flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <MagnifyingGlass size={15} />
@@ -87,8 +88,8 @@ export default function Sidebar({
             <button
               type="button"
               onClick={onToggleCollapsed}
-              aria-label="Collapse sidebar"
-              title="Collapse sidebar"
+              aria-label={familyLabel('Collapse sidebar', familyUi.collapseSidebar)}
+              title={familyLabel('Collapse sidebar', familyUi.collapseSidebar)}
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <SidebarSimple size={15} />
@@ -102,8 +103,8 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          aria-label="Expand sidebar"
-          title="Expand sidebar"
+          aria-label={familyLabel('Expand sidebar', familyUi.expandSidebar)}
+          title={familyLabel('Expand sidebar', familyUi.expandSidebar)}
           className="mx-auto mt-2 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
         >
           <SidebarSimple size={15} className="rotate-180" />
@@ -117,25 +118,25 @@ export default function Sidebar({
           <nav className="flex flex-col gap-0.5 px-2">
             <SidebarItem
               to="/"
-              label="Home"
+              label={familyLabel('Home', familyUi.home)}
               icon={<House size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/workspaces"
-              label="Workspaces"
+              label={familyLabel('Workspaces', familyUi.workspaces)}
               icon={<SquaresFour size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/blueprints"
-              label="Blueprints"
+              label={familyLabel('Blueprints', familyUi.blueprints)}
               icon={<Blueprint size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/outputs"
-              label="Outputs"
+              label={familyLabel('Outputs', familyUi.outputs)}
               icon={<Stack size={14} weight="regular" />}
               collapsed={collapsed}
             />
@@ -180,7 +181,7 @@ export default function Sidebar({
             })}
             <SidebarItem
               to="/explore"
-              label="Explore"
+              label={familyLabel('Explore', familyUi.explore)}
               icon={<Compass size={14} weight="regular" />}
               collapsed={collapsed}
             />

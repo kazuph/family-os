@@ -62,6 +62,11 @@ function getBackendHost(): string {
   const backendHost = import.meta.env.VITE_BACKEND_HOST?.trim();
   if (backendHost) return backendHost;
 
+  // Access mode must keep the API on the page origin so the Worker origin check passes in dev.
+  if (import.meta.env.DEV && import.meta.env.VITE_CF_ACCESS_MODE === 'true') {
+    return window.location.host;
+  }
+
   // When opening the Vite dev server directly (localhost:3000), the backend is at localhost:8787.
   // Otherwise, the API is on the same host as the frontend.
   return window.location.hostname === 'localhost' ? 'localhost:8787' : window.location.host;

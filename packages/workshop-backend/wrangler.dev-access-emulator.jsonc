@@ -1,0 +1,5 @@
+{
+  "name": "local-access-emulator",
+  "main": "__integration__/local-access-emulator.js",
+  "compatibility_date": "2026-02-02"
+}

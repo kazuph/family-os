@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, type MutableRefObjec
 import { Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { Plus, CaretRight, Warning } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
-import { AuthenticatedApi, ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
+import { AuthenticatedApi, ConnectedAccountsSubscriber, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
 import { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import { extractHostname, extractBaseUrl, matchesResource, matchesResourceText, classifyMatch, getPlaceholderRanges } from './resourceMatching'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
@@ -418,7 +418,7 @@ export default function ResourcePicker({
   const handleConnectNew = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
+      const result = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
       window.open(result.url, '_blank', 'noopener,noreferrer')
     } catch (error) {
       console.error('Failed to initiate connection:', error)

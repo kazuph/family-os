@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, FAMILY_ERROR_CODES, type FamilyRpcResult, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, AGENT_CATALOG_MAX_ENTRIES, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -38,6 +38,7 @@ import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } fro
 import { AutoApprovalDrainer } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
+import { assertAdultFamilyProfile } from "./family.js";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import {
   assertChatAttachmentSupportedByProvider,
@@ -3449,7 +3450,7 @@ class OverseerImpl implements AgentHooks {
       chatId = this.nextChatId();
       let meta: AiChatMetadata = {
         id: chatId,
-        title: "New Chat",   // filled in later by AI
+        title: DEFAULT_CHAT_TITLE,   // filled in later by the agent via setChatTitle
         started: timestamp,
         lastActive: timestamp,
       };
@@ -5172,32 +5173,48 @@ class OverseerImpl implements AgentHooks {
                 `${initialMessage}`,
       });
 
+      let title = normalizeChatTitle(result);
       let meta = this.storage.chatMeta.get(chatId);
-      if (!meta) {
-        // Chat thread deleted?
+      if (!meta || meta.title !== DEFAULT_CHAT_TITLE) {
+        // Chat deleted, or the agent/user already named it. Do not overwrite.
         return;
       }
 
       meta.lastActive = this.getChatTimestamp();
-      meta.title = result;
+      meta.title = title;
       this.storage.chatMeta.put(meta);
 
       // Also rename the gadget if this is the first chat. Since the gadget likely doesn't have
       // any code yet, the user still sees it as just a chat, and therefore it makes sense to
       // apply the same title as the chat itself.
       if (chatId === 0 && ["Untitled Gadget", "Untitled Workspace"].includes(this.storage.title.get()) && this.ownerId) {
-        this.storage.title.put(result);
+        this.storage.title.put(title);
         let owner = this.users.get(this.users.idFromString(this.ownerId));
-        await owner.updateTitle(this.ctx.id.toString(), result);
+        await owner.updateTitle(this.ctx.id.toString(), title);
       }
 
       // TODO: Should we track costs for title generation? It's pretty negligible.
     } catch (err) {
-      // Oh well, just leave the title as "New Chat".
+      // Oh well, just leave the title as DEFAULT_CHAT_TITLE.
       this.logger.warn("error generating chat title", {
         event: "chat.title.generate.failed", chatId, error: err,
       });
     }
+  }
+
+  // Rename a chat. Shared by the RPC `setChatTitle` and the agent's current-thread tool.
+  // Family child profiles are not adult-gated here: children can chat, and the agent names
+  // their threads the same way. Observer/"use" sessions never reach this method (`#deny()`).
+  setChatTitle(chatId: number, title: string): string {
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta) {
+      throw new Error("No such chatId: " + chatId);
+    }
+    let normalized = normalizeChatTitle(title);
+    meta.lastActive = this.getChatTimestamp();
+    meta.title = normalized;
+    this.storage.chatMeta.put(meta);
+    return normalized;
   }
 
   // Generate a title for the whole gadget, called only after code starts being written.
@@ -6350,7 +6367,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async open(userId: string, profileId: string,
              notifyClosed: NativeRpcStub<() => void>,
              shareKey?: string,
-             configureObservers?: RpcStub<ObserverConfigCallback>): Promise<Overseer> {
+             configureObservers?: RpcStub<ObserverConfigCallback>,
+             familyChildRestricted?: boolean): Promise<Overseer> {
     let firstOpen = !this.impl.ownerId;
     if (firstOpen) {
       // This Overseer hasn't been initialized yet.
@@ -6484,7 +6502,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     return new OverseerClientInterface(
         this.impl, owner, clientUser, profileId, userId, isOwner, notifyClosed.dup(),
-        ensureCapsules);
+        ensureCapsules, familyChildRestricted === true);
   }
 
   #getExternalChat(externalChatKey: string): ExternalChatRecord | undefined {
@@ -7128,7 +7146,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
               private notifyClosed: NativeRpcStub<() => void>,
               // Ambient capsule reconciliation started during open(); listSlashCommands() waits for
               // this so ambient providers are attached when possible.
-               private slashCommandsReady: Promise<void>) {
+               private slashCommandsReady: Promise<void>,
+               private familyChildRestricted = false) {
     super();
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "build", () => this.#getClientProfile());
@@ -7148,6 +7167,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // Per-session caller identity for the SharingManager.
   #sharingCaller(): SharingCaller {
     return { profileId: this.clientProfileId, isOwner: this.isOwner };
+  }
+
+  #assertAdultFamilyAction(): void {
+    assertAdultFamilyProfile(this.familyChildRestricted);
   }
 
   async #getClientProfile(): Promise<AiChatAuthorInfo> {
@@ -7308,14 +7331,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
-    return new GadgetClientImpl(this.impl, record.id, this.clientUser);
+    return new GadgetClientImpl(this.impl, record.id, this.clientUser, this.familyChildRestricted);
   }
 
   async getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>> {
     this.impl.getGadgetRecord(id);  // validate it exists
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
-    return new GadgetClientImpl(this.impl, id, this.clientUser);
+    return new GadgetClientImpl(this.impl, id, this.clientUser, this.familyChildRestricted);
   }
 
   async deleteSelf(): Promise<void> {
@@ -8210,13 +8233,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async setChatTitle(chatId: number, title: string): Promise<void> {
-    let meta = this.impl.storage.chatMeta.get(chatId);
-    if (!meta) {
-      throw new Error("No such chatId: " + chatId);
-    }
-    meta.lastActive = this.impl.getChatTimestamp();
-    meta.title = title;
-    this.impl.storage.chatMeta.put(meta);
+    this.impl.setChatTitle(chatId, title);
   }
 
   async mergeChanges(chatId: number, mergeThrough: number | null,
@@ -8532,6 +8549,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // --- Blueprint management ---
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
+    this.#assertAdultFamilyAction();
     let result: BlueprintGadgetSummary[] = [];
     for (let record of this.impl.storage.blueprints.list()) {
       // Look up the timestamp of the exported code version.
@@ -8556,6 +8574,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     updateBindings?: boolean;
     screenshot?: BlueprintScreenshotUpload | null;
   }): Promise<void> {
+    this.#assertAdultFamilyAction();
     let record = this.impl.storage.blueprints.get(blueprintId);
     if (!record) throw new Error("No such blueprint.");
 
@@ -8593,6 +8612,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async deleteBlueprint(blueprintId: string): Promise<void> {
+    this.#assertAdultFamilyAction();
     let record = this.impl.storage.blueprints.get(blueprintId);
     if (!record) throw new Error("No such blueprint.");
 
@@ -8607,6 +8627,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async retryBlueprintPublish(blueprintId: string): Promise<void> {
+    this.#assertAdultFamilyAction();
     let record = this.impl.storage.blueprints.get(blueprintId);
     if (!record) throw new Error("No such blueprint.");
     if (!record.dirty) return;  // nothing to retry
@@ -8625,15 +8646,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async listObserverRequirements(
       role: CollaboratorRole): Promise<ObserverBindingNeed[]> {
+    this.#assertAdultFamilyAction();
     return this.impl.listObserverRequirements(role);
   }
 
   async listCollaborators(): Promise<CollaboratorInfo[]> {
+    this.#assertAdultFamilyAction();
     return (await this.impl.getSharingManager()).listCollaborators();
   }
 
   async addCollaborator(username: string, role: CollaboratorRole, note?: string)
       : Promise<CollaboratorInfo | null> {
+    this.#assertAdultFamilyAction();
     // Look up the user DO to check if the account exists.
     let userDoId = this.impl.users.idFromName(username);
     let userDo = this.impl.users.get(userDoId);
@@ -8657,11 +8681,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async previewRemoveCollaborator(profileId: string): Promise<AffectedCollaborator[]> {
+    this.#assertAdultFamilyAction();
     return (await this.impl.getSharingManager())
         .previewRemoveCollaborator(this.#sharingCaller(), profileId);
   }
 
   async removeCollaborator(profileId: string, keepUsers: string[]): Promise<AffectedCollaborator[]> {
+    this.#assertAdultFamilyAction();
     let affected = (await this.impl.getSharingManager())
         .removeCollaborator(this.#sharingCaller(), profileId, keepUsers);
     // Tear down observer records for anyone who lost access (best-effort; see tearDownLostObservers).
@@ -8679,11 +8705,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]> {
+    this.#assertAdultFamilyAction();
     return (await this.impl.getSharingManager())
         .previewRevokeShareLink(this.#sharingCaller(), linkId);
   }
 
   async revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]> {
+    this.#assertAdultFamilyAction();
     let affected = (await this.impl.getSharingManager())
         .revokeShareLink(this.#sharingCaller(), linkId, keepUsers);
     // Tear down observer records for anyone who lost access (best-effort; see tearDownLostObservers).
@@ -8700,18 +8728,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // --- Share link management ---
 
   async createShareLink(role: CollaboratorRole, note?: string)
-      : Promise<{ key: string; linkId: string }> {
+      : Promise<FamilyRpcResult<{ key: string; linkId: string }>> {
+    if (this.familyChildRestricted) {
+      return { ok: false, error: FAMILY_ERROR_CODES.adultProfileRequired };
+    }
     if (this.impl.storage.prohibitAllSharing.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
           "shared.");
     }
 
-    return (await this.impl.getSharingManager())
-        .createShareLink({ caller: this.#sharingCaller(), role, note });
+    return {
+      ok: true,
+      value: await (await this.impl.getSharingManager())
+          .createShareLink({ caller: this.#sharingCaller(), role, note }),
+    };
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
+    this.#assertAdultFamilyAction();
     if (this.impl.storage.prohibitAllSharing.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
@@ -8723,6 +8758,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {
+    this.#assertAdultFamilyAction();
     let sharing = await this.impl.getSharingManager();
 
     // Collect all records synchronously to release the kv.list() iterator before any await
@@ -8764,6 +8800,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async updateShareLink(linkId: string, note?: string): Promise<void> {
+    this.#assertAdultFamilyAction();
     (await this.impl.getSharingManager())
         .updateShareLink(this.#sharingCaller(), linkId, note);
   }
@@ -8996,7 +9033,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   async createShareLink(_role: CollaboratorRole, _note?: string)
-      : Promise<{ key: string; linkId: string }> {
+      : Promise<FamilyRpcResult<{ key: string; linkId: string }>> {
     this.#deny();
   }
   async newShareLinkKey(_linkId: string): Promise<{ key: string }> { this.#deny(); }
@@ -9013,7 +9050,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 @validateRpc()
 class GadgetClientImpl extends RpcTarget implements GadgetClient {
   constructor(private impl: OverseerImpl, private id: WorkpieceId,
-      private clientUser: DurableObjectStub<UserDurableObject>) {
+      private clientUser: DurableObjectStub<UserDurableObject>,
+      private familyChildRestricted = false) {
     super();
   }
 
@@ -9191,7 +9229,10 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 
   async createBlueprint(title?: string, description?: string,
                         screenshotUpload?: BlueprintScreenshotUpload)
-      : Promise<BlueprintGadgetSummary> {
+      : Promise<FamilyRpcResult<BlueprintGadgetSummary>> {
+    if (this.familyChildRestricted) {
+      return { ok: false, error: FAMILY_ERROR_CODES.adultProfileRequired };
+    }
     if (!this.impl.ownerId) throw new Error("Workspace not initialized.");
 
     // NOTE: It is INTENTIONAL that collaborators can publish blueprints on behalf of the owner.
@@ -9260,13 +9301,16 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     let codeUpdate = this.impl.storage.code.get(codeVersion);
 
     return {
-      id,
-      title: metadata.title,
-      description: metadata.description,
-      version: metadata.version,
-      codeVersionDate: codeUpdate?.timestamp ?? now,
-      screenshotUrl: blueprintScreenshotUrl(id, metadata),
-      dirty: record.dirty,
+      ok: true,
+      value: {
+        id,
+        title: metadata.title,
+        description: metadata.description,
+        version: metadata.version,
+        codeVersionDate: codeUpdate?.timestamp ?? now,
+        screenshotUrl: blueprintScreenshotUrl(id, metadata),
+        dirty: record.dirty,
+      },
     };
   }
 }
@@ -9346,7 +9390,8 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   async setBlueprintAnnotation(_name: string, _annotation: BlueprintBindingAnnotation)
       : Promise<void> { this.#deny(); }
   async createBlueprint(_title?: string, _description?: string,
-                        _screenshot?: BlueprintScreenshotUpload): Promise<BlueprintGadgetSummary> {
+                        _screenshot?: BlueprintScreenshotUpload)
+      : Promise<FamilyRpcResult<BlueprintGadgetSummary>> {
     this.#deny();
   }
 }

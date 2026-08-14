@@ -1,4 +1,5 @@
 import { List, GridFour } from '@phosphor-icons/react'
+import { familyLabel } from '../familyUi'
 
 // Shared grid/list segmented toggle. Used on Gatekeepers and Outputs so view-switching looks and
 // behaves identically across the app.
@@ -10,8 +11,16 @@ export default function ViewToggle({
   onChange: (view: 'grid' | 'list') => void
 }) {
   const options = [
-    { value: 'list' as const, Icon: List, label: 'List view' },
-    { value: 'grid' as const, Icon: GridFour, label: 'Grid view' },
+    {
+      value: 'list' as const,
+      Icon: List,
+      label: familyLabel('List view', 'リスト表示'),
+    },
+    {
+      value: 'grid' as const,
+      Icon: GridFour,
+      label: familyLabel('Grid view', 'グリッド表示'),
+    },
   ]
   return (
     <div className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-kumo-line bg-kumo-base p-0.5">

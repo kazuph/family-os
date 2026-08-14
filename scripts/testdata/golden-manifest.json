@@ -1099,6 +1099,18 @@
             "PendingLogin"
           ],
           "tag": "v2"
+        },
+        {
+          "new_sqlite_classes": [
+            "FamilyDurableObject"
+          ],
+          "tag": "v3"
+        },
+        {
+          "new_sqlite_classes": [
+            "FamilyDeviceSessionDurableObject"
+          ],
+          "tag": "v4"
         }
       ],
       "modules": [

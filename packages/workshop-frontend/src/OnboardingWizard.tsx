@@ -5,6 +5,7 @@ import { useAuthenticatedApi } from './AuthContext'
 import {
   AiChatAuthorInfo,
   AiGatewayInfo,
+  unwrapFamilyRpcResult,
 } from '@gadgets/workshop-shared/api'
 import {
   VendorDescription,
@@ -29,6 +30,14 @@ import { compressAvatar, avatarBlobUrl } from './avatarUtils'
 import { invalidateAvatarCache } from './useAvatar'
 import { useTheme } from './ThemeContext'
 import { useSiteName } from './ServerConfigContext'
+import { CF_ACCESS_MODE } from './useAuth'
+import FamilyMonsterPicker from './components/FamilyMonsterPicker'
+import type { FamilyMonsterAvatarId } from '@gadgets/workshop-shared/api'
+import { familyLabel, familyUi } from './familyUi'
+import {
+  resolveOnboardingPreferredModel,
+  shouldUploadPhotoAvatar,
+} from './onboarding-finish'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
@@ -62,7 +71,7 @@ export default function OnboardingWizard({
 }: {
   onComplete: () => void
 }) {
-  const { authenticatedApi, currentUser } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, familyEntry } = useAuthenticatedApi()
   const { resolvedThemeMode } = useTheme()
   const toasts = useKumoToastManager()
   const siteName = useSiteName()
@@ -78,6 +87,7 @@ export default function OnboardingWizard({
   const [originalDisplayName, setOriginalDisplayName] = useState('')
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
   const [avatarData, setAvatarData] = useState<Uint8Array | null>(null)
+  const [selectedMonsterId, setSelectedMonsterId] = useState<FamilyMonsterAvatarId | null>(null)
   const [avatarProcessing, setAvatarProcessing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -106,10 +116,16 @@ export default function OnboardingWizard({
     }
   }, [avatarPreview])
 
-  // Populate display name from currentUser (fetched once in AuthContext)
+  // Populate display name from currentUser (fetched once in AuthContext).
+  // Family mode replaces opaque Access local-parts (e.g. "adult") with a household label.
   useEffect(() => {
     if (currentUser) {
-      setDisplayName(currentUser.name)
+      const raw = currentUser.name?.trim() || ''
+      const familyDefault =
+        CF_ACCESS_MODE && (!raw || raw === 'adult' || /integration\.test/i.test(raw))
+          ? familyUi.defaultAdultDisplayName
+          : raw
+      setDisplayName(familyDefault)
       setOriginalDisplayName(currentUser.name)
     }
   }, [currentUser])
@@ -258,7 +274,7 @@ export default function OnboardingWizard({
   const handleConnect = async (vendorId: string) => {
     setConnectingVendorId(vendorId)
     try {
-      const { url } = await authenticatedApi.connectAccount(vendorId)
+      const { url } = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId))
       window.open(url, '_blank', 'noopener,noreferrer')
     } catch (err) {
       console.error('Failed to start connection:', err)
@@ -292,18 +308,41 @@ export default function OnboardingWizard({
       if (trimmedName && trimmedName !== originalDisplayName) {
         await authenticatedApi.setOwnDisplayName(trimmedName)
       }
-      if (avatarData) {
+      if (CF_ACCESS_MODE && familyEntry && selectedMonsterId) {
+        const monsterResult = await familyEntry.setMonsterAvatar(selectedMonsterId)
+        if (!monsterResult.ok) {
+          toasts.add({ title: familyUi.failedSetMonster, variant: 'error' })
+          setFinishing(false)
+          return
+        }
+      } else if (shouldUploadPhotoAvatar(CF_ACCESS_MODE) && avatarData) {
         await authenticatedApi.setAvatar(avatarData)
         if (currentUser?.id) invalidateAvatarCache(currentUser.id)
       }
-      // selectedModelId is null when the user chose "No agent" or didn't pick one
-      await authenticatedApi.setPreferredModel(selectedModelId)
-      persistSelectedModel(selectedModelId)
+      // Persist a catalog model when possible, but never block "はじめる" on a stale/unknown id.
+      const listedIds = await authenticatedApi.listModels()
+        .then((listed) => listed.map((model) => model.id))
+        .catch((err) => {
+          console.error('Failed to list models during onboarding:', err)
+          return [] as string[]
+        })
+      const preferred = resolveOnboardingPreferredModel(selectedModelId, listedIds)
+      try {
+        await unwrapFamilyRpcResult(await authenticatedApi.setPreferredModel(preferred))
+        persistSelectedModel(preferred)
+      } catch (err) {
+        console.error('Failed to set preferred model during onboarding:', err)
+        await unwrapFamilyRpcResult(await authenticatedApi.setPreferredModel(null))
+        persistSelectedModel(null)
+      }
       await authenticatedApi.completeOnboarding()
       onComplete()
     } catch (err) {
       console.error('Failed to complete onboarding:', err)
-      toasts.add({ title: 'Something went wrong. Please try again.', variant: 'error' })
+      toasts.add({
+        title: familyLabel('Something went wrong. Please try again.', familyUi.onboardingFailed),
+        variant: 'error',
+      })
       setFinishing(false)
     }
   }
@@ -358,14 +397,14 @@ export default function OnboardingWizard({
               mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
             }`}
           >
-            Let&apos;s set you up
+            {familyLabel("Let's set you up", familyUi.letsSetUp)}
           </h1>
           <p
             className={`mt-2 text-sm text-kumo-subtle transition-all duration-500 delay-200 ${
               mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
             }`}
           >
-            Just a few things before you start building
+            {familyLabel('Just a few things before you start building', familyUi.fewThings)}
           </p>
         </div>
 
@@ -394,15 +433,29 @@ export default function OnboardingWizard({
             {/* ── Step 0: Profile ───────────────────────────────────────────── */}
             <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
               <h2 className="text-lg font-medium text-kumo-default mb-1">
-                Create your profile
+                {familyLabel('Create your profile', familyUi.createYourProfile)}
               </h2>
               <p className="text-sm text-kumo-subtle mb-12">
-                This is how you&apos;ll appear in conversations
+                {familyLabel(
+                  "This is how you'll appear in conversations",
+                  familyUi.howYouAppear,
+                )}
               </p>
 
               {/* Avatar + Display name side by side */}
               <div className="flex items-start gap-5">
-                {/* Avatar */}
+                {CF_ACCESS_MODE && familyEntry ? (
+                  <div className="flex flex-col gap-3 flex-1 min-w-0">
+                    <FamilyMonsterPicker
+                      columns={8}
+                      selectedId={selectedMonsterId}
+                      onSelect={(id) => {
+                        setSelectedMonsterId(id)
+                        setAvatarPreview(`/family-avatars/${id}.png`)
+                      }}
+                    />
+                  </div>
+                ) : (
                 <div className="flex flex-col items-center flex-shrink-0">
                   <button
                     type="button"
@@ -442,7 +495,6 @@ export default function OnboardingWizard({
                     )}
                   </button>
 
-                  {/* Hidden file inputs */}
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -458,6 +510,7 @@ export default function OnboardingWizard({
                     {avatarPreview ? 'Change' : 'Add photo'}
                   </p>
                 </div>
+                )}
 
                 {/* Name + camera shortcut */}
                 <div className="flex-1 min-w-0 pt-1">
@@ -465,14 +518,14 @@ export default function OnboardingWizard({
                     htmlFor="onboarding-display-name"
                     className="block text-xs font-medium text-kumo-subtle mb-1.5"
                   >
-                    Display name
+                    {familyLabel('Display name', familyUi.displayName)}
                   </label>
                   <input
                     id="onboarding-display-name"
                     type="text"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="How should we call you?"
+                    placeholder={familyLabel('How should we call you?', familyUi.displayNamePlaceholder)}
                     className="w-full px-3 py-2.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:border-kumo-brand transition-colors"
                   />
                 </div>
@@ -483,10 +536,13 @@ export default function OnboardingWizard({
             <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
               <div>
                 <h2 className="text-lg font-medium text-kumo-default mb-1">
-                  Choose your model
+                  {familyLabel('Choose your model', familyUi.chooseModel)}
                 </h2>
                 <p className="text-sm text-kumo-subtle mb-6">
-                  Pick the AI model you&apos;d like to use by default
+                  {familyLabel(
+                    "Pick the AI model you'd like to use by default",
+                    familyUi.chooseModelDesc,
+                  )}
                 </p>
 
                 {modelsLoading ? (
@@ -674,7 +730,7 @@ export default function OnboardingWizard({
                   onClick={goNext}
                   className="flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg transition-all duration-150 text-kumo-inverse bg-kumo-brand hover:bg-kumo-brand-hover"
                 >
-                  Next
+                  {familyLabel('Next', familyUi.next)}
                   <ArrowRight size={14} weight="bold" />
                 </button>
               ) : (
@@ -697,7 +753,7 @@ export default function OnboardingWizard({
                     </>
                   ) : (
                     <>
-                      Let&apos;s build
+                      {familyLabel("Let's build", familyUi.letsBuild)}
                       <ArrowRight size={14} weight="bold" />
                     </>
                   )}

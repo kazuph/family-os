@@ -56,7 +56,8 @@
     "**/*.gen.ts",
     "**/node_modules/**",
     "**/.wrangler/**",
-    "**/worker-configuration.d.ts"
+    "**/worker-configuration.d.ts",
+    "**/.artifacts/**"
   ],
   "overrides": [
     {

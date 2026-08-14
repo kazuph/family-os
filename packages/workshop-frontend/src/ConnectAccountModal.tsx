@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Dialog, Text, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
-import { AuthenticatedApi, GatekeeperVendorFilter } from '@gadgets/workshop-shared/api'
+import { AuthenticatedApi, GatekeeperVendorFilter, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
 import { VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import VendorCard from './VendorCard'
+import { familyLabel, familyUi } from './familyUi'
 
 interface ConnectAccountModalProps {
   visible: boolean
@@ -45,14 +46,20 @@ export default function ConnectAccountModal({
         const unavailable = vendorList.filter(v => v.unavailable)
         if (unavailable.length > 0) {
           toasts.add({
-            title: `Some services are temporarily unavailable: ${unavailable.map(v => v.id).join(', ')}`,
+            title: familyLabel(
+              `Some services are temporarily unavailable: ${unavailable.map(v => v.id).join(', ')}`,
+              familyUi.someServicesUnavailable(unavailable.map(v => v.id).join(', ')),
+            ),
             variant: 'warning',
           })
         }
         setVendors(vendorList.filter(v => !v.unavailable).map(v => ({ id: v.id, description: v.description })))
       } catch (error) {
         console.error('Failed to fetch vendors:', error)
-        toasts.add({ title: 'Failed to load available services', variant: 'error' })
+        toasts.add({
+          title: familyLabel('Failed to load available services', '利用可能なサービスを読み込めませんでした'),
+          variant: 'error',
+        })
       } finally {
         setVendorsLoading(false)
       }
@@ -64,12 +71,15 @@ export default function ConnectAccountModal({
   const handleConnect = async (vendorId: string) => {
     setConnecting(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId)
+      const result = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId))
       window.open(result.url, '_blank', 'noopener,noreferrer')
       onInitiated()
     } catch (error) {
       console.error('Failed to initiate connection:', error)
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({
+        title: familyLabel('Failed to start connection flow', '接続フローを開始できませんでした'),
+        variant: 'error',
+      })
       setConnecting(null)
     }
   }
@@ -77,14 +87,18 @@ export default function ConnectAccountModal({
   return (
     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
       <Dialog className="p-6" size="base">
-        <Dialog.Title className="text-lg font-semibold mb-4">Connect Account</Dialog.Title>
+        <Dialog.Title className="text-lg font-semibold mb-4">
+          {familyLabel('Connect Account', 'アカウントを接続')}
+        </Dialog.Title>
         {vendorsLoading ? (
           <div className="text-center py-8">
             <Loader />
           </div>
         ) : vendors.length === 0 ? (
           <div className="text-center py-8">
-            <Text variant="secondary">No services available to connect.</Text>
+            <Text variant="secondary">
+              {familyLabel('No services available to connect.', '接続できるサービスがありません。')}
+            </Text>
           </div>
         ) : (
           <div className="flex flex-col gap-3 mt-2">

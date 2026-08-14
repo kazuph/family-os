@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import BlueprintsPage from '../BlueprintsPage'
+import { familyLabel, familyUi } from '../familyUi'
 import { useDocumentTitle } from '../useDocumentTitle'
 
 export const Route = createFileRoute('/explore')({
@@ -7,7 +8,7 @@ export const Route = createFileRoute('/explore')({
 })
 
 function ExplorePage() {
-  useDocumentTitle('Explore')
+  useDocumentTitle(familyLabel('Explore', familyUi.exploreTitle))
 
   return <BlueprintsPage />
 }

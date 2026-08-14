@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react'
 import UserMenu from './UserMenu'
 import TopBarNotice from '../TopBarNotice'
 import SiteLogo from './SiteLogo'
+import { familyLabel, familyUi } from '../familyUi'
 
 export default function Header() {
   const auth = useOptionalAuthenticatedApi()
@@ -62,24 +63,26 @@ export default function Header() {
               activeProps={{ className: navLinkActiveClass }}
               activeOptions={{ exact: true }}
             >
-              Home
+              {familyLabel('Home', familyUi.home)}
             </Link>
-            <Link
-              to="/gatekeepers"
-              className={navLinkClass}
-              activeProps={{ className: navLinkActiveClass }}
-              activeOptions={{ exact: true }}
-            >
-              Gatekeepers
-            </Link>
+            {!auth?.isFamilyChild && (
+              <Link
+                to="/gatekeepers"
+                className={navLinkClass}
+                activeProps={{ className: navLinkActiveClass }}
+                activeOptions={{ exact: true }}
+              >
+                {familyLabel('Gatekeepers', familyUi.gatekeepers)}
+              </Link>
+            )}
             <Link
               to="/explore"
               className={navLinkClass}
               activeProps={{ className: navLinkActiveClass }}
             >
-              Explore
+              {familyLabel('Explore', familyUi.explore)}
             </Link>
-            {gatekeeperApps.map((app) => (
+            {!auth?.isFamilyChild && gatekeeperApps.map((app) => (
               <Link
                 key={app.id}
                 to="/gatekeepers/$appId"
@@ -125,26 +128,28 @@ export default function Header() {
               activeProps={{ className: navLinkActiveClass }}
               activeOptions={{ exact: true }}
             >
-              Home
+              {familyLabel('Home', familyUi.home)}
             </Link>
-            <Link
-              to="/gatekeepers"
-              onClick={closeMobileMenu}
-              className={navLinkClass}
-              activeProps={{ className: navLinkActiveClass }}
-              activeOptions={{ exact: true }}
-            >
-              Gatekeepers
-            </Link>
+            {!auth?.isFamilyChild && (
+              <Link
+                to="/gatekeepers"
+                onClick={closeMobileMenu}
+                className={navLinkClass}
+                activeProps={{ className: navLinkActiveClass }}
+                activeOptions={{ exact: true }}
+              >
+                {familyLabel('Gatekeepers', familyUi.gatekeepers)}
+              </Link>
+            )}
             <Link
               to="/explore"
               onClick={closeMobileMenu}
               className={navLinkClass}
               activeProps={{ className: navLinkActiveClass }}
             >
-              Explore
+              {familyLabel('Explore', familyUi.explore)}
             </Link>
-            {gatekeeperApps.map((app) => (
+            {!auth?.isFamilyChild && gatekeeperApps.map((app) => (
               <Link
                 key={app.id}
                 to="/gatekeepers/$appId"
@@ -167,31 +172,33 @@ export default function Header() {
                   className={navLinkClass}
                   activeProps={{ className: navLinkActiveClass }}
                 >
-                  Profile
+                  {familyLabel('Profile', familyUi.profile)}
                 </Link>
-                <Link
-                  to="/providers"
-                  onClick={closeMobileMenu}
-                  className={navLinkClass}
-                  activeProps={{ className: navLinkActiveClass }}
-                >
-                  Providers
-                </Link>
-                {auth.isAdmin && (
+                {!auth.isFamilyChild && (
+                  <Link
+                    to="/providers"
+                    onClick={closeMobileMenu}
+                    className={navLinkClass}
+                    activeProps={{ className: navLinkActiveClass }}
+                  >
+                    {familyLabel('Providers', familyUi.providers)}
+                  </Link>
+                )}
+                {auth.isAdmin && !auth.isFamilyChild && (
                   <Link
                     to="/admin"
                     onClick={closeMobileMenu}
                     className={navLinkClass}
                     activeProps={{ className: navLinkActiveClass }}
                   >
-                    Admin
+                    {familyLabel('Admin', familyUi.admin)}
                   </Link>
                 )}
                 <button
                   onClick={() => { closeMobileMenu(); auth.logout() }}
                   className="text-left text-sm px-3 py-1.5 rounded-md text-kumo-danger hover:bg-kumo-tint transition-colors"
                 >
-                  Sign out
+                  {familyLabel('Sign out', familyUi.signOut)}
                 </button>
               </>
             )}
