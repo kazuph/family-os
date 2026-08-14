@@ -1,6 +1,7 @@
 name: CI
 
-# Family OS household fork: lint and tests only.
+# Family OS household fork: lint and tests on every PR/push. Production deploy
+# runs only after those jobs succeed on kazuph/family-os main, never on PRs.
 
 on:
   push:
@@ -63,3 +64,52 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  deploy-production:
+    name: Deploy production
+    if: github.repository == 'kazuph/family-os' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      VITE_CF_ACCESS_MODE: "true"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy Family OS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          OPENCODE_GO_API_TOKEN: ${{ secrets.OPENCODE_GO_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}
+          CF_ACCESS_ISS: ${{ secrets.CF_ACCESS_ISS }}
+          FAMILY_ADMINS: ${{ secrets.FAMILY_ADMINS }}
+          FAMILY_PUBLIC_BASE_URL: ${{ vars.FAMILY_PUBLIC_BASE_URL }}
+          FAMILY_WORKSHOP_WORKER: ${{ vars.FAMILY_WORKSHOP_WORKER }}
+          FAMILY_CONTEXT_WORKER: ${{ vars.FAMILY_CONTEXT_WORKER }}
+          KV_BLUEPRINTS_ID: ${{ vars.KV_BLUEPRINTS_ID }}
+          KV_AVATARS_ID: ${{ vars.KV_AVATARS_ID }}
+          KV_CONTEXT_COLLECTIONS_ID: ${{ vars.KV_CONTEXT_COLLECTIONS_ID }}
+          R2_BLUEPRINT_CONTENT_BUCKET: ${{ vars.R2_BLUEPRINT_CONTENT_BUCKET }}
+        run: node scripts/deploy-family-os.mjs
