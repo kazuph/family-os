@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -31,6 +32,31 @@ const deployment = {
 
 function settings(bindings) {
   return { success: true, result: { bindings } };
+}
+
+function runPinnedWrangler(args, cwd = ROOT) {
+  const result = spawnSync("pnpm", ["exec", "wrangler", ...args], {
+    cwd,
+    encoding: "utf8",
+    env: process.env,
+    timeout: 30_000,
+  });
+  return {
+    status: result.status,
+    output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
+  };
+}
+
+function optionNamesFromHelp(help) {
+  const names = new Set();
+  for (const match of String(help).matchAll(/(?:^|\s)(--[A-Za-z][\w-]*)/g)) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+function flagsFromArgs(args) {
+  return args.filter((arg) => arg.startsWith("--"));
 }
 
 describe("parseDeployArgs", () => {
@@ -69,10 +95,12 @@ describe("wrangler argument construction", () => {
 
   it("passes config path and dry-run via argv without token values", () => {
     const args = wranglerDeployArgs({ dryRun: true });
-    assert.deepEqual(args, ["deploy", "--config", "wrangler.prod.jsonc", "--log-level", "warn", "--dry-run"]);
+    assert.deepEqual(args, ["deploy", "--config", "wrangler.prod.jsonc", "--dry-run"]);
     const dumped = args.join(" ");
     assert.equal(dumped.includes("CLOUDFLARE_API_TOKEN"), false);
     assert.equal(dumped.includes("OPENCODE_GO_API_TOKEN"), false);
+    assert.equal(dumped.includes("log-level"), false);
+    assert.equal(dumped.includes("logLevel"), false);
   });
 
   it("requires the OpenCode token before any production Worker upload", () => {
@@ -91,7 +119,51 @@ describe("wrangler argument construction", () => {
 
   it("puts OPENCODE_GO_API_TOKEN by name only, value stays on stdin", () => {
     const args = wranglerSecretPutArgs();
-    assert.deepEqual(args, ["secret", "put", "OPENCODE_GO_API_TOKEN", "--config", "wrangler.prod.jsonc", "--log-level", "warn"]);
+    assert.deepEqual(args, ["secret", "put", "OPENCODE_GO_API_TOKEN", "--config", "wrangler.prod.jsonc"]);
+    assert.equal(args.includes("--log-level"), false);
+    assert.equal(args.includes("--logLevel"), false);
+  });
+});
+
+describe("pinned wrangler CLI contract", () => {
+  const workshopDir = join(ROOT, "packages/workshop-backend");
+
+  it("documents deploy --help without --log-level and accepts constructed dry-run argv", () => {
+    const help = runPinnedWrangler(["deploy", "--help"]);
+    assert.equal(help.status, 0, help.output);
+    const options = optionNamesFromHelp(help.output);
+    assert.equal(options.has("--config"), true);
+    assert.equal(options.has("--dry-run"), true);
+    assert.equal(options.has("--log-level"), false);
+    assert.equal(options.has("--logLevel"), false);
+
+    const args = wranglerDeployArgs({ dryRun: true });
+    for (const flag of flagsFromArgs(args)) {
+      assert.equal(options.has(flag), true, `${flag} must be a wrangler deploy option`);
+    }
+
+    // Same argv as CD before upload. Missing generated config is later than CLI parse;
+    // Wrangler 4.119.0 rejected --log-level here (run 31774001566).
+    const probe = runPinnedWrangler(args, workshopDir);
+    assert.equal(/Unknown arguments/i.test(probe.output), false, probe.output);
+    assert.match(probe.output, /Could not read file: wrangler\.prod\.jsonc/);
+  });
+
+  it("accepts constructed secret put argv on the pinned CLI", () => {
+    const help = runPinnedWrangler(["secret", "put", "--help"]);
+    assert.equal(help.status, 0, help.output);
+    const options = optionNamesFromHelp(help.output);
+    assert.equal(options.has("--config"), true);
+    assert.equal(options.has("--log-level"), false);
+
+    const args = wranglerSecretPutArgs();
+    for (const flag of flagsFromArgs(args)) {
+      assert.equal(options.has(flag), true, `${flag} must be a wrangler secret put option`);
+    }
+
+    const probe = runPinnedWrangler(args, workshopDir);
+    assert.equal(/Unknown arguments/i.test(probe.output), false, probe.output);
+    assert.match(probe.output, /Could not read file: wrangler\.prod\.jsonc/);
   });
 });
 

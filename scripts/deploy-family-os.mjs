@@ -47,13 +47,13 @@ export function parseDeployArgs(argv) {
 }
 
 export function wranglerDeployArgs({ dryRun }) {
-  const args = ["deploy", "--config", GENERATED_CONFIG_NAME, "--log-level", "warn"];
+  const args = ["deploy", "--config", GENERATED_CONFIG_NAME];
   if (dryRun) args.push("--dry-run");
   return args;
 }
 
 export function wranglerSecretPutArgs() {
-  return ["secret", "put", "OPENCODE_GO_API_TOKEN", "--config", GENERATED_CONFIG_NAME, "--log-level", "warn"];
+  return ["secret", "put", "OPENCODE_GO_API_TOKEN", "--config", GENERATED_CONFIG_NAME];
 }
 
 export function assertRequiredDeploySecrets(env, args) {
