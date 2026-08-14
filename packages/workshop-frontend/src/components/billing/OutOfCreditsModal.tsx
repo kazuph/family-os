@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CloudflareUsageInfo, CloudflareAccountOption } from '@gadgets/workshop-shared/api'
+import { CloudflareUsageInfo, CloudflareAccountOption, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
 import { Dialog, Button, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import { CloudWarning, Lightning } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../../AuthContext'
@@ -58,7 +58,7 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
     if (!auth) return
     setConnecting(true)
     try {
-      const { url } = await auth.authenticatedApi.connectAccount('cloudflare')
+      const { url } = unwrapFamilyRpcResult(await auth.authenticatedApi.connectAccount('cloudflare'))
       window.open(url, '_blank', 'noopener,noreferrer')
     } catch {
       // ignore

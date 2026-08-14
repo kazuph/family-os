@@ -109,6 +109,7 @@ import { HookToggle } from "./components/HookToggle";
 import { handlePickerKeyDown } from "./pickerNavigation";
 import { normalizeResourceUrl } from "./resourceMatching";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
+import { familyLabel, familyUi, chatTitle } from "./familyUi";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
@@ -120,6 +121,10 @@ import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
 import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { useSlashCommandPicker } from "./components/chat/SlashCommandPicker";
+import {
+  isImeCompositionEvent,
+  shouldSubmitChatInput,
+} from "./components/chat/chat-input-keydown";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
 
@@ -692,6 +697,8 @@ function getToolCallSummary(
       return { verb: "Listed connectable resources", target: tc.input.vendorId };
     case "requestConnection":
       return { verb: "Requested connection", target: tc.input.vendorId };
+    case "setChatTitle":
+      return { verb: familyLabel("Renamed chat", familyUi.renamedChat), target: tc.input.title };
   }
   // Compile-time exhaustiveness check.
   const _exhaustive: never = tc;
@@ -771,6 +778,10 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Listed connectable resources`;
     case "requestConnection":
       return count === 1 ? "Requested a connection" : `Requested ${count} connections`;
+    case "setChatTitle":
+      return count === 1
+        ? familyLabel("Renamed chat", familyUi.renamedChat)
+        : familyLabel(`Renamed chat ${formatTimes(count)}`, `チャット名を${count}回変更`);
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -806,6 +817,8 @@ function getToolIcon(
       return MagnifyingGlass;
     case "giveUp":
       return Question;
+    case "setChatTitle":
+      return PencilSimple;
     default:
       return Question;
   }
@@ -837,6 +850,8 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Observing user changes";
     case "giveUp":
       return "Stopping";
+    case "setChatTitle":
+      return familyLabel("Renaming chat", familyUi.renamingChat);
     default:
       return "Using tool";
   }
@@ -864,6 +879,7 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return "Requesting a connection";
+    case "setChatTitle": return familyLabel("Renaming", familyUi.renamingChat);
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -888,6 +904,8 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return `Requesting ${pluralize(count, "connection")}`;
+    case "setChatTitle":
+      return familyLabel(`Renaming chat ${formatTimes(count)}`, `チャット名を${count}回変更中`);
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -3152,10 +3170,10 @@ export const ChatInput = ({
                 isBlocked
                   ? blockedReason
                   : isAgentActive
-                    ? "Waiting for agent…"
+                    ? familyLabel("Waiting for agent…", "エージェントを待っています…")
                     : newChat
-                      ? "Start a new conversation…"
-                      : "Ask a follow-up…"
+                      ? familyLabel("Start a new conversation…", familyUi.startConversation)
+                      : familyLabel("Ask a follow-up…", familyUi.askFollowUp)
               }
               autoFocus={autoFocus}
               rows={minRows}
@@ -3170,6 +3188,13 @@ export const ChatInput = ({
                 }
               }}
               onKeyDown={(e) => {
+                const keyEvent = {
+                  key: e.key,
+                  shiftKey: e.shiftKey,
+                  isComposing: e.nativeEvent.isComposing,
+                  keyCode: e.nativeEvent.keyCode,
+                };
+                if (isImeCompositionEvent(keyEvent)) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
@@ -3223,8 +3248,8 @@ export const ChatInput = ({
                     return;
                   }
                 }
-                // Enter sends message (unless Shift is held)
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Enter sends message unless Shift is held or IME composition is active.
+                if (shouldSubmitChatInput(keyEvent)) {
                   e.preventDefault();
                   if (!isAgentActive && !isBlocked) submitMessage();
                   return;
@@ -3291,7 +3316,7 @@ export const ChatInput = ({
                   <button
                     type="button"
                     className="group flex h-8 w-8 flex-shrink-0 cursor-pointer items-center justify-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-none active:scale-[0.96] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-subtle"
-                    aria-label="Open chat options"
+                    aria-label={familyLabel('Open chat options', 'チャットのオプションを開く')}
                   >
                     <Plus size={18} />
                   </button>
@@ -3312,7 +3337,9 @@ export const ChatInput = ({
                       <Brain size={14} />
                     </span>
                     <span className="flex-1">
-                      {showThinkingTraces ? "Hide thinking" : "Show thinking"}
+                      {showThinkingTraces
+                        ? familyLabel('Hide thinking', '思考過程を隠す')
+                        : familyLabel('Show thinking', '思考過程を表示')}
                     </span>
                   </DropdownMenu.Item>
                 )}
@@ -3323,7 +3350,7 @@ export const ChatInput = ({
                   <span className="mr-2 inline-flex h-4 w-4 items-center justify-center text-kumo-inactive">
                     <FileIcon size={14} />
                   </span>
-                  <span className="flex-1">Upload file</span>
+                  <span className="flex-1">{familyLabel('Upload file', familyUi.uploadFile)}</span>
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu>
@@ -3333,7 +3360,7 @@ export const ChatInput = ({
               className="inline-flex h-8 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[13px] leading-none tracking-[-0.25px] text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-none active:scale-[0.97]"
             >
               <Plug size={15} className="flex-shrink-0" />
-              <span className={`leading-none ${styles.attachLabelText}`}>{attachLabel ?? "Add resource"}</span>
+              <span className={`leading-none ${styles.attachLabelText}`}>{attachLabel ?? familyLabel("Add resource", familyUi.addResource)}</span>
             </button>
           </div>
 
@@ -3345,7 +3372,7 @@ export const ChatInput = ({
                     <button
                       type="button"
                       className="group inline-flex h-8 min-w-0 max-w-[180px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[13px] leading-5 tracking-[-0.25px] text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
-                      aria-label="Select model"
+                      aria-label={familyLabel('Select model', 'モデルを選択')}
                     >
                       <span className="min-w-0 truncate">{selectedModelLabel}</span>
                       <CaretDown
@@ -3406,7 +3433,7 @@ export const ChatInput = ({
                   disabled={!canSend}
                   tone="primary"
                   className="!h-8 !w-8 disabled:cursor-not-allowed disabled:opacity-30"
-                  aria-label="Send message"
+                  aria-label={familyLabel('Send message', 'メッセージを送信')}
                 >
                   {/* Arrow-up icon */}
                   <svg
@@ -5474,9 +5501,9 @@ function ChatInterface({
 
   // Handle deleting a chat. Can be called from the chat header (no args) or the
   // chat list (with explicit chatId/title).
-  const handleDeleteChat = (chatId?: number, chatTitle?: string) => {
+  const handleDeleteChat = (chatId?: number, titleOverride?: string) => {
     const id = chatId ?? selectedChatId;
-    const title = chatTitle ?? currentChatMetadata?.title ?? "this chat";
+    const title = titleOverride ?? currentChatMetadata?.title ?? "this chat";
     if (id === null || id === undefined) return;
     setDeleteTarget({ id, title });
   };
@@ -6551,12 +6578,12 @@ function ChatInterface({
                             spellCheck={false}
                             autoCapitalize="off"
                             autoCorrect="off"
-                            aria-label={`Rename ${chat.title}`}
+                            aria-label={`Rename ${chatTitle(chat.title)}`}
                             className="min-w-0 flex-1 bg-transparent text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                           />
                         ) : (
                           <span className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                            {chat.title}
+                            {chatTitle(chat.title)}
                           </span>
                         )}
                         {!isRenaming && chat.activeAgent ? (
@@ -6598,7 +6625,7 @@ function ChatInterface({
                         <DropdownMenu.Trigger
                           render={
                             <WorkshopIconButton
-                              aria-label={`Actions for ${chat.title}`}
+                              aria-label={`Actions for ${chatTitle(chat.title)}`}
                               onClick={(e) => e.stopPropagation()}
                               className="!h-7 !w-7 flex-shrink-0 text-kumo-inactive opacity-0 focus:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100"
                             >
@@ -6782,7 +6809,7 @@ function ChatInterface({
                   ) : (
                     <>
                       <span className="min-w-0 flex-1 truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                        {currentChatMetadata?.title || "Chat"}
+                        {chatTitle(currentChatMetadata?.title) || familyLabel("Chat", familyUi.chat)}
                       </span>
                       <WorkshopIconButton
                         onClick={() => setIsEditingTitle(true)}

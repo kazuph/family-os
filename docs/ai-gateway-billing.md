@@ -62,6 +62,12 @@ CF_AI_GATEWAY_API_TOKEN=...
 CF_AI_GATEWAY_WAI_DIRECT=true
 ```
 
+For local development, put these values in a dotenvx-encrypted `.env` with `dotenvx set`, and
+start the server with `dotenvx run -f .env --overload -- pnpm run dev-server --remote-ai`
+when Workers AI should use its remote binding. This keeps the Worker runtime local
+while connecting only the AI binding to Cloudflare. The Gateway token is loaded as a Wrangler
+local secret and is not written into the generated `wrangler.dev.jsonc`.
+
 Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID` and an API token with AI Gateway Run and
 Read permissions; Read access lets Gadgets retrieve each log's cost for user-visible accounting.
 Workers AI uses `CF_AI_GATEWAY` as its Gateway ID by default; set `CF_AI_GATEWAY_WAI` to select

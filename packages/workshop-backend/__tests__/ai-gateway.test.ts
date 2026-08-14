@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AiGatewayLogRetryableError,
+  getAiGatewayConfig,
   getAiGatewayLogCost,
 } from "../src/ai-gateway.js";
 
@@ -112,5 +113,17 @@ describe("getAiGatewayLogCost", () => {
         .rejects.toBeInstanceOf(AiGatewayLogRetryableError);
     await expect(getAiGatewayLogCost(env(), route, "log-id"))
         .rejects.toBeInstanceOf(AiGatewayLogRetryableError);
+  });
+});
+
+describe("getAiGatewayConfig", () => {
+  it("never treats OpenCode Go as a Cloudflare AI Gateway provider", () => {
+    const config = getAiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      CF_AI_GATEWAY_PROVIDERS: "opencode-go,openai",
+    }));
+
+    expect([...config!.providers]).toEqual(["openai"]);
   });
 });

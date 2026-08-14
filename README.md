@@ -1,4 +1,9 @@
-# Cloudflare OS: An AI productivity environment
+# Family OS: A household AI workspace
+
+Family OS is a household-oriented fork of Cloudflare OS: one deployment represents one household,
+with Cloudflare Access OTP for adults and selectable child profiles on each browser device. For the
+recommended model setup, use an OpenCode Go subscription with DeepSeek V4 Flash and keep the
+OpenCode Go credential only in deployment secrets.
 
 Cloudflare OS is an "operating system" for AI productivity originally developed for use inside Cloudflare. A large portion of Cloudflare's workforce -- from engineering to sales and everything in between -- uses Cloudflare OS every day to help them do their jobs.
 

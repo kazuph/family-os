@@ -20,6 +20,7 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { OPENCODE_GO_BASE_URL, OPENCODE_GO_MODEL_ID } from "./opencode-go.js";
 
  // Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
  // exhausted). Defined here to avoid a backend->ai-gateway-billing type import cycle at runtime.
@@ -119,6 +120,7 @@ const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 
 // fine (synthesized with zero cost). Import per-provider, not providers/all.
 function catalogModel(provider: AiModelConfig["provider"], modelId: string): Model<Api> | undefined {
   switch (provider) {
+    case "opencode-go": return undefined;
     case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
     case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
@@ -342,6 +344,33 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  // OpenCode Go is a deployment subscription, not a Cloudflare AI Gateway provider or a
+  // user-supplied model. Its credential always comes from the Worker environment.
+  if (config.provider === "opencode-go") {
+    if (config.model !== OPENCODE_GO_MODEL_ID || !env.OPENCODE_GO_API_TOKEN) {
+      throw new Error("This OpenCode Go model is not configured by the deployment.");
+    }
+    return makeHandle({
+      model: {
+        id: config.model,
+        name: SUGGESTED_MODELS["opencode-go"][config.model].name,
+        api: "openai-completions",
+        provider: "opencode-go",
+        baseUrl: OPENCODE_GO_BASE_URL,
+        reasoning: true,
+        input: ["text"],
+        cost: ZERO_COST,
+        ...modelTokenWindow(config, undefined),
+        compat: {
+          requiresReasoningContentOnAssistantMessages: true,
+          thinkingFormat: "deepseek",
+        },
+      },
+      apiKey: env.OPENCODE_GO_API_TOKEN,
+      sessionAffinity: options.sessionAffinity,
+    });
+  }
+
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -480,6 +509,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
   const catalog = catalogModel(config.provider, config.model);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
+    case "opencode-go":
+      throw new Error("OpenCode Go models require deployment-managed credentials.");
     case "anthropic":
       return makeHandle({
         model: {

@@ -7,6 +7,7 @@ import { CountBadge } from './components/CountBadge'
 import { ResolveButton } from './components/ResolveButton'
 import { formatRelativeTime, type ActivityView } from './Activity'
 import { useResolveAction } from './useResolveAction'
+import { familyLabel } from './familyUi'
 
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
@@ -41,8 +42,11 @@ export default function ActivityNotifications({
           <button
             type="button"
             aria-label={pending.length > 0
-              ? `Activity — ${pending.length} ${pending.length === 1 ? 'request needs' : 'requests need'} review`
-              : 'Activity'}
+              ? familyLabel(
+                  `Activity — ${pending.length} ${pending.length === 1 ? 'request needs' : 'requests need'} review`,
+                  `アクティビティ — 確認が必要なリクエストが${pending.length}件`,
+                )
+              : familyLabel('Activity', 'アクティビティ')}
             className={`relative flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 hover:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring ${
               pending.length > 0 ? 'text-kumo-strong' : 'text-kumo-subtle hover:text-kumo-default'
             }`}
@@ -125,8 +129,11 @@ export default function ActivityNotifications({
           >
             <span>
               {pending.length > PREVIEW_LIMIT
-                ? `View all ${pending.length} requests`
-                : 'View all activity'}
+                ? familyLabel(
+                    `View all ${pending.length} requests`,
+                    `すべてのリクエスト（${pending.length}）を見る`,
+                  )
+                : familyLabel('View all activity', 'すべてのアクティビティを見る')}
             </span>
             <ArrowRight size={13} className="text-kumo-inactive" />
           </button>

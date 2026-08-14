@@ -1,5 +1,7 @@
 name: CI
 
+# Family OS household fork: lint and tests only.
+
 on:
   push:
     branches:

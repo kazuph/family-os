@@ -13,6 +13,7 @@ import {
   AiChatAuthorInfo,
   CollaboratorRole,
   ObserverBindingNeed,
+  unwrapFamilyRpcResult,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
@@ -588,8 +589,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     creatingLinkRef.current = true
     setCreatingLink(true)
     try {
-      const { key, linkId } = await overseer.createShareLink(
-        newLinkRole, newLinkNote.trim() || undefined)
+      const { key, linkId } = unwrapFamilyRpcResult(await overseer.createShareLink(
+        newLinkRole, newLinkNote.trim() || undefined))
       const url = `${window.location.origin}/workspace/${metadata.id}#share=${key}`
       setNewShareLink(url)
       setNewShareLinkCopied(false)

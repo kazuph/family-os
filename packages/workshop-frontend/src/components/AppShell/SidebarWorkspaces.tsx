@@ -28,6 +28,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
+import { familyLabel, familyUi, isFamilyMode } from '../../familyUi'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
 const RECENT_INITIAL_LIMIT = 6
@@ -51,6 +52,8 @@ type WorkspacesContextValue = {
   onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
   onShare: (g: GadgetMetadataWithTimestamps) => void
   onDelete: (g: GadgetMetadataWithTimestamps) => void
+  /** False for Family child profiles — sidebar Share must stay hidden. */
+  canShare: boolean
 }
 
 const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -67,7 +70,8 @@ function useWorkspacesContext(): WorkspacesContextValue {
 // independently in the parent layout (pinned vs. scrolling areas).
 // ─────────────────────────────────────────────────────────────────────────────
 export function SidebarWorkspacesProvider({ children }: { children: ReactNode }) {
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, isFamilyChild } = useAuthenticatedApi()
+  const canShare = !isFamilyChild
   const toasts = useKumoToastManager()
 
   const [gadgets, setGadgets] = useState<GadgetMetadataWithTimestamps[]>([])
@@ -146,7 +150,10 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     } catch (err) {
       console.error('Failed to toggle pin:', err)
       setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, pinned: g.pinned } : x)))
-      toasts.add({ title: 'Failed to update favorite', variant: 'error' })
+      toasts.add({
+        title: familyLabel('Failed to update favorite', familyUi.failedUpdateFavorite),
+        variant: 'error',
+      })
     } finally {
       overseer[Symbol.dispose]()
     }
@@ -160,7 +167,10 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     } catch (err) {
       console.error('Failed to rename:', err)
       setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, title: g.title } : x)))
-      toasts.add({ title: 'Failed to rename workspace', variant: 'error' })
+      toasts.add({
+        title: familyLabel('Failed to rename workspace', familyUi.failedRenameWorkspace),
+        variant: 'error',
+      })
     } finally {
       overseer[Symbol.dispose]()
     }
@@ -177,7 +187,10 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     } catch (err) {
       overseer?.[Symbol.dispose]()
       console.error('Failed to open workspace for sharing:', err)
-      toasts.add({ title: 'Failed to open share settings', variant: 'error' })
+      toasts.add({
+        title: familyLabel('Failed to open share settings', familyUi.failedOpenShare),
+        variant: 'error',
+      })
     }
   }, [authenticatedApi, toasts])
 
@@ -197,12 +210,17 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
       }
       setGadgets((prev) => prev.filter((x) => x.id !== deleteTarget.id))
       toasts.add({
-        title: deleteTarget.owner ? 'Workspace removed' : 'Workspace deleted',
+        title: deleteTarget.owner
+          ? familyLabel('Workspace removed', familyUi.workspaceRemoved)
+          : familyLabel('Workspace deleted', familyUi.workspaceDeleted),
         variant: 'success',
       })
     } catch (err) {
       console.error('Failed to delete workspace:', err)
-      toasts.add({ title: 'Failed to delete workspace', variant: 'error' })
+      toasts.add({
+        title: familyLabel('Failed to delete workspace', familyUi.failedDeleteWorkspace),
+        variant: 'error',
+      })
     } finally {
       setIsDeleting(false)
       setDeleteTarget(null)
@@ -220,6 +238,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     onRename,
     onShare,
     onDelete: setDeleteTarget,
+    canShare,
   }
 
   return (
@@ -231,14 +250,34 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
         open={deleteTarget !== null}
         onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
         isDeleting={isDeleting}
-        title={deleteTarget?.owner ? 'Remove workspace' : 'Delete workspace'}
+        title={deleteTarget?.owner
+          ? familyLabel('Remove workspace', familyUi.removeWorkspace)
+          : familyLabel('Delete workspace', familyUi.deleteWorkspace)}
         description={
           deleteTarget?.owner
-            ? `Remove "${deleteTarget?.title || 'Untitled workspace'}" from your list? You can still access it via its link.`
-            : `Delete "${deleteTarget?.title || 'Untitled workspace'}"? This cannot be undone.`
+            ? familyLabel(
+                `Remove "${deleteTarget?.title || 'Untitled workspace'}" from your list? You can still access it via its link.`,
+                familyUi.removeWorkspaceBody(
+                  deleteTarget?.title || familyUi.untitledWorkspace,
+                ),
+              )
+            : familyLabel(
+                `Delete "${deleteTarget?.title || 'Untitled workspace'}"? This cannot be undone.`,
+                familyUi.deleteWorkspaceBody(
+                  deleteTarget?.title || familyUi.untitledWorkspace,
+                ),
+              )
         }
-        confirmLabel={deleteTarget?.owner ? 'Remove' : 'Delete'}
-        confirmingLabel={deleteTarget?.owner ? 'Removing...' : 'Deleting...'}
+        confirmLabel={
+          deleteTarget?.owner
+            ? familyLabel('Remove', familyUi.remove)
+            : familyLabel('Delete', familyUi.delete)
+        }
+        confirmingLabel={
+          deleteTarget?.owner
+            ? familyLabel('Removing...', familyUi.removing)
+            : familyLabel('Deleting...', familyUi.deleting)
+        }
         onConfirm={handleDeleteConfirm}
       />
 
@@ -272,8 +311,8 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
       <button
         type="button"
         onClick={() => openCommandPalette()}
-        aria-label="Search"
-        title="Search (⌘K)"
+        aria-label={familyLabel('Search', familyUi.search)}
+        title={familyLabel('Search (⌘K)', `${familyUi.search}（⌘K）`)}
         className="press flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
       >
         <MagnifyingGlass size={15} />
@@ -296,6 +335,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     onRename,
     onShare,
     onDelete,
+    canShare,
   } = useWorkspacesContext()
 
   const [favOpen, setFavOpen] = useState(true)
@@ -314,6 +354,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             onRename={onRename}
             onShare={onShare}
             onDelete={onDelete}
+            canShare={canShare}
           />
         ))}
       </div>
@@ -327,7 +368,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     <div className="flex flex-col pb-3">
       {/* Favorites */}
       <SidebarSection
-        label="Favorites"
+        label={familyLabel('Favorites', familyUi.favorites)}
         count={favorites.length}
         open={favOpen}
         onToggle={() => setFavOpen((o) => !o)}
@@ -335,7 +376,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
       >
         {favorites.length === 0 ? (
           <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-            Favorite a workspace to keep it here.
+            {familyLabel('Favorite a workspace to keep it here.', familyUi.favoriteHint)}
           </p>
         ) : (
           <div className="flex flex-col">
@@ -347,6 +388,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                 onRename={onRename}
                 onShare={onShare}
                 onDelete={onDelete}
+                canShare={canShare}
               />
             ))}
           </div>
@@ -355,7 +397,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
 
       {/* Recent workspaces — no count here; the "Show all (N)" link already carries it. */}
       <SidebarSection
-        label="Recent workspaces"
+        label={familyLabel('Recent workspaces', familyUi.recentWorkspaces)}
         open={recentOpen}
         onToggle={() => setRecentOpen((o) => !o)}
       >
@@ -367,7 +409,9 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
           </div>
         ) : recent.length === 0 ? (
           <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-            {search ? 'No matches.' : 'No workspaces yet.'}
+            {search
+              ? (isFamilyMode ? familyUi.noMatches : 'No matches.')
+              : (isFamilyMode ? familyUi.noWorkspacesYetShort : 'No workspaces yet.')}
           </p>
         ) : (
           <>
@@ -380,6 +424,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                   onRename={onRename}
                   onShare={onShare}
                   onDelete={onDelete}
+                  canShare={canShare}
                 />
               ))}
             </div>
@@ -387,7 +432,9 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
               to="/workspaces"
               className="mt-0.5 flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
-              {recentHidden > 0 ? `Show all (${recent.length})` : 'Show all'}
+              {recentHidden > 0
+                ? familyLabel(`Show all (${recent.length})`, `${familyUi.showAll}（${recent.length}）`)
+                : familyLabel('Show all', familyUi.showAll)}
               <ArrowRight size={11} weight="bold" />
             </Link>
           </>

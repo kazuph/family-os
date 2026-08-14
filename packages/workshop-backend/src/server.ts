@@ -1,8 +1,10 @@
-import { RpcStub, RpcTarget, newWorkersRpcResponse } from "capnweb";
+import { RpcStub, RpcTarget, newWebSocketRpcSession, newWorkersRpcResponse } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
+import { PublicApi, AuthenticatedApi, FamilyEntry, FamilyState, type FamilyMonsterAvatarId, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, createFamilyError, FAMILY_ERROR_CODES, getFamilyErrorCode } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
+import type { FamilyRpcResult } from "@gadgets/workshop-shared/api";
+import { unwrapFamilyRpcResult } from "@gadgets/workshop-shared/api";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
@@ -19,12 +21,19 @@ import { getAiGatewayConfig } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { BlueprintKvRecord, buildBlueprintArchiveStream, sanitizeBlueprintOutput, listFeaturedBlueprintsFromKv, parseBlueprintArchive, randomBlueprintId, readBlueprintContent, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
+import { FamilyDurableObject, assertAdultFamilyProfile } from "./family.js";
+import {
+  FAMILY_ADULT_EMAIL_HEADER,
+  FAMILY_ADULT_SUB_HEADER,
+  FAMILY_LOGIN_IAT_HEADER,
+  registerFamilyAccessApiFactory,
+} from "./family-device-session.js";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
-import { verifyCfAccessJwt } from "./access.js";
+import { readCfAccessLoginIdentity, verifyCfAccessJwt, type CfAccessFetch } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
@@ -52,6 +61,10 @@ export { AdminSettings };
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl };
 
+// Re-export the deployment-scoped Family OS state object for wrangler's Durable Object binding.
+export { FamilyDurableObject } from "./family.js";
+export { FamilyDeviceSessionDurableObject } from "./family-device-session.js";
+
 // Re-export entrypoint types from overseer.ts.
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
@@ -65,17 +78,25 @@ type Env = Cloudflare.Env & {
   // Set these if using Cloudflare Access for authentication, otherwise username/password is used.
   CF_ACCESS_AUD?: string,  // audience
   CF_ACCESS_ISS?: string,  // team URL, i.e. https://<team>.cloudflareaccess.com
+  ACCESS_IDENTITY?: Fetcher;
   DEV?: boolean;
   FLAGS?: Flagship;
 }
 
 // =======================================================================================
 
+type FamilyCapabilityGuard = {
+  assertCurrent(): Promise<void>;
+  /** True when the minted API belongs to a child profile (adult-only actions must fail closed). */
+  childProfile: boolean;
+};
+
 @validateRpc()
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
       private user: DurableObjectStub<UserDurableObject>,
-      private abortSession: (reason: Error) => void) {
+      private abortSession: (reason: Error) => void,
+      private familyGuard?: FamilyCapabilityGuard) {
     super();
 
     this.overseers = this.ctx.exports.OverseerDurableObject;
@@ -86,6 +107,24 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   private overseers: DurableObjectNamespace<OverseerDurableObject>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   private users: DurableObjectNamespace<UserDurableObject>;
+
+  async #assertFamilyCapability(): Promise<void> {
+    if (this.familyGuard) await this.familyGuard.assertCurrent();
+  }
+
+  async #assertAdultFamilyCapability(): Promise<void> {
+    await this.#assertFamilyCapability();
+    assertAdultFamilyProfile(this.familyGuard?.childProfile === true);
+  }
+
+  /** Adult-profile gate as a Result so Cap'n Web clients observe coded Family denials without throws. */
+  async #adultFamilyResult(): Promise<FamilyRpcResult<void>> {
+    await this.#assertFamilyCapability();
+    if (this.familyGuard?.childProfile) {
+      return { ok: false, error: FAMILY_ERROR_CODES.adultProfileRequired };
+    }
+    return { ok: true, value: undefined };
+  }
 
   #isAdmin(): boolean {
     let name = this.user.id.name;
@@ -106,7 +145,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return admins.includes(name);
   }
 
-  whoami(): Promise<AiChatAuthorInfo> {
+  async whoami(): Promise<AiChatAuthorInfo> {
+    await this.#assertFamilyCapability();
     return this.user.whoami();
   }
   setOwnDisplayName(name: string): Promise<void> {
@@ -121,14 +161,23 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   listModels(): Promise<AiChatAuthorInfo[]> {
     return this.user.listModels();
   }
-  addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
-    return this.user.addModel(profile, config);
+  async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<FamilyRpcResult<void>> {
+    let gate = await this.#adultFamilyResult();
+    if (!gate.ok) return gate;
+    await this.user.addModel(profile, config);
+    return { ok: true, value: undefined };
   }
-  deleteModel(id: string): Promise<void> {
-    return this.user.deleteModel(id);
+  async deleteModel(id: string): Promise<FamilyRpcResult<void>> {
+    let gate = await this.#adultFamilyResult();
+    if (!gate.ok) return gate;
+    await this.user.deleteModel(id);
+    return { ok: true, value: undefined };
   }
-  setQuickModel(id: string | null): Promise<void> {
-    return this.user.setQuickModel(id);
+  async setQuickModel(id: string | null): Promise<FamilyRpcResult<void>> {
+    let gate = await this.#adultFamilyResult();
+    if (!gate.ok) return gate;
+    await this.user.setQuickModel(id);
+    return { ok: true, value: undefined };
   }
   getQuickModel(): Promise<null | string> {
     return this.user.getQuickModel();
@@ -137,29 +186,51 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   getPreferredModel(): Promise<string | null> {
     return this.user.getPreferredModel();
   }
-  setPreferredModel(id: string | null): Promise<void> {
-    return this.user.setPreferredModel(id);
+  async setPreferredModel(id: string | null): Promise<FamilyRpcResult<void>> {
+    let gate = await this.#adultFamilyResult();
+    if (!gate.ok) return gate;
+    try {
+      await this.user.setPreferredModel(id);
+    } catch (error) {
+      logger.warn("setPreferredModel failed", {
+        event: "user.preferred-model.set.failed", modelId: id ?? "", error,
+      });
+      throw error;
+    }
+    return { ok: true, value: undefined };
   }
   isOnboardingCompleted(): Promise<boolean> {
     return this.user.isOnboardingCompleted();
   }
-  completeOnboarding(): Promise<void> {
-    return this.user.completeOnboarding();
+  async completeOnboarding(): Promise<void> {
+    try {
+      await this.user.completeOnboarding();
+    } catch (error) {
+      logger.warn("completeOnboarding failed", {
+        event: "user.onboarding.complete.failed", error,
+      });
+      throw error;
+    }
   }
 
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
     return getUsageInfo(this.env, this.user);
   }
 
-  listCloudflareAccounts(): Promise<CloudflareAccountOption[]> {
+  async listCloudflareAccounts(): Promise<CloudflareAccountOption[]> {
+    await this.#assertAdultFamilyCapability();
     return listConnectedAccounts(this.env, this.user);
   }
 
-  selectCloudflareAccount(accountId: string): Promise<void> {
+  async selectCloudflareAccount(accountId: string): Promise<void> {
+    await this.#assertAdultFamilyCapability();
     return selectAccount(this.env, this.user, accountId);
   }
 
   async setAvatar(data: Uint8Array | null): Promise<void> {
+    if (this.env.CF_ACCESS_AUD) {
+      throw createFamilyError(FAMILY_ERROR_CODES.adultProfileRequired);
+    }
     if (data) {
       if (data.byteLength > 100 * 1024) {
         throw new Error("Avatar too large (max 100 KB)");
@@ -205,6 +276,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async #openGadgetInternal(id: string, shareKey?: string,
                             configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<NativeRpcStub<Overseer>> {
+    await this.#assertFamilyCapability();
+    if (shareKey) await this.#assertAdultFamilyCapability();
     let userId = this.user.id.toString();
     let profileId = this.user.id.name!;
     let overseerId;
@@ -241,7 +314,20 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     let result;
     try {
-      result = await overseer.open(userId, profileId, notifyClosed, shareKey, configureObservers);
+      result = await overseer.open(userId, profileId, notifyClosed, shareKey, configureObservers,
+          this.familyGuard?.childProfile === true,
+          this.familyGuard
+            ? new NativeRpcStub(async (): Promise<FamilyRpcResult<void>> => {
+                try {
+                  await this.familyGuard!.assertCurrent();
+                  return { ok: true, value: undefined };
+                } catch (error) {
+                  let code = getFamilyErrorCode(error);
+                  if (!code) throw error;
+                  return { ok: false, error: code };
+                }
+              })
+            : undefined);
     } catch (err) {
       // A denial proves this user's listing for the workspace is stale: revocation tries to drop it
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries
@@ -270,6 +356,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async newGadget(): Promise<RpcStub<Overseer>> {
+    await this.#assertFamilyCapability();
     let id = this.overseers.newUniqueId().toString();
     await this.user.newGadget(id, "Untitled Workspace");
     recordAnalytics(this.ctx, this.env, {
@@ -299,43 +386,56 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return offers.map(({agentHint: _agentHint, bindings: _bindings, ...offer}) => offer);
   }
 
-  listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]> {
+  async listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]> {
+    await this.#assertFamilyCapability();
+    // Connector discovery is adult-only; children get an empty catalog (no Cap'n Web throw).
+    if (this.familyGuard?.childProfile) return [];
     return this.user.listGatekeeperVendors(filter);
   }
 
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}> {
-    return this.user.connectAccount(vendorId, resourceUrlPatterns);
+  async connectAccount(vendorId: string, resourceUrlPatterns?: string[])
+      : Promise<FamilyRpcResult<{url: string}>> {
+    let gate = await this.#adultFamilyResult();
+    if (!gate.ok) return gate;
+    return { ok: true, value: await this.user.connectAccount(vendorId, resourceUrlPatterns) };
   }
 
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
+  async ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
+    await this.#assertAdultFamilyCapability();
     return this.user.ensureAccountResources(accountId, resourceUrlPatterns);
   }
 
-  listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
+  async listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
+    await this.#assertAdultFamilyCapability();
     return this.user.listAddableGatekeepers();
   }
 
-  provisionAmbientAccount(vendorId: string): Promise<void> {
+  async provisionAmbientAccount(vendorId: string): Promise<void> {
+    await this.#assertAdultFamilyCapability();
     return this.user.provisionAmbientAccount(vendorId);
   }
 
-  subscribeConnectedAccounts(
+  async subscribeConnectedAccounts(
       subscriber: RpcStub<ConnectedAccountsSubscriber>, filter?: ConnectedAccountsFilter)
       : Promise<RpcStub<{}>> {
+    await this.#assertAdultFamilyCapability();
     return this.user.subscribeConnectedAccounts(subscriber, filter);
   }
 
-  disconnectAccount(accountId: number): Promise<void> {
+  async disconnectAccount(accountId: number): Promise<void> {
+    await this.#assertAdultFamilyCapability();
     return this.user.disconnectAccount(accountId);
   }
 
-  reconnectAccount(accountId: number): Promise<{url: string}> {
+  async reconnectAccount(accountId: number): Promise<{url: string}> {
+    await this.#assertAdultFamilyCapability();
     return this.user.reconnectAccount(accountId);
   }
 
-  startResourceConfigurator(
+  async startResourceConfigurator(
       accountId: number,
       resourceUrlPattern: string) {
+    await this.#assertAdultFamilyCapability();
     return this.user.startResourceConfigurator(accountId, resourceUrlPattern);
   }
 
@@ -549,6 +649,9 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   // vendor id, e.g. "context"), so each app is hosted at /gatekeepers/<vendorId>. UI-providing
   // accounts are auto-provisioned singletons (one per vendor), so the vendor id identifies them.
   async listGatekeeperApps(): Promise<GatekeeperAppInfo[]> {
+    await this.#assertFamilyCapability();
+    // Gatekeeper management apps are adult-only; children see none in nav/direct loads.
+    if (this.familyGuard?.childProfile) return [];
     // listProvidedAccounts provisions auto-provisioned accounts first (idempotent), so their apps
     // appear in the nav even before the user opens a gadget — in a single round trip.
     let accounts = await this.user.listProvidedAccounts();
@@ -562,6 +665,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null> {
+    await this.#assertAdultFamilyCapability();
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
     let accounts = await this.user.listProvidedAccounts();
@@ -574,10 +678,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   // --- Deployment admin ---
 
   async amIAdmin(): Promise<boolean> {
+    if (this.familyGuard?.childProfile) return false;
     return this.#isAdmin();
   }
 
   async getAdminApi(): Promise<RpcStub<AdminApi> | null> {
+    if (this.familyGuard?.childProfile) return null;
     if (!this.#isAdmin()) return null;
     // #isAdmin() guarantees a non-empty user id name. Forwarded to gatekeepers when listing the
     // resource catalog so RBAC-gated ones still surface for this admin.
@@ -621,12 +727,117 @@ class LoginAttemptImpl extends RpcTarget implements LoginAttempt {
 }
 
 @validateRpc()
+class FamilyEntryImpl extends RpcTarget implements FamilyEntry {
+  private users: DurableObjectNamespace<UserDurableObject>;
+  private family: DurableObjectStub<FamilyDurableObject>;
+  private deviceSessionRegistered = false;
+
+  constructor(private ctx: ExecutionContext, private env: Env,
+      private adultUserId: string, private deviceId: string, private loginIat: number,
+      private abortSession: (reason: Error) => void, private deviceSessionId: string) {
+    super();
+    this.users = this.ctx.exports.UserDurableObject;
+    this.family = this.ctx.exports.FamilyDurableObject.get(
+        this.ctx.exports.FamilyDurableObject.idFromName(""));
+  }
+
+  getState(): Promise<FamilyState> {
+    return this.family.getState(this.deviceId, this.loginIat, this.adultUserId);
+  }
+
+  async getAuthenticatedApi(): Promise<FamilyRpcResult<RpcStub<AuthenticatedApi>>> {
+    let resolved = await this.family.resolveActiveUser(this.deviceId, this.loginIat, this.adultUserId);
+    if (!resolved.ok) return resolved;
+    await this.#registerDeviceSession();
+    let { userId, generation } = resolved.value;
+    let user = this.users.get(this.users.idFromString(userId));
+    // Pre-existing child DOs may still have onboardingCompleted=false from before children skipped
+    // the adult wizard; clear that so reload does not re-enter setup for a named child profile.
+    if (userId !== this.adultUserId) {
+      await user.ensureFamilyChildOnboardingComplete();
+    }
+    let familyGuard: FamilyCapabilityGuard = {
+      childProfile: userId !== this.adultUserId,
+      assertCurrent: async () => {
+        unwrapFamilyRpcResult(await this.family.assertGeneration(this.deviceId, generation));
+      },
+    };
+    // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible.
+    return { ok: true, value: new AuthenticatedApiImpl(this.ctx, this.env, user, this.abortSession, familyGuard) };
+  }
+
+  setHouseholdPasscode(passcode: string): Promise<FamilyRpcResult<FamilyState>> {
+    return this.family.setPasscode(this.deviceId, this.loginIat, this.adultUserId, passcode);
+  }
+
+  createChildProfile(name: string): Promise<FamilyRpcResult<FamilyState>> {
+    return this.family.createChild(this.deviceId, this.loginIat, this.adultUserId, name);
+  }
+
+  setMonsterAvatar(avatarId: FamilyMonsterAvatarId)
+      : Promise<FamilyRpcResult<FamilyState>> {
+    return this.family.setMonsterAvatar(this.deviceId, this.loginIat, this.adultUserId, avatarId);
+  }
+
+  selectAdultProfile(passcode?: string): Promise<FamilyRpcResult<void>> {
+    return this.#withDeviceRevocation(this.family.selectAdult(this.deviceId, this.loginIat, passcode));
+  }
+
+  selectChildProfile(profileId: string): Promise<FamilyRpcResult<void>> {
+    return this.#withDeviceRevocation(this.family.selectChild(this.deviceId, this.loginIat, profileId));
+  }
+
+  switchToAdultProfile(passcode: string): Promise<FamilyRpcResult<void>> {
+    return this.#withDeviceRevocation(this.family.switchToAdult(this.deviceId, this.loginIat, passcode),
+        (result) => !result.ok && result.error === FAMILY_ERROR_CODES.passcodeReauthenticationRequired);
+  }
+
+  async #withDeviceRevocation(
+      operation: Promise<FamilyRpcResult<void>>,
+      shouldRevokeOnError: (result: FamilyRpcResult<void>) => boolean = () => false,
+  ): Promise<FamilyRpcResult<void>> {
+    let result = await operation;
+    if (result.ok) {
+      // Await sibling/all revocation before returning so the transition result and socket
+      // invalidation share one completion boundary. Sibling revoke keeps this session alive
+      // so Cap'n Web can still deliver `result` on the calling WebSocket.
+      if (this.deviceSessionRegistered) {
+        await this.family.revokeDeviceSessionSiblings(this.deviceId, this.deviceSessionId);
+      } else {
+        await this.family.revokeAllDeviceSessionAborts(this.deviceId);
+      }
+    } else if (shouldRevokeOnError(result)) {
+      // Close same-device siblings immediately; defer aborting *this* session with waitUntil so
+      // the lock result is delivered before the calling socket is torn down (no fixed delay).
+      await this.family.revokeDeviceSessionSiblings(this.deviceId, this.deviceSessionId);
+      this.ctx.waitUntil(
+          Promise.resolve(this.family.revokeAllDeviceSessionAborts(this.deviceId)).catch(() => {}));
+    }
+    return result;
+  }
+
+  async #registerDeviceSession(): Promise<void> {
+    if (this.deviceSessionRegistered) return;
+    await this.family.registerDeviceSessionAbort(this.deviceId, this.deviceSessionId,
+        new NativeRpcStub<() => void>(() => {
+          try {
+            this.abortSession(new Error("family profile capability revoked"));
+          } catch {
+            // A sibling connection may already have ended its request context.
+          }
+        }));
+    this.deviceSessionRegistered = true;
+  }
+}
+
+@validateRpc()
 class PublicApiImpl extends RpcTarget implements PublicApi {
   users: DurableObjectNamespace<UserDurableObject>;
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessPayload?: JWTPayload) {
+      private accessPayload?: JWTPayload, private familyDeviceId?: string,
+      private accessLoginIat?: number, private deviceSessionId?: string) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
@@ -636,6 +847,9 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async startGatekeeperLogin(vendorId: string): Promise<{ url: string; attempt: RpcStub<LoginAttempt> }> {
+    if (this.env.CF_ACCESS_AUD) {
+      throw createAuthError(AUTH_ERROR_CODES.accessAuthenticationRequired);
+    }
     if (!getAuthGatekeeperAllowlist(this.env).includes(vendorId)) {
       throw new Error(`Sign-in via "${vendorId}" is not enabled on this deployment.`);
     }
@@ -662,6 +876,9 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async authenticate(token: string): Promise<AuthenticatedApi> {
+    if (this.env.CF_ACCESS_AUD) {
+      throw createAuthError(AUTH_ERROR_CODES.accessAuthenticationRequired);
+    }
     let split = token.split(':');
     if (split.length !== 2) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
@@ -678,16 +895,20 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
   }
 
-  async authenticateFromCfAccess(): Promise<AuthenticatedApi> {
+  async authenticateFromCfAccess(): Promise<RpcStub<FamilyEntry>> {
     if (!this.accessPayload) {
       throw createAuthError(AUTH_ERROR_CODES.notAuthenticatedWithAccess);
     }
 
     let email = this.accessPayload.email as string;
+    if (!this.familyDeviceId || !this.accessLoginIat || !this.deviceSessionId) {
+      throw createAuthError(AUTH_ERROR_CODES.notAuthenticatedWithAccess);
+    }
     let userId = this.users.idFromName(email);
     let stub = this.users.get(userId);
-    let signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
-    let accountCreated = await stub.authenticateFromCfAccess(email, signupsEnabled);
+    // Every verified Access identity is an adult household member. Family OS does not use the
+    // general signup toggle here: adding another adult is deliberately an Access OTP operation.
+    let accountCreated = await stub.authenticateFromCfAccess(email, true);
     if (accountCreated) {
       recordAnalytics(this.ctx, this.env, {
         event_name: "account_created",
@@ -700,7 +921,9 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       user_id: userId.toString(),
       source: "cf_access",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
+    // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible.
+    return new FamilyEntryImpl(this.ctx, this.env, userId.toString(), this.familyDeviceId,
+        this.accessLoginIat, this.abortSession, this.deviceSessionId);
   }
 
   async login(username: string, passwordHash: Uint8Array): Promise<string | null> {
@@ -778,6 +1001,32 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 }
 
+const FAMILY_DEVICE_COOKIE = "family_device";
+
+function familyDeviceId(request: Request): string | undefined {
+  let cookies = request.headers.get("Cookie")?.split(";") ?? [];
+  let value = cookies.find((cookie) => cookie.trim().startsWith(`${FAMILY_DEVICE_COOKIE}=`))
+      ?.trim().slice(FAMILY_DEVICE_COOKIE.length + 1);
+  return value && /^[0-9a-f-]{36}$/.test(value) ? value : undefined;
+}
+
+function isSecureRequest(request: Request): boolean {
+  if (new URL(request.url).protocol === "https:") return true;
+  return request.headers.get("X-Forwarded-Proto") === "https";
+}
+
+function familyDeviceCookie(value: string, secure: boolean): string {
+  let attrs = [`${FAMILY_DEVICE_COOKIE}=${value}`, "Path=/", "HttpOnly", "SameSite=Strict"];
+  if (secure) attrs.push("Secure");
+  return attrs.join("; ");
+}
+
+function accessFetch(env: Env): CfAccessFetch {
+  return env.ACCESS_IDENTITY
+    ? (input, init) => env.ACCESS_IDENTITY!.fetch(input, init)
+    : globalThis.fetch;
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
@@ -825,39 +1074,78 @@ export default {
       }
 
       let accessPayload: JWTPayload | undefined;
+      let accessLoginIat: number | undefined;
+      let deviceId: string | undefined;
+      let setDeviceCookie = false;
 
       if (env.CF_ACCESS_AUD) {
         if (req.headers.get("Origin") !== url.origin) {
           return new Response("Cross-origin API access not allowed.", { status: 403 });
         }
 
-        const payload = await verifyCfAccessJwt(req, env);
+        let identityFetch = accessFetch(env);
+        const payload = await verifyCfAccessJwt(req, env, undefined, identityFetch);
         if (!payload) return new Response("Invalid CF access JWT.", { status: 403 });
 
         if (!payload.email) {
           return new Response("Access JWT didn't specify email address.", { status: 403 });
         }
+        let loginIat = await readCfAccessLoginIdentity(req, env, payload, identityFetch);
+        if (!loginIat) return new Response("Invalid CF access identity.", { status: 403 });
 
         accessPayload = payload;
+        accessLoginIat = loginIat;
+        deviceId = familyDeviceId(req);
+        if (!deviceId) {
+          deviceId = crypto.randomUUID();
+          setDeviceCookie = true;
+        }
       }
 
-      // HACK: Implement `abortSession` callback by closing the websocket.
-      // TODO: When ctx.abort() becomes non-experimental, consider using that instead.
-      let resp: Response | undefined;
+      // Keep the server side of the WebSocket so profile transitions sever the whole Cap'n Web
+      // session, including capabilities that were already derived from it.
+      let serverSocket: WebSocket | undefined;
       let aborted = false;
       let abortSession = (reason: Error) => {
-        // Closing the socket fails no invocation, so nothing else logs this.
         logger.warn("aborting api session", { event: "session.abort", error: reason });
-        aborted = true;
-        resp?.webSocket?.close();
+        let boundedReason = reason.message.slice(0, 123);
+        if (!serverSocket) {
+          aborted = true;
+          return;
+        }
+        serverSocket.close(1008, boundedReason);
       };
 
-      resp = await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessPayload));
+      let deviceSessionId = env.CF_ACCESS_AUD && deviceId ? crypto.randomUUID() : undefined;
+      let api = new PublicApiImpl(ctx, env, abortSession, accessPayload, deviceId, accessLoginIat, deviceSessionId);
+      let isWebSocket = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
+      let resp: Response;
+      if (isWebSocket && env.CF_ACCESS_AUD && deviceId && accessPayload && accessLoginIat !== undefined) {
+        let deviceSession = ctx.exports.FamilyDeviceSessionDurableObject.get(
+            ctx.exports.FamilyDeviceSessionDurableObject.idFromName(deviceId));
+        let headers = new Headers(req.headers);
+        headers.set(FAMILY_LOGIN_IAT_HEADER, String(accessLoginIat));
+        headers.set(FAMILY_ADULT_EMAIL_HEADER, accessPayload.email as string);
+        headers.set(FAMILY_ADULT_SUB_HEADER, accessPayload.sub as string);
+        resp = await deviceSession.fetch(new Request(req.url, { headers }));
+      } else if (isWebSocket) {
+        let pair = new WebSocketPair();
+        serverSocket = pair[0];
+        serverSocket.accept();
+        newWebSocketRpcSession(serverSocket, api);
+        resp = new Response(null, { status: 101, webSocket: pair[1] });
+      } else {
+        resp = await newWorkersRpcResponse(req, api);
+      }
+
+      if (setDeviceCookie && deviceId) {
+        let headers = new Headers(resp.headers);
+        headers.append("Set-Cookie", familyDeviceCookie(deviceId, isSecureRequest(req)));
+        resp = new Response(null, { status: resp.status, headers, webSocket: resp.webSocket });
+      }
 
       if (aborted) {
-        // Oops, we missed the abortSession() call while awaiting, apply now.
-        resp?.webSocket?.close();
+        serverSocket?.close(1008, "Family OS session aborted before the RPC response was ready.");
       }
       return resp;
     }
@@ -865,3 +1153,6 @@ export default {
     return new Response("Not Found", {status: 404});
   }
 } satisfies ExportedHandler<Env>;
+
+registerFamilyAccessApiFactory((ctx, env, abortSession, accessPayload, deviceId, loginIat, deviceSessionId) =>
+    new PublicApiImpl(ctx as unknown as ExecutionContext, env, abortSession, accessPayload, deviceId, loginIat, deviceSessionId));

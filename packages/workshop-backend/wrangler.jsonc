@@ -56,10 +56,19 @@
       // login back to the waiting browser.
       "tag": "v2",
       "new_sqlite_classes": [ "PendingLogin" ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [ "FamilyDurableObject" ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [ "FamilyDeviceSessionDurableObject" ]
     }
   ],
 
-  // All DO classes (UserDurableObject, OverseerDurableObject, AdminSettings, PendingLogin, ...) are
+  // All DO classes (UserDurableObject, OverseerDurableObject, AdminSettings, PendingLogin,
+  // FamilyDurableObject, ...) are
   // reached via ctx.exports and need no explicit durable_objects binding.
   "kv_namespaces": [
     {

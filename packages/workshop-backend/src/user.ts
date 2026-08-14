@@ -12,6 +12,11 @@ import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+import {
+  getOpenCodeGoModel,
+  listOpenCodeGoModels,
+  OPENCODE_GO_MODEL_ID,
+} from "./opencode-go.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -326,6 +331,26 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return false;
   }
 
+  // Initializes the durable object owned by a Family OS child profile. This method is called only
+  // by the deployment's FamilyDurableObject before the child capability is ever issued.
+  async initializeFamilyChild(id: string, name: string): Promise<void> {
+    if (this.storage.created.get()) {
+      throw new Error("Family child profile is already initialized.");
+    }
+    this.storage.created.put(true);
+    this.storage.profile.put({ type: "user", id, name });
+    // Children are named at creation and pick a monster avatar from the Family UI; they do not run
+    // the adult account-setup wizard, so mark onboarding complete before the first capability mint.
+    this.storage.onboardingCompleted.put(true);
+  }
+
+  /** Idempotently skips the adult onboarding wizard for an already-created Family OS child user. */
+  async ensureFamilyChildOnboardingComplete(): Promise<void> {
+    if (!this.storage.onboardingCompleted.get()) {
+      this.storage.onboardingCompleted.put(true);
+    }
+  }
+
   async #newSessionToken(): Promise<string> {
     let sessionToken = new Uint8Array(32);
     crypto.getRandomValues(sessionToken);
@@ -504,20 +529,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
     let result: AiChatAuthorInfo[] = [];
+    let managedModelIds = new Set<string>();
+
+    for (const profile of listOpenCodeGoModels(this.env)) {
+      result.push(profile);
+      managedModelIds.add(profile.id);
+    }
 
     // When AI Gateway mode is active, include all suggested models for enabled providers.
-    let gwConfig = getAiGatewayConfig(this.env);
-    let gwModelIds = new Set<string>();
+    let gwConfig: ReturnType<typeof getAiGatewayConfig> = null;
+    try {
+      gwConfig = getAiGatewayConfig(this.env);
+    } catch (err) {
+      logger.warn("ai gateway config invalid while listing models", {
+        event: "user.models.gateway-config.invalid", error: err,
+      });
+    }
     if (gwConfig) {
       for (let entry of gwConfig.getModelList()) {
         result.push(entry);
-        gwModelIds.add(entry.id);
+        managedModelIds.add(entry.id);
       }
     }
 
-    // Also include user-configured models, skipping any that duplicate a gateway model.
+    // Also include user-configured models, skipping any that duplicate a managed model.
     for (let model of this.storage.aiModels.list()) {
-      if (!gwModelIds.has(model.profile.id)) {
+      if (!managedModelIds.has(model.profile.id)) {
         result.push(model.profile);
       }
     }
@@ -525,16 +562,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
+    if (config.provider === "opencode-go") {
+      throw new Error("OpenCode Go models are managed by the deployment.");
+    }
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
 
     profile.type = "agent";
+    delete profile.managedByDeployment;
     this.storage.aiModels.put({profile, config});
   }
 
   async deleteModel(id: string): Promise<void> {
+    if (getOpenCodeGoModel(this.env)?.profile.id === id) {
+      throw new Error("Cannot delete the deployment-managed OpenCode Go model.");
+    }
     // In AI Gateway mode, don't allow deleting built-in suggested models.
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig) {
@@ -567,10 +611,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
-      // Validate that the model exists in the user's configured models or as a gateway model.
-      let gwConfig = getAiGatewayConfig(this.env);
-      let exists = !!this.storage.aiModels.get(id) || !!gwConfig?.resolveModel(id);
-      if (!exists) {
+      // Validate against the same catalog listModels() shows, including OpenCode Go.
+      let listed = await this.listModels();
+      if (!listed.some(model => model.id === id)) {
+        logger.warn("preferred model is not in the catalog", {
+          event: "user.preferred-model.unknown", modelId: id,
+        });
         throw new Error(`No such model: ${id}`);
       }
     }
@@ -670,8 +716,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile: this.storage.profile.get()
     };
     if (modelId) {
+      if (modelId === OPENCODE_GO_MODEL_ID) {
+        result.aiModel = getOpenCodeGoModel(this.env);
+      }
       // In AI Gateway mode, resolve gateway models first.
-      if (gwConfig) {
+      if (!result.aiModel && gwConfig) {
         result.aiModel = gwConfig.resolveModel(modelId);
       }
       if (!result.aiModel) {

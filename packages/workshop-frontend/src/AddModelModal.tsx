@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
-import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
+import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import { familyLabel, familyUi } from './familyUi'
 
 interface AddModelModalProps {
   visible: boolean
@@ -17,6 +18,7 @@ type SelectionType =
   | { type: 'custom', provider: AiModelProvider }
 
 const PROVIDER_LABELS: Record<AiModelProvider, string> = {
+  'opencode-go': 'OpenCode Go',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
@@ -26,11 +28,12 @@ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
 
 // Placeholder hinting at the shape of each provider's API token.
 const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
+  'opencode-go': familyLabel('Managed by deployment', familyUi.apiTokenManaged),
   anthropic: 'sk-ant-...',
   openai: 'sk-...',
   google: 'AIza...',
-  cloudflare: 'Cloudflare API token',
-  ollama: '(optional)',
+  cloudflare: familyLabel('Cloudflare API token', 'Cloudflare APIトークン'),
+  ollama: familyLabel('(optional)', familyUi.optionalShort),
 }
 
 // Example used in the custom-model placeholders for providers that have no suggested models
@@ -63,7 +66,8 @@ function decodeSelection(value: string): SelectionType {
 // Build the flat list of options for the Select dropdown.
 function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null) {
   const options: { value: string; label: string; provider: string }[] = []
-  const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
+  const providerOrder = (Object.keys(SUGGESTED_MODELS) as AiModelProvider[])
+    .filter((provider) => provider !== 'opencode-go')
 
   for (const provider of providerOrder) {
     if (enabledProviders && !enabledProviders.has(provider)) continue
@@ -81,7 +85,10 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
 
     options.push({
       value: encodeSelection(provider),
-      label: `Other ${PROVIDER_LABELS[provider] || provider}...`,
+      label: familyLabel(
+        `Other ${PROVIDER_LABELS[provider] || provider}...`,
+        familyUi.otherProvider(PROVIDER_LABELS[provider] || provider),
+      ),
       provider,
     })
   }
@@ -151,12 +158,14 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     const newErrors: Record<string, string> = {}
 
     if (!selection) {
-      newErrors.selection = gatewayMode ? 'Please select a provider' : 'Please select a model'
+      newErrors.selection = gatewayMode
+        ? familyLabel('Please select a provider', familyUi.pleaseSelectProvider)
+        : familyLabel('Please select a model', familyUi.pleaseSelectModel)
     }
 
     if (selection?.type === 'custom') {
-      if (!modelId.trim()) newErrors.modelId = 'Please enter the model ID'
-      if (!displayName.trim()) newErrors.displayName = 'Please enter a display name'
+      if (!modelId.trim()) newErrors.modelId = familyLabel('Please enter the model ID', familyUi.pleaseEnterModelId)
+      if (!displayName.trim()) newErrors.displayName = familyLabel('Please enter a display name', familyUi.pleaseEnterDisplayName)
     }
 
     const isOllama = selection?.provider === 'ollama'
@@ -164,15 +173,15 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     const showCredentials = !gatewayMode
 
     if (showCredentials && selection && !isOllama && !apiToken.trim()) {
-      newErrors.apiToken = 'Please enter your API token'
+      newErrors.apiToken = familyLabel('Please enter your API token', familyUi.pleaseEnterApiToken)
     }
 
     if (showCredentials && isCloudflare && !accountId.trim()) {
-      newErrors.accountId = 'Please enter your Cloudflare account ID'
+      newErrors.accountId = familyLabel('Please enter your Cloudflare account ID', familyUi.pleaseEnterAccountId)
     }
 
     if (showCredentials && isOllama && !apiUrl.trim()) {
-      newErrors.apiUrl = 'Please enter the Ollama API URL'
+      newErrors.apiUrl = familyLabel('Please enter the Ollama API URL', familyUi.pleaseEnterApiUrl)
     }
 
     setErrors(newErrors)
@@ -202,12 +211,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
       }
 
-      await authenticatedApi.addModel(profile, config)
-      toasts.add({ title: 'AI model added successfully', variant: 'success' })
+      await unwrapFamilyRpcResult(await authenticatedApi.addModel(profile, config))
+      toasts.add({ title: familyLabel('AI model added successfully', familyUi.addModelSuccess), variant: 'success' })
       onSuccess()
     } catch (error: any) {
       console.error('Failed to add model:', error)
-      toasts.add({ title: 'Failed to add model', variant: 'error' })
+      toasts.add({ title: familyLabel('Failed to add model', familyUi.failedAddModel), variant: 'error' })
     } finally {
       setLoading(false)
     }
@@ -235,15 +244,19 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
       <Dialog className="p-6" size="lg">
         <Dialog.Title className="text-lg font-semibold mb-4">
-          Add AI Model
+          {familyLabel('Add AI Model', familyUi.addAiModel)}
         </Dialog.Title>
 
         <div className="space-y-4">
           {/* Model / Provider selection */}
           <Select
-            label={gatewayMode ? 'Select Provider' : 'Select Model'}
+            label={gatewayMode
+              ? familyLabel('Select Provider', familyUi.selectProvider)
+              : familyLabel('Select Model', familyUi.selectModel)}
             className="w-full text-sm"
-            placeholder={gatewayMode ? 'Choose a provider...' : 'Choose an AI model...'}
+            placeholder={gatewayMode
+              ? familyLabel('Choose a provider...', familyUi.chooseProvider)
+              : familyLabel('Choose an AI model...', familyUi.chooseAiModel)}
             value={selectValue}
             onValueChange={(v) => handleModelSelect(v as string)}
             error={errors.selection}
@@ -273,9 +286,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {showCustomFields && (
             <>
               <Input
-                label="Model ID"
-                placeholder={`e.g., ${example!.modelId}`}
-                description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
+                label={familyLabel('Model ID', familyUi.modelIdLabel)}
+                placeholder={familyLabel(`e.g., ${example!.modelId}`, `例: ${example!.modelId}`)}
+                description={familyLabel(
+                  `The model identifier as specified by the provider (e.g., '${example!.modelId}')`,
+                  familyUi.modelIdDesc(example!.modelId),
+                )}
                 value={modelId}
                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
                 error={errors.modelId}
@@ -283,9 +299,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               />
 
               <Input
-                label="Display Name"
-                placeholder={`e.g., ${example!.name}`}
-                description="Human-readable name shown in the UI"
+                label={familyLabel('Display Name', familyUi.displayNameLabel)}
+                placeholder={familyLabel(`e.g., ${example!.name}`, `例: ${example!.name}`)}
+                description={familyLabel('Human-readable name shown in the UI', familyUi.displayNameDesc)}
                 value={displayName}
                 onChange={(e) => { setDisplayName(e.target.value); setErrors(prev => ({ ...prev, displayName: '' })) }}
                 error={errors.displayName}
@@ -297,9 +313,15 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {/* Cloudflare account ID (the Workers AI REST endpoint is account-scoped) */}
           {showCredentials && isCloudflare && (
             <Input
-              label="Cloudflare Account ID"
-              placeholder="e.g., 0123456789abcdef0123456789abcdef"
-              description="The Cloudflare account to bill for Workers AI usage"
+              label={familyLabel('Cloudflare Account ID', familyUi.cloudflareAccountId)}
+              placeholder={familyLabel(
+                'e.g., 0123456789abcdef0123456789abcdef',
+                '例: 0123456789abcdef0123456789abcdef',
+              )}
+              description={familyLabel(
+                'The Cloudflare account to bill for Workers AI usage',
+                familyUi.cloudflareAccountIdDesc,
+              )}
               value={accountId}
               onChange={(e) => { setAccountId(e.target.value); setErrors(prev => ({ ...prev, accountId: '' })) }}
               error={errors.accountId}
@@ -310,14 +332,20 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {/* API Token */}
           {showCredentials && selection && (
             <SensitiveInput
-              label="API Token"
+              label={familyLabel('API Token', familyUi.apiToken)}
               placeholder={API_TOKEN_PLACEHOLDERS[selection.provider]}
               description={
                 isOllama
-                  ? 'Optional for local Ollama access'
+                  ? familyLabel('Optional for local Ollama access', familyUi.apiTokenOptionalOllama)
                   : isCloudflare
-                  ? 'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)'
-                  : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
+                  ? familyLabel(
+                      'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)',
+                      familyUi.apiTokenWorkersAi,
+                    )
+                  : familyLabel(
+                      `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`,
+                      familyUi.apiTokenFor(PROVIDER_LABELS[selection.provider]),
+                    )
               }
               value={apiToken}
               onValueChange={(v) => { setApiToken(v); setErrors(prev => ({ ...prev, apiToken: '' })) }}
@@ -329,9 +357,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {/* Ollama API URL (always visible for Ollama) */}
           {showCredentials && isOllama && (
             <Input
-              label="API URL"
+              label={familyLabel('API URL', familyUi.apiUrl)}
               placeholder="http://localhost:11434"
-              description="URL of your Ollama server"
+              description={familyLabel('URL of your Ollama server', familyUi.apiUrlOllamaDesc)}
               value={apiUrl}
               onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}
               error={errors.apiUrl}
@@ -345,12 +373,15 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               open={advancedOpen}
               onOpenChange={setAdvancedOpen}
             >
-              <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
+              <Collapsible.DefaultTrigger>{familyLabel('Advanced Settings', familyUi.advancedSettings)}</Collapsible.DefaultTrigger>
               <Collapsible.DefaultPanel>
                 <Input
-                  label="API URL"
+                  label={familyLabel('API URL', familyUi.apiUrl)}
                   placeholder="https://..."
-                  description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
+                  description={familyLabel(
+                    'Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)',
+                    familyUi.apiUrlOverrideDesc,
+                  )}
                   value={apiUrl}
                   onChange={(e) => setApiUrl(e.target.value)}
                 />
@@ -363,7 +394,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         <div className="mt-6 flex justify-end gap-2">
           <Dialog.Close render={(props) => (
             <Button variant="secondary" {...props} disabled={loading}>
-              Cancel
+              {familyLabel('Cancel', familyUi.cancel)}
             </Button>
           )} />
           <Button
@@ -372,7 +403,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             loading={loading}
             disabled={!selection}
           >
-            Add Model
+            {familyLabel('Add Model', familyUi.addModelBtn)}
           </Button>
         </div>
       </Dialog>

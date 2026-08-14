@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -369,6 +369,11 @@ export interface AgentHooks {
   // doesn't exist.
   fetchBlueprint(blueprintId: string)
       : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}>;
+
+  // Rename the given chat. The agent's `setChatTitle` tool is a capability on the *current*
+  // thread only (it takes no chat id) and calls this with that thread's id. Returns the
+  // normalized title. Throws if the chat is gone or the title is empty after normalization.
+  setChatTitle(chatId: number, title: string): string;
 }
 
 // =======================================================================================
@@ -521,6 +526,42 @@ env.SOME_BINDING.registerGreeter(greeter);
 In Gadget code, the \`ctx\` object is passed to the \`DurableObject\` constructor and is automatically available as \`this.ctx\` within the class. When writing code for the \`executeCode\` tool call, the \`ctx\` object is passed as a parameter to your function. You can call \`ctx.restore()\` from either location, though usually it's best to call it as part of \`executeCode\` as usually registering hooks is something you do one time, not programmatically.
 `.trim();
 
+// Length guidance already used by `generateThreadTitle`; not a new numeric cap.
+export const CHAT_TITLE_LENGTH_GUIDANCE = "2-8 words";
+
+// Primary-agent instructions for the `setChatTitle` tool. Spawned agents use SPAWNER_SYSTEM_PROMPT
+// and never see this (they also do not receive the tool; see `allowedSpawnedAgentTools`).
+export const CHAT_TITLE_AGENT_INSTRUCTIONS = `
+# Chat titles
+
+New chats start titled "${DEFAULT_CHAT_TITLE}". Use the \`setChatTitle\` tool to name *this* chat — the tool has no chat id, so it cannot rename another thread.
+
+- As soon as you understand the first user message, rename "${DEFAULT_CHAT_TITLE}" to a concrete title.
+- If the conversation's subject clearly changes, rename it to the new subject.
+- Write a brief, descriptive title (${CHAT_TITLE_LENGTH_GUIDANCE}, or a similarly short phrase) in the conversation's own language. A Japanese conversation gets a natural Japanese title. No quotes, no sentence.
+- If the user asks for a specific title, use that. Call the tool alongside your reply; do not spend a turn only on naming.
+`.trim();
+
+SYSTEM_PROMPT = `${SYSTEM_PROMPT}\n\n${CHAT_TITLE_AGENT_INSTRUCTIONS}`;
+
+/** Tools a spawned (sub-)agent may use. Chat rename is a primary-agent capability only. */
+export function allowedSpawnedAgentTools(callbackInitiated: boolean): ReadonlySet<string> {
+  return new Set([
+    "describeBinding",
+    "executeCode",
+    ...(callbackInitiated ? ["giveUp"] : []),
+  ]);
+}
+
+/** Reject empty titles and the unspecific default. Used by the agent's `setChatTitle` tool. */
+export function assertAgentChatTitle(title: string): string {
+  let normalized = normalizeChatTitle(title);
+  if (normalized === DEFAULT_CHAT_TITLE) {
+    throw new Error(`Choose a specific title, not "${DEFAULT_CHAT_TITLE}".`);
+  }
+  return normalized;
+}
+
 let SPAWNER_SYSTEM_PROMPT = `
 You are an AI agent started to perform a specific task as part of a personal application called a "Gadget". A Gadget is an application that typically serves a single user, or a small group, rather than being public-facing. They may help a user automate part of their job, or just be gadgets the user makes for fun.
 
@@ -545,6 +586,12 @@ By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`
 
 let LIST_BLUEPRINTS_TOOL_DESCRIPTION = `
 List the blueprints available to the user: their own published blueprints, their blueprint library, and this deployment's featured blueprints. A blueprint is a shareable snapshot of a Gadget's code; instantiate one as a new Gadget by passing its \`blueprintId\` to \`createGadget\`. There is no search — read the list and pick the best match yourself.
+`.trim();
+
+let SET_CHAT_TITLE_TOOL_DESCRIPTION = `
+Rename this chat. The tool is a capability on the current thread only — it takes no chat id, so it cannot rename another chat.
+
+Use it as soon as you understand the first user message (chats start titled "${DEFAULT_CHAT_TITLE}"), and again if the subject clearly changes. Write a brief, descriptive title (${CHAT_TITLE_LENGTH_GUIDANCE}, or a similarly short phrase) in the conversation's own language. A Japanese conversation gets a natural Japanese title. If the user asks for a specific title, use that.
 `.trim();
 
 let WRITE_FILE_TOOL_DESCRIPTION = `
@@ -1687,6 +1734,12 @@ export async function runAgent(
                 case "requestConnection":
                   toolOutput = {text: toolCall.output ?? ""};
                   break;
+                case "setChatTitle":
+                  if (toolCall.output === undefined) {
+                    throw new Error("setChatTitle tool call in log is missing its result");
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
                 default:
                   toolCall satisfies never;
                   throw new Error("Unknown tool.");
@@ -2810,6 +2863,31 @@ export async function runAgent(
         }
       }
     }),
+
+    setChatTitle: defineTool({
+      name: "setChatTitle",
+      label: "Rename chat",
+      description: SET_CHAT_TITLE_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        title: Type.String({
+          description:
+              `Brief, descriptive title for this chat (${CHAT_TITLE_LENGTH_GUIDANCE}, or a ` +
+              `similarly short phrase), in the conversation's language.`,
+        }),
+      }),
+      execute: async (toolCallId, {title}) => {
+        try {
+          // Capability: this tool has no chat id. It can only rename the turn's current thread.
+          let normalized = assertAgentChatTitle(title);
+          let written = hooks.setChatTitle(chatId, normalized);
+          let output = {title: written};
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, { error: toolErrorText(error) });
+          throw error;
+        }
+      }
+    }),
   };
 
   // When the agent was started to handle callbacks, add the giveUp tool so it can bail out.
@@ -2833,11 +2911,14 @@ export async function runAgent(
   if (agentContext.spawnerConfig) {
     // Restrict sub-agents to a narrower set of tools: they can inspect and call bindings in code
     // (which is how they read reference knowledge), but not the full editing/connection surface.
-    tools = {
-      describeBinding: tools.describeBinding,
-      executeCode: tools.executeCode,
-      ...(callbackInitiated ? {giveUp: tools.giveUp} : {}),
-    };
+    // Chat rename is a primary-agent capability and is not on this allowlist.
+    let allowed = allowedSpawnedAgentTools(callbackInitiated);
+    let restricted: Record<string, AgentTool> = {};
+    for (let name of allowed) {
+      let tool = tools[name];
+      if (tool) restricted[name] = tool;
+    }
+    tools = restricted;
   }
 
   let toolList = Object.values(tools);

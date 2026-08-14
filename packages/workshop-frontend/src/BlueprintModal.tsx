@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import { Dialog, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsClockwise, Check, Copy, ImageSquare, Pencil, Plus, Trash, Warning, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { BlueprintGadgetSummary, GadgetClient, GadgetMetadata, Overseer, BlueprintBindingAnnotation, BlueprintScreenshotUpload } from '@gadgets/workshop-shared/api'
+import { BlueprintGadgetSummary, GadgetClient, GadgetMetadata, Overseer, BlueprintBindingAnnotation, BlueprintScreenshotUpload, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput, WorkshopInputArea } from './components/WorkshopControls'
 import { copyToClipboard } from './clipboard'
 import {
@@ -200,11 +200,11 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
         }
         : undefined
 
-      await gadget.createBlueprint(
+      await unwrapFamilyRpcResult(await gadget.createBlueprint(
         newTitle.trim() || undefined,
         newDescription.trim() || undefined,
         screenshot,
-      )
+      ))
       toasts.add({ title: 'Blueprint created.', variant: 'success' })
       setFormMode('list')
       setNewTitle(metadata.title)
