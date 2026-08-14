@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -63,6 +63,16 @@ describe("loadProductionDeployment", () => {
   it("rejects missing resource ids instead of auto-provisioning", () => {
     const env = { ...VALID_ENV, KV_BLUEPRINTS_ID: "" };
     assert.throws(() => loadProductionDeployment(env), /KV_BLUEPRINTS_ID/);
+  });
+
+  it("rejects a public URL that is not an origin", () => {
+    assert.throws(
+      () => loadProductionDeployment({
+        ...VALID_ENV,
+        FAMILY_PUBLIC_BASE_URL: "https://home-os.example.workers.dev/some/path",
+      }),
+      /https origin/,
+    );
   });
 
   it("normalizes admins and public origin from env", () => {
@@ -176,7 +186,6 @@ describe("generateWranglerProd", () => {
       const paths = generatedConfigPaths(dir);
       assert.equal(paths.workshop.endsWith(join("packages/workshop-backend", GENERATED_CONFIG_NAME)), true);
       assert.equal(paths.context.endsWith(join("packages/gatekeeper-context", GENERATED_CONFIG_NAME)), true);
-      writeFileSync(join(ROOT, ".gitignore"), readFileSync(join(ROOT, ".gitignore")));
       const gitignore = readFileSync(join(ROOT, ".gitignore"), "utf8");
       assert.match(gitignore, /^wrangler\.prod\.jsonc$/m);
     } finally {

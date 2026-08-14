@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertRequiredDeploySecrets,
   DEPLOY_ORDER,
   interpretExistingState,
   parseDeployArgs,
@@ -72,6 +73,20 @@ describe("wrangler argument construction", () => {
     const dumped = args.join(" ");
     assert.equal(dumped.includes("CLOUDFLARE_API_TOKEN"), false);
     assert.equal(dumped.includes("OPENCODE_GO_API_TOKEN"), false);
+  });
+
+  it("requires the OpenCode token before any production Worker upload", () => {
+    assert.throws(
+      () => assertRequiredDeploySecrets(
+        { CLOUDFLARE_API_TOKEN: "cf-token" },
+        { updateSecret: true },
+      ),
+      /OPENCODE_GO_API_TOKEN/,
+    );
+    assert.doesNotThrow(() => assertRequiredDeploySecrets(
+      { CLOUDFLARE_API_TOKEN: "cf-token" },
+      { updateSecret: false },
+    ));
   });
 
   it("puts OPENCODE_GO_API_TOKEN by name only, value stays on stdin", () => {

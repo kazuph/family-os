@@ -56,6 +56,15 @@ export function wranglerSecretPutArgs() {
   return ["secret", "put", "OPENCODE_GO_API_TOKEN", "--config", GENERATED_CONFIG_NAME, "--log-level", "warn"];
 }
 
+export function assertRequiredDeploySecrets(env, args) {
+  if (!String(env.CLOUDFLARE_API_TOKEN ?? "").trim()) {
+    throw new Error("CLOUDFLARE_API_TOKEN must be set in the environment");
+  }
+  if (args.updateSecret && !String(env.OPENCODE_GO_API_TOKEN ?? "").trim()) {
+    throw new Error("OPENCODE_GO_API_TOKEN must be set in the environment");
+  }
+}
+
 export function redactSensitiveOutput(text, deployment, extraSecrets = []) {
   const secrets = [
     ...extraSecrets,
@@ -199,12 +208,11 @@ function cleanupGenerated() {
 
 async function main() {
   const args = parseDeployArgs(process.argv.slice(2));
-  const token = process.env.CLOUDFLARE_API_TOKEN;
-  if (!token) throw new Error("CLOUDFLARE_API_TOKEN must be set in the environment");
+  assertRequiredDeploySecrets(process.env, args);
 
   const deployment = loadProductionDeployment(process.env);
   if (args.verify) {
-    const payloads = await fetchExistingState(deployment, { token });
+    const payloads = await fetchExistingState(deployment, { token: process.env.CLOUDFLARE_API_TOKEN });
     interpretExistingState(deployment, payloads);
     console.log("Existing production KV/R2/Workers match configured identities.");
   }
@@ -215,7 +223,7 @@ async function main() {
     contextBase: readPackageWranglerConfig(join(ROOT, "packages/gatekeeper-context")),
   });
   writeGeneratedConfigs(ROOT, generated);
-  console.log("Generated wrangler.prod.jsonc (redacted):");
+  console.log("Generated wrangler.prod.jsonc (Access/admin/account identity redacted):");
   console.log(JSON.stringify({
     workshop: redactConfigForLog(generated.workshop),
     context: redactConfigForLog(generated.context),
@@ -223,12 +231,10 @@ async function main() {
 
   try {
     const runOpts = { cwd: ROOT, deployment };
-    run("pnpm", ["--filter", "@gadgets/gatekeeper-context", "run", "build:app"], runOpts);
-    run("pnpm", ["--filter", "@gadgets/workshop-frontend", "run", "build"], {
+    run("pnpm", ["build"], {
       ...runOpts,
       env: { ...process.env, VITE_CF_ACCESS_MODE: "true" },
     });
-    run("pnpm", ["--filter", "@gadgets/workshop-backend", "run", "build:format-blueprints"], runOpts);
 
     for (const kind of DEPLOY_ORDER) {
       run("pnpm", ["exec", "wrangler", ...wranglerDeployArgs({ dryRun: true })], {
@@ -249,11 +255,9 @@ async function main() {
     }
 
     if (args.updateSecret) {
-      const secret = process.env.OPENCODE_GO_API_TOKEN;
-      if (!secret) throw new Error("OPENCODE_GO_API_TOKEN must be set in the environment");
       run("pnpm", ["exec", "wrangler", ...wranglerSecretPutArgs()], {
         cwd: packageDir("workshop"),
-        input: secret,
+        input: process.env.OPENCODE_GO_API_TOKEN,
         deployment,
       });
     }

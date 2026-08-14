@@ -57,8 +57,17 @@ function hex32(env, name) {
   return value.toLowerCase();
 }
 
-function stripSlash(url) {
-  return url.replace(/\/+$/, "");
+function httpsOrigin(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("FAMILY_PUBLIC_BASE_URL must be an https origin");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("FAMILY_PUBLIC_BASE_URL must be an https origin");
+  }
+  return url.origin;
 }
 
 export function loadProductionDeployment(env) {
@@ -75,10 +84,7 @@ export function loadProductionDeployment(env) {
     throw new Error("FAMILY_ADMINS must be a comma-separated list of emails");
   }
 
-  const sharingDomain = stripSlash(required(env, "FAMILY_PUBLIC_BASE_URL"));
-  if (!sharingDomain.startsWith("https://")) {
-    throw new Error("FAMILY_PUBLIC_BASE_URL must be an https origin");
-  }
+  const sharingDomain = httpsOrigin(required(env, "FAMILY_PUBLIC_BASE_URL"));
 
   return {
     accountId: hex32(env, "CLOUDFLARE_ACCOUNT_ID"),
@@ -87,7 +93,7 @@ export function loadProductionDeployment(env) {
       context: required(env, "FAMILY_CONTEXT_WORKER"),
     },
     access: {
-      issuer: stripSlash(required(env, "CF_ACCESS_ISS")),
+      issuer: httpsOrigin(required(env, "CF_ACCESS_ISS")),
       audience: required(env, "CF_ACCESS_AUD"),
       admins,
     },
@@ -199,7 +205,7 @@ if (isMain()) {
     contextBase: readPackageWranglerConfig(join(ROOT, "packages/gatekeeper-context")),
   });
   writeGeneratedConfigs(ROOT, generated);
-  console.log("Wrote gitignored wrangler.prod.jsonc (household values redacted):");
+  console.log("Wrote gitignored wrangler.prod.jsonc (Access/admin/account identity redacted):");
   console.log(JSON.stringify({
     workshop: redactConfigForLog(generated.workshop),
     context: redactConfigForLog(generated.context),

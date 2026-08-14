@@ -1,7 +1,8 @@
 name: CI
 
-# Family OS household fork: lint and tests on every PR/push. Production deploy
-# runs only after those jobs succeed on kazuph/family-os main, never on PRs.
+# Family OS household fork: lint and tests on pull requests and pushes to main.
+# Production deploy runs only after those jobs succeed on kazuph/family-os main,
+# never on PRs.
 
 on:
   push:
