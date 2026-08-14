@@ -41,9 +41,10 @@ function runPinnedWrangler(args, cwd = ROOT) {
     env: process.env,
     timeout: 30_000,
   });
+  const errorText = result.error ? `\n${result.error}` : "";
   return {
-    status: result.status,
-    output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
+    status: result.status ?? (result.error ? 1 : 0),
+    output: `${result.stdout ?? ""}${result.stderr ?? ""}${errorText}`,
   };
 }
 
@@ -57,6 +58,12 @@ function optionNamesFromHelp(help) {
 
 function flagsFromArgs(args) {
   return args.filter((arg) => arg.startsWith("--"));
+}
+
+function assertCliParsedConstructedArgs(probe) {
+  assert.equal(/Unknown arguments/i.test(probe.output), false, probe.output);
+  assert.notEqual(probe.status, 0, probe.output);
+  assert.match(probe.output, /wrangler\.prod\.jsonc/);
 }
 
 describe("parseDeployArgs", () => {
@@ -145,8 +152,7 @@ describe("pinned wrangler CLI contract", () => {
     // Same argv as CD before upload. Missing generated config is later than CLI parse;
     // Wrangler 4.119.0 rejected --log-level here (run 31774001566).
     const probe = runPinnedWrangler(args, workshopDir);
-    assert.equal(/Unknown arguments/i.test(probe.output), false, probe.output);
-    assert.match(probe.output, /Could not read file: wrangler\.prod\.jsonc/);
+    assertCliParsedConstructedArgs(probe);
   });
 
   it("accepts constructed secret put argv on the pinned CLI", () => {
@@ -155,6 +161,7 @@ describe("pinned wrangler CLI contract", () => {
     const options = optionNamesFromHelp(help.output);
     assert.equal(options.has("--config"), true);
     assert.equal(options.has("--log-level"), false);
+    assert.equal(options.has("--logLevel"), false);
 
     const args = wranglerSecretPutArgs();
     for (const flag of flagsFromArgs(args)) {
@@ -162,8 +169,7 @@ describe("pinned wrangler CLI contract", () => {
     }
 
     const probe = runPinnedWrangler(args, workshopDir);
-    assert.equal(/Unknown arguments/i.test(probe.output), false, probe.output);
-    assert.match(probe.output, /Could not read file: wrangler\.prod\.jsonc/);
+    assertCliParsedConstructedArgs(probe);
   });
 });
 
