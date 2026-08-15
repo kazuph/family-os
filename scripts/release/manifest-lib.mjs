@@ -26,8 +26,8 @@ export const MANIFEST_VERSION = 1;
 // on a deployable worker needs an explicit decision about how customer instances get it.
 const HANDLED_CONFIG_KEYS = new Set([
   "$schema", "name", "main", "build", "compatibility_date", "compatibility_flags", "rules",
-  "migrations", "observability", "kv_namespaces", "r2_buckets", "worker_loaders", "services",
-  "assets", "vars",
+  "migrations", "exports", "observability", "kv_namespaces", "r2_buckets", "worker_loaders",
+  "services", "assets", "vars",
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
@@ -126,6 +126,14 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
   if (config.artifacts && !ARTIFACTS_CUT_ALLOWED.has(pkgName)) {
     throw new Error(`${pkgName} declares an artifacts binding; only gatekeeper-context's is ` +
         `known (and cut). Decide how customer instances should handle this one.`);
+  }
+  // Durable Object lifecycle is declared exactly one way per Wrangler's own config-layer
+  // contract: the legacy imperative `migrations` array, or the newer declarative `exports`
+  // map. A worker can never carry both, so the manifest never emits both for one entry either.
+  if (config.migrations && config.exports) {
+    throw new Error(`${pkgName}/wrangler.jsonc declares both migrations and exports; these ` +
+        `are mutually exclusive at the Wrangler config layer, so the manifest cannot represent ` +
+        `both for one worker.`);
   }
 
   const bindings = [];
@@ -239,7 +247,12 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
     compatibilityFlags: config.compatibility_flags ?? [],
     // Full ordered history, verbatim: fresh installs replay it as migration steps, and the
     // final tag is what re-PUTs of an existing worker must present as their current tag.
+    // Always present (possibly empty) for backward compatibility with consumers that assume
+    // an array; a worker using the newer `exports` form below simply has no legacy steps.
     migrations: config.migrations ?? [],
+    // Declarative Durable Object export map (the newer alternative to `migrations`, above),
+    // verbatim from wrangler.jsonc. Present only for workers that have migrated to it.
+    ...(config.exports ? { exports: config.exports } : {}),
     bindings,
     vars,
     observability: config.observability ?? { enabled: false },

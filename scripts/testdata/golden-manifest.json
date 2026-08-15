@@ -157,21 +157,29 @@
         "nodejs_compat",
         "allow_irrevocable_stub_storage"
       ],
+      "exports": {
+        "ContextCollectionDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "ContextGatekeeper": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "LibraryRegistryDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "UserLibraryDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        }
+      },
       "inputs": [],
       "installable": true,
       "kind": "gatekeeper",
       "mainModule": "context.js",
-      "migrations": [
-        {
-          "new_sqlite_classes": [
-            "ContextCollectionDurableObject",
-            "UserLibraryDurableObject",
-            "LibraryRegistryDurableObject",
-            "ContextGatekeeper"
-          ],
-          "tag": "v0"
-        }
-      ],
+      "migrations": [],
       "modules": [
         {
           "name": "context.js",
@@ -1069,6 +1077,32 @@
         "global_fetch_strictly_public",
         "nodejs_compat"
       ],
+      "exports": {
+        "AdminSettings": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "FamilyDeviceSessionDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "FamilyDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "OverseerDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "PendingLogin": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "UserDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        }
+      },
       "gatekeeperBindingExpansion": {
         "entrypoint": "GatekeeperVendor",
         "propsByPackage": {
@@ -1080,39 +1114,7 @@
       "installable": true,
       "kind": "backend",
       "mainModule": "server.js",
-      "migrations": [
-        {
-          "new_sqlite_classes": [
-            "UserDurableObject",
-            "OverseerDurableObject"
-          ],
-          "tag": "v0"
-        },
-        {
-          "new_sqlite_classes": [
-            "AdminSettings"
-          ],
-          "tag": "v1"
-        },
-        {
-          "new_sqlite_classes": [
-            "PendingLogin"
-          ],
-          "tag": "v2"
-        },
-        {
-          "new_sqlite_classes": [
-            "FamilyDurableObject"
-          ],
-          "tag": "v3"
-        },
-        {
-          "new_sqlite_classes": [
-            "FamilyDeviceSessionDurableObject"
-          ],
-          "tag": "v4"
-        }
-      ],
+      "migrations": [],
       "modules": [
         {
           "name": "server.js",

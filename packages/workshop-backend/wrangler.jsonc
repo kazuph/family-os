@@ -42,30 +42,17 @@
   // added by run-dev-server.js (for dev) and generate-wrangler-prod.js (for
   // production).
 
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": [ "UserDurableObject", "OverseerDurableObject" ]
-    },
-    {
-      "tag": "v1",
-      "new_sqlite_classes": [ "AdminSettings" ]
-    },
-    {
-      // Sign-in via authentication gatekeepers: a short-lived PendingLogin DO bridges each gatekeeper
-      // login back to the waiting browser.
-      "tag": "v2",
-      "new_sqlite_classes": [ "PendingLogin" ]
-    },
-    {
-      "tag": "v3",
-      "new_sqlite_classes": [ "FamilyDurableObject" ]
-    },
-    {
-      "tag": "v4",
-      "new_sqlite_classes": [ "FamilyDeviceSessionDurableObject" ]
-    }
-  ],
+  // Declarative Durable Object exports (replaces the legacy imperative `migrations` array);
+  // each class below has a live SQLite-backed namespace. `exports` and `migrations` are
+  // mutually exclusive at the Wrangler config layer, so only one may be present.
+  "exports": {
+    "UserDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "OverseerDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "AdminSettings": { "type": "durable-object", "storage": "sqlite" },
+    "PendingLogin": { "type": "durable-object", "storage": "sqlite" },
+    "FamilyDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "FamilyDeviceSessionDurableObject": { "type": "durable-object", "storage": "sqlite" }
+  },
 
   // All DO classes (UserDurableObject, OverseerDurableObject, AdminSettings, PendingLogin,
   // FamilyDurableObject, ...) are
