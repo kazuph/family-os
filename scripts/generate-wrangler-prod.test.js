@@ -148,18 +148,32 @@ describe("generateWranglerProd", () => {
     }
   });
 
-  it("keeps Family Durable Object migrations from the real workshop wrangler.jsonc", () => {
+  it("keeps the Family Durable Object export from the real workshop wrangler.jsonc", () => {
     const workshopBase = parse(readFileSync(join(ROOT, "packages/workshop-backend/wrangler.jsonc"), "utf8"));
     const contextBase = parse(readFileSync(join(ROOT, "packages/gatekeeper-context/wrangler.jsonc"), "utf8"));
     const generated = generateWranglerProd(loadProductionDeployment(VALID_ENV), {
       workshopBase,
       contextBase,
     });
-    const tags = generated.workshop.migrations.map((m) => m.tag);
-    assert.ok(tags.includes("v3"));
-    assert.ok(tags.includes("v4"));
-    const v3 = generated.workshop.migrations.find((m) => m.tag === "v3");
-    assert.ok(v3.new_sqlite_classes.includes("FamilyDurableObject"));
+    // The real config declares Durable Objects via the newer `exports` form, not `migrations`;
+    // the generator must carry that map through untouched.
+    assert.equal(generated.workshop.migrations, undefined);
+    assert.equal(generated.workshop.exports.FamilyDurableObject.type, "durable-object");
+    assert.equal(generated.workshop.exports.FamilyDurableObject.storage, "sqlite");
+  });
+
+  it("carries a package's declarative `exports` map through untouched", () => {
+    const { migrations: _migrations, ...rest } = WORKSHOP_BASE;
+    const workshopBase = {
+      ...rest,
+      exports: { FamilyDurableObject: { type: "durable-object", storage: "sqlite" } },
+    };
+    const generated = generateWranglerProd(loadProductionDeployment(VALID_ENV), {
+      workshopBase,
+      contextBase: CONTEXT_BASE,
+    });
+    assert.deepEqual(generated.workshop.exports, workshopBase.exports);
+    assert.equal(generated.workshop.migrations, undefined);
   });
 
   it("never embeds Worker secrets in generated config", () => {

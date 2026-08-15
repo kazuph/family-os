@@ -13,17 +13,15 @@
   ],
 
   // DO classes are reached via ctx.exports; no durable_objects binding needed.
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": [
-        "ContextCollectionDurableObject",
-        "UserLibraryDurableObject",
-        "LibraryRegistryDurableObject",
-        "ContextGatekeeper"
-      ]
-    }
-  ],
+  // Declarative exports (replaces the legacy imperative `migrations` array); each class
+  // below has a live SQLite-backed namespace. `exports` and `migrations` are mutually
+  // exclusive at the Wrangler config layer, so only one may be present.
+  "exports": {
+    "ContextCollectionDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "UserLibraryDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "LibraryRegistryDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "ContextGatekeeper": { "type": "durable-object", "storage": "sqlite" }
+  },
 
   // Public-collections snapshot KV. preview_id preserves existing dev data.
   "kv_namespaces": [

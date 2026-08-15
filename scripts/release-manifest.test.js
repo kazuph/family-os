@@ -13,7 +13,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectAssets, collectModules, stableStringify } from "./release/hash-lib.mjs";
 import {
-  findDeployablePackages, generateManifest, readDeployInputs, readWranglerConfig,
+  buildWorkerEntry, findDeployablePackages, generateManifest, readDeployInputs,
+  readWranglerConfig,
 } from "./release/manifest-lib.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
@@ -112,9 +113,11 @@ test("worker entries carry the deploy contract", () => {
       { type: "ai", name: "WORKERS_AI" });
   assert.equal(backend.gatekeeperBindingExpansion.entrypoint, "GatekeeperVendor");
   assert.equal(backend.vars.PUBLIC_BASE_URL, "$PUBLIC_BASE_URL");
-  // Full ordered migration history, verbatim from wrangler.jsonc.
-  assert.equal(backend.migrations[0].tag, "v0");
-  assert.ok(backend.migrations[0].new_sqlite_classes.includes("UserDurableObject"));
+  // Migrated to the declarative `exports` form: no legacy migration steps, and the export
+  // map is carried verbatim from wrangler.jsonc.
+  assert.deepEqual(backend.migrations, []);
+  assert.equal(backend.exports.UserDurableObject.type, "durable-object");
+  assert.equal(backend.exports.UserDurableObject.storage, "sqlite");
 
   // Router: serves the access asset variant, binds the backend by templated worker name.
   const router = workers["router"];
@@ -156,6 +159,9 @@ test("worker entries carry the deploy contract", () => {
       { type: "kv_namespace", name: "CONTEXT_COLLECTIONS",
         namespace_id: "$KV_CONTEXT_COLLECTIONS_ID" });
   assert.deepEqual(context.inputs, []);
+  // Also migrated to the declarative `exports` form.
+  assert.deepEqual(context.migrations, []);
+  assert.equal(context.exports.ContextGatekeeper.type, "durable-object");
 
   // Ambient gatekeepers are preinstalled on every core deploy; preinstalls must take no
   // secret inputs (nobody is around to supply them). Both also declare an account-level agent
@@ -182,6 +188,19 @@ test("worker entries carry the deploy contract", () => {
       assert.equal(mod.r2Key, `blobs/modules/${mod.sha256}`);
     }
   }
+});
+
+test("migrations and exports are mutually exclusive in one worker entry", () => {
+  assert.throws(() => buildWorkerEntry({
+    pkgName: "gatekeeper-context",
+    config: {
+      migrations: [{ tag: "v0", new_sqlite_classes: ["Foo"] }],
+      exports: { Foo: { type: "durable-object", storage: "sqlite" } },
+    },
+    mainModule: "index.js",
+    modules: [],
+    deployInputs: undefined,
+  }), /mutually exclusive/);
 });
 
 test("per-package deploy-inputs.json files are well-formed when present", () => {
