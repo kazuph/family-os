@@ -1757,6 +1757,18 @@ export async function runAgent(
                   }
                   toolOutput = {text: toolCall.output};
                   break;
+                case "webSearch":
+                  if (toolCall.output === undefined) {
+                    throw new Error("webSearch tool call in log is missing output");
+                  }
+                  toolOutput = {text: toolCall.output};
+                  break;
+                case "consultPro":
+                  if (toolCall.output === undefined) {
+                    throw new Error("consultPro tool call in log is missing output");
+                  }
+                  toolOutput = {text: toolCall.output};
+                  break;
                 case "observeUserChanges":
                   // The agent shouldn't call this tool explicitly (synthetic calls are
                   // reconstructed from "changes"/"revert" messages, not stored in the log), but
@@ -2976,7 +2988,7 @@ export async function runAgent(
       execute: async (toolCallId, {question, context}, signal) => {
         try {
           let advice = await hooks.consultProAdvisor(initiator, {question, context}, signal);
-          return toolResult(advice);
+          return toolResult(advice, {output: advice} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
           throw error;

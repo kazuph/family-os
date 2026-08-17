@@ -2311,6 +2311,30 @@ export type AiToolCall = {
   // Formatted as a YAML-frontmatter header followed by the body (see formatWebFetchResult).
   output?: string;
 } | {
+  // Keyword web search via DuckDuckGo (see web-search.ts). `webFetch` reads a specific URL;
+  // this discovers one by keywords.
+  toolName: "webSearch";
+  input: {
+    query: string;
+  };
+
+  // Output, if the search actually completed. (Otherwise, `error` should be present.) This is
+  // stored so that the agent's chat history can be replayed without re-issuing the search.
+  // Formatted result list (see formatWebSearchResults).
+  output?: string;
+} | {
+  // Ask DeepSeek V4 Pro for advice on a difficult problem (see pro-advisor.ts). Available only
+  // on Flash-run turns; Pro itself never receives this tool.
+  toolName: "consultPro";
+  input: {
+    question: string;
+    context?: string;
+  };
+
+  // Pro's reply, if the consult actually completed. (Otherwise, `error` should be present.) This
+  // is stored so that the agent's chat history can be replayed without re-consulting Pro.
+  output?: string;
+} | {
   // This actually shouldn't ever appear in logs unless the agent misunderstands the tool.
   toolName: "observeUserChanges";
   input: {};

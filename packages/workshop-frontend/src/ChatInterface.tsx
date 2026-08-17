@@ -689,6 +689,13 @@ function getToolCallSummary(
       }
       return { verb: "Fetched", target };
     }
+    case "webSearch":
+      return { verb: familyLabel("Searched the web", familyUi.searchedWeb), target: tc.input.query };
+    case "consultPro":
+      return {
+        verb: familyLabel("Consulted DeepSeek V4 Pro", familyUi.consultedPro),
+        target: truncateToolPreview(tc.input.question),
+      };
     case "observeUserChanges":
       return { verb: "Observed user changes" };
     case "listBlueprints":
@@ -734,6 +741,12 @@ function lowerFirst(text: string): string {
   return text ? text[0].toLowerCase() + text.slice(1) : text;
 }
 
+// Single-line preview of free-form tool input (e.g. a consultPro question) for the trace row.
+function truncateToolPreview(text: string, max = 60): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max - 3)}…` : collapsed;
+}
+
 function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -756,6 +769,14 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return count === 1 ? "Made 1 edit" : `Made ${count} edits`;
     case "webFetch":
       return `Fetched ${pluralize(count, "page")}`;
+    case "webSearch":
+      return count === 1
+        ? familyLabel("Searched the web", familyUi.searchedWeb)
+        : familyLabel(`Searched the web ${formatTimes(count)}`, `ウェブを${count}回検索`);
+    case "consultPro":
+      return count === 1
+        ? familyLabel("Consulted DeepSeek V4 Pro", familyUi.consultedPro)
+        : familyLabel(`Consulted DeepSeek V4 Pro ${formatTimes(count)}`, `Proに${count}回相談`);
     case "executeCode":
       return count === 1 ? "Ran code" : `Ran code ${formatTimes(count)}`;
     case "describeBinding":
@@ -803,6 +824,10 @@ function getToolIcon(
       return Terminal;
     case "webFetch":
       return Globe;
+    case "webSearch":
+      return MagnifyingGlass;
+    case "consultPro":
+      return Brain;
     case "describeBinding":
       return MagnifyingGlass;
     case "setBindingHook":
@@ -846,6 +871,10 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Running code";
     case "webFetch":
       return "Fetching web page";
+    case "webSearch":
+      return familyLabel("Searching the web", familyUi.searchingWeb);
+    case "consultPro":
+      return familyLabel("Consulting DeepSeek V4 Pro", familyUi.consultingPro);
     case "observeUserChanges":
       return "Observing user changes";
     case "giveUp":
@@ -874,6 +903,8 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "createGadget": return "Creating gadget";
     case "executeCode": return "Running code";
     case "webFetch": return "Fetching";
+    case "webSearch": return familyLabel("Searching", familyUi.searchingWeb);
+    case "consultPro": return familyLabel("Consulting", familyUi.consultingPro);
     case "observeUserChanges": return "Observing user changes";
     case "giveUp": return "Stopping";
     case "listBlueprints": return "Listing blueprints";
@@ -893,6 +924,10 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "writeFile": return `Writing ${pluralize(count, "file")}`;
     case "editFile": return `Making ${count} edits`;
     case "webFetch": return `Fetching ${pluralize(count, "page")}`;
+    case "webSearch":
+      return familyLabel(`Searching ${formatTimes(count)}`, `ウェブを${count}回検索中`);
+    case "consultPro":
+      return familyLabel(`Consulting DeepSeek V4 Pro ${formatTimes(count)}`, `Proに${count}回相談中`);
     case "executeCode": return count === 1 ? "Running code" : `Running code ${formatTimes(count)}`;
     case "describeBinding": return `Inspecting ${pluralize(count, "binding")}`;
     case "setBindingHook": return `Connecting ${pluralize(count, "binding")}`;
