@@ -1127,6 +1127,13 @@ export const SUGGESTED_MODELS: Record<
     "deepseek-v4-flash": {
       name: "DeepSeek V4 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
     },
+    // Same context window / output cap as Flash (DeepSeek publishes identical limits for both
+    // tiers; verified against https://api-docs.deepseek.com/quick_start/pricing/ and OpenCode
+    // Go's own model catalog, both of which list DeepSeek-V4-Pro-0813 and
+    // DeepSeek-V4-Flash-0731 side by side with "CONTEXT LENGTH 1M / MAX OUTPUT 384K").
+    "deepseek-v4-pro": {
+      name: "DeepSeek V4 Pro (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
+    },
   },
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {

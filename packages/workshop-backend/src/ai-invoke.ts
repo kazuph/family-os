@@ -44,9 +44,11 @@ export function httpStatusFromError(errorMessage: string, handle: ModelHandle)
 
 /**
  * Run a single non-streaming-style completion against a ModelHandle and return the response
- * text. Used for one-shot calls: title generation, binding naming, compaction summaries, and
- * LanguageModelBinding.run. Always requests thinking off (one-shots should be quick, and none
- * of them benefit from extended thinking; pre-pi, these calls never configured thinking either).
+ * text. Used for one-shot calls: title generation, binding naming, compaction summaries,
+ * LanguageModelBinding.run, and the `consultPro` advisor tool. Requests thinking off by default
+ * (most one-shots should be quick, and don't benefit from extended thinking; pre-pi, these calls
+ * never configured thinking either) -- pass `thinking: true` for a call that specifically wants
+ * the model to reason before answering (e.g. a difficult advisor question).
  * Throws AgentTurnError on provider failure, or the abort reason when `signal` fired.
  */
 export async function completeText(handle: ModelHandle, args: {
@@ -56,6 +58,7 @@ export async function completeText(handle: ModelHandle, args: {
   messages?: Message[];
   maxTokens?: number;
   signal?: AbortSignal;
+  thinking?: boolean;
 }): Promise<string> {
   const messages: Message[] = args.messages ??
       [{ role: "user", content: args.prompt ?? "", timestamp: Date.now() }];
@@ -65,7 +68,7 @@ export async function completeText(handle: ModelHandle, args: {
   }, {
     maxTokens: args.maxTokens,
     signal: args.signal,
-    thinking: false,
+    thinking: args.thinking ?? false,
   });
   const message = await stream.result();
   if (message.stopReason === "error" || message.stopReason === "aborted") {
