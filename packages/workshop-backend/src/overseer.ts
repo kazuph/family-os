@@ -26,6 +26,7 @@ import { foldProposedChanges, isCompactionTurn, type ChangeBatch } from "./agent
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import { listFeaturedBlueprintsFromKv, readBlueprintContent, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive";
 import { WebFetchEnv } from "./web-fetch";
+import { consultProAdvisor as consultProAdvisorImpl, type ProAdvisorInput } from "./pro-advisor";
 import { UserDurableObject, UserAiModelRecord, type UserChatContext, type WorkspaceOutputEntry } from "./user";
 import { AgentSpawnerBinding } from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
@@ -2817,9 +2818,10 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
-  // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
-  getWebFetchEnv(): WebFetchEnv {
+  // Guards any tool that sends agent-composed content to a public web site (webFetch's target
+  // URL, webSearch's query) against the workspace's sensitive-data lockdown. Shared so the two
+  // tools can't drift on what "prohibited" means.
+  assertOutboundFetchAllowed(): void {
     if (this.storage.prohibitAllSharing.get()) {
       // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
       //   if a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in
@@ -2829,11 +2831,26 @@ class OverseerImpl implements AgentHooks {
           "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
           "from fetching from public web sites.");
     }
+  }
+
+  // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
+  // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
+  getWebFetchEnv(): WebFetchEnv {
+    this.assertOutboundFetchAllowed();
 
     return {
       ai: this.env.WORKERS_AI,
       gateway: getAiGatewayConfig(this.env),
     };
+  }
+
+  // Calls DeepSeek V4 Pro with the explicit question/context an agent's `consultPro` tool call
+  // supplied (see agent.ts) -- no workspace data beyond that is ever included. Unlike webFetch and
+  // webSearch, this isn't gated on `prohibitAllSharing`: it routes through the same OpenCode Go
+  // deployment subscription the primary chat model itself already uses, not a new external site.
+  async consultProAdvisor(initiator: AiChatAuthorInfo, input: ProAdvisorInput, signal?: AbortSignal)
+      : Promise<string> {
+    return consultProAdvisorImpl(this.env, initiator, input, signal);
   }
 
   // Record an observation that originated from a built-in agent tool (not a gatekeeper).

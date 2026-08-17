@@ -38,6 +38,18 @@ const OPENCODE_GO_CONFIG: AiModelConfig = {
   apiToken: "must-be-ignored",
 };
 
+const OPENCODE_GO_PRO_CONFIG: AiModelConfig = {
+  provider: "opencode-go",
+  model: "deepseek-v4-pro",
+  apiToken: "must-be-ignored",
+};
+
+const OPENCODE_GO_UNKNOWN_CONFIG: AiModelConfig = {
+  provider: "opencode-go",
+  model: "deepseek-v4-flash-free",
+  apiToken: "must-be-ignored",
+};
+
 function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
   return {
     CF_AI_GATEWAY: "platform-gateway",
@@ -98,6 +110,30 @@ describe("getModel AI Gateway routing", () => {
     expect(() => getModel(env(), OPENCODE_GO_CONFIG, INITIATOR)).toThrow(
       "This OpenCode Go model is not configured by the deployment.",
     );
+  });
+
+  it("routes DeepSeek V4 Pro directly with the deployment secret, same as Flash", async () => {
+    const handle = getModel(
+      env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
+      OPENCODE_GO_PRO_CONFIG,
+      INITIATOR,
+    );
+
+    expect(handle.model.api).toBe("openai-completions");
+    expect(handle.model.baseUrl).toBe("https://opencode.ai/zen/go/v1");
+    expect(handle.model.id).toBe("deepseek-v4-pro");
+    expect(handle.model.name).toBe("DeepSeek V4 Pro (OpenCode Go)");
+    expect(handle.aiGatewayLogRoute).toBeUndefined();
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(request.headers.get("authorization")).toBe("Bearer opencode-go-token");
+  }, 15000);
+
+  it("rejects an OpenCode Go model id the deployment doesn't serve, even with the secret set", () => {
+    expect(() => getModel(
+      env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }), OPENCODE_GO_UNKNOWN_CONFIG, INITIATOR,
+    )).toThrow("This OpenCode Go model is not configured by the deployment.");
   });
 
   it("routes non-Workers providers through the platform gateway", async () => {

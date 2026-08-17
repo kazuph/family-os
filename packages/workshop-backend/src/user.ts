@@ -14,8 +14,8 @@ import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./a
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import {
   getOpenCodeGoModel,
+  isOpenCodeGoModelId,
   listOpenCodeGoModels,
-  OPENCODE_GO_MODEL_ID,
 } from "./opencode-go.js";
 
 const logger = createWorkshopLogger("workshop.user");
@@ -576,7 +576,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async deleteModel(id: string): Promise<void> {
-    if (getOpenCodeGoModel(this.env)?.profile.id === id) {
+    if (isOpenCodeGoModelId(id) && this.env.OPENCODE_GO_API_TOKEN) {
       throw new Error("Cannot delete the deployment-managed OpenCode Go model.");
     }
     // In AI Gateway mode, don't allow deleting built-in suggested models.
@@ -716,8 +716,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      if (modelId === OPENCODE_GO_MODEL_ID) {
-        result.aiModel = getOpenCodeGoModel(this.env);
+      if (isOpenCodeGoModelId(modelId)) {
+        result.aiModel = getOpenCodeGoModel(this.env, modelId);
       }
       // In AI Gateway mode, resolve gateway models first.
       if (!result.aiModel && gwConfig) {

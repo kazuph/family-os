@@ -20,7 +20,7 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
-import { OPENCODE_GO_BASE_URL, OPENCODE_GO_MODEL_ID } from "./opencode-go.js";
+import { OPENCODE_GO_BASE_URL, isOpenCodeGoModelId } from "./opencode-go.js";
 
  // Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
  // exhausted). Defined here to avoid a backend->ai-gateway-billing type import cycle at runtime.
@@ -347,7 +347,7 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
   // OpenCode Go is a deployment subscription, not a Cloudflare AI Gateway provider or a
   // user-supplied model. Its credential always comes from the Worker environment.
   if (config.provider === "opencode-go") {
-    if (config.model !== OPENCODE_GO_MODEL_ID || !env.OPENCODE_GO_API_TOKEN) {
+    if (!isOpenCodeGoModelId(config.model) || !env.OPENCODE_GO_API_TOKEN) {
       throw new Error("This OpenCode Go model is not configured by the deployment.");
     }
     return makeHandle({

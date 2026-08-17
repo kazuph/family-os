@@ -1127,6 +1127,13 @@ export const SUGGESTED_MODELS: Record<
     "deepseek-v4-flash": {
       name: "DeepSeek V4 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
     },
+    // Same context window / output cap as Flash (DeepSeek publishes identical limits for both
+    // tiers; verified against https://api-docs.deepseek.com/quick_start/pricing/ and OpenCode
+    // Go's own model catalog, both of which list DeepSeek-V4-Pro-0813 and
+    // DeepSeek-V4-Flash-0731 side by side with "CONTEXT LENGTH 1M / MAX OUTPUT 384K").
+    "deepseek-v4-pro": {
+      name: "DeepSeek V4 Pro (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
+    },
   },
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {
@@ -2302,6 +2309,30 @@ export type AiToolCall = {
   // Output, if the fetch actually completed. (Otherwise, `error` should be present.) This is
   // stored so that the agent's chat history can be replayed without re-issuing the fetch.
   // Formatted as a YAML-frontmatter header followed by the body (see formatWebFetchResult).
+  output?: string;
+} | {
+  // Keyword web search via DuckDuckGo (see web-search.ts). `webFetch` reads a specific URL;
+  // this discovers one by keywords.
+  toolName: "webSearch";
+  input: {
+    query: string;
+  };
+
+  // Output, if the search actually completed. (Otherwise, `error` should be present.) This is
+  // stored so that the agent's chat history can be replayed without re-issuing the search.
+  // Formatted result list (see formatWebSearchResults).
+  output?: string;
+} | {
+  // Ask DeepSeek V4 Pro for advice on a difficult problem (see pro-advisor.ts). Available only
+  // on Flash-run turns; Pro itself never receives this tool.
+  toolName: "consultPro";
+  input: {
+    question: string;
+    context?: string;
+  };
+
+  // Pro's reply, if the consult actually completed. (Otherwise, `error` should be present.) This
+  // is stored so that the agent's chat history can be replayed without re-consulting Pro.
   output?: string;
 } | {
   // This actually shouldn't ever appear in logs unless the agent misunderstands the tool.
