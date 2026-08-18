@@ -72,9 +72,16 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
       clientInitialized = true;
       return Promise.resolve();
     }
+    if (fn.toString().includes("MutationObserver")) {
+      if (!isolated) throw new Error("DOM settling ran in the main world.");
+      expect(clientInitialized).toBe(true);
+      renderSettled = true;
+      return Promise.resolve();
+    }
     if (fn.toString().includes("document.title")) {
       if (!isolated) throw new Error("Document title was assigned in the main world.");
       expect(clientInitialized).toBe(true);
+      expect(renderSettled).toBe(true);
       documentTitle = typeof args[0] === "string" ? args[0] : undefined;
       return Promise.resolve();
     }
@@ -358,11 +365,12 @@ describe("limitStream", () => {
 });
 
 describe("renderGadgetInBrowser", () => {
-  it("waits for the client module, streams a PDF, and releases the browser", async () => {
+  it("waits for the client module and DOM to settle, then streams a PDF", async () => {
     let { stream, harness } = render();
 
     expect(await collect(await stream)).toBe("%PDF-1.4");
     expect(harness.clientInitialized()).toBe(true);
+    expect(harness.renderSettled()).toBe(true);
     expect(harness.pdfRequested()).toBe(true);
     expect(harness.mediaType()).toBe("print");
     expect(harness.browserClosed()).toBe(true);
