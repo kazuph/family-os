@@ -79,6 +79,16 @@ function startConnection(): RpcStub<PublicApi> {
   return newWebSocketRpcSession<PublicApi>(wsUrl);
 }
 
+// While the backoff wait below is pending, this resolves it early. Set only during that wait.
+//
+// Chrome (and other browsers) throttle setTimeout heavily in backgrounded tabs — measured
+// against a real reset, a 10-second backoff stretched to over three minutes before its timer
+// fired. A household device left backgrounded (switched away from, screen locked) after a
+// Durable Object reset would sit on a stale connection far longer than the backoff was ever
+// meant to wait, looking "stuck" long after the backend recovered. See the visibilitychange
+// listener below.
+let skipBackoffWait: (() => void) | undefined;
+
 async function handleBroken(error: any) {
   console.warn('RPC connection lost:', error);
 
@@ -89,7 +99,11 @@ async function handleBroken(error: any) {
   if (timeSinceConnect < backoff) {
     let waitTime = backoff - timeSinceConnect;
     console.warn(`Will try again in ${Math.round(waitTime / 1000)} seconds...`)
-    await new Promise(resolve => setTimeout(resolve, waitTime));
+    await new Promise<void>(resolve => {
+      let timer = setTimeout(resolve, waitTime);
+      skipBackoffWait = () => { clearTimeout(timer); resolve(); };
+    });
+    skipBackoffWait = undefined;
     console.warn(`Retrying connection...`);
     backoff = Math.min(backoff * 2, 10000);
   } else {
@@ -106,6 +120,12 @@ async function handleBroken(error: any) {
     cb();
   }
 }
+
+// A tab that comes back to the foreground with a lost connection shouldn't wait out a backoff
+// that was throttled while it was backgrounded — retry right away.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') skipBackoffWait?.();
+});
 
 // Callbacks to call whenever `currentStub` or connection state is updated.
 let notifyCurrentStubUpdated: Set<() => void> = new Set();
