@@ -19,10 +19,10 @@
     "capnweb-validate": "0.2.1"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "miniflare": "5.20260801.0-alpha",
     "typescript": "^5.9.3",
-    "vitest": "catalog:",
+    "vitest": "^4.1.10",
     "wrangler": "^4.119.0"
   }
 }

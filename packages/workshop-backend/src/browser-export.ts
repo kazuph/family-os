@@ -2,8 +2,24 @@ import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, RpcTarget, type RpcStub, type RpcTransport } from "capnweb";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { createLogger } from "@gadgets/backend-utils/logger";
+import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "./chat-attachment-validation";
+import HTML_SANITIZER_RUNTIME from "./generated/html-sanitizer-runtime.txt";
+import {
+  createStaticHtmlSnapshot,
+  getValidatedScreenshotClip,
+  receiveFromBrowser,
+  sendToBrowser,
+  setDocumentTitle,
+  waitForClientModule,
+} from "./generated/browser-export-page.js";
+import {
+  createExportDeadline,
+  limitExportStream,
+  MAX_EXPORT_BYTES,
+  MAX_EXPORT_DURATION_MS,
+} from "./export-limits";
 
 type BrowserExportLogFields = {
   event?: string;
@@ -33,18 +49,16 @@ export type GadgetUiVerification = {
 
 const logger = createLogger<BrowserExportLogFields>({ component: "workshop.browser-export" });
 
-/** Wall-clock budget covering launch, rendering, and delivery of the entire export. */
-const MAX_EXPORT_DURATION_MS = 30_000;
-/** Largest export the Workshop will stream. Enforced while streaming, never buffered in full. */
-const MAX_EXPORT_BYTES = 100 * 1024 * 1024;
-/** Quiet period indicating that the client has finished its initial DOM updates. */
-const DOM_SETTLE_MS = 250;
 /** Budget for releasing the browser session once an export has settled. */
 const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 /** Maximum number of pending Worker-to-browser RPC messages. */
 const MAX_PENDING_RPC_SENDS = 1024;
 /** Maximum total string length across all pending Worker-to-browser RPC messages. */
 const MAX_PENDING_RPC_SEND_CHARS = 32 * 1024 * 1024;
+/** Quiet period indicating that the client has finished its initial DOM updates. */
+const DOM_SETTLE_MS = 250;
+/** Largest full-page screenshot capture, before image compression. */
+const MAX_SCREENSHOT_PIXELS = 25_000_000;
 /** CSP ignores `sandbox` in a meta tag, so serve the document through interception with a header. */
 const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
 const EXPORT_CLIENT_URL = new URL("client.js", EXPORT_DOCUMENT_URL).href;
@@ -60,26 +74,15 @@ const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; " +
   "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
+const STATIC_HTML_CSP = "default-src 'none'; frame-src 'none'; script-src 'none'; " +
+  "style-src data: 'unsafe-inline'; img-src data:; media-src data:; font-src data:; " +
+  "object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';";
 
-function createDeadline(ms: number, message: string | (() => string)) {
-  let expired = Promise.withResolvers<never>();
-  let timer = setTimeout(() => expired.reject(new Error(
-    typeof message === "function" ? message() : message,
-  )), ms);
-  expired.promise.catch(() => {});
-
-  return {
-    race<T>(work: Promise<T>): Promise<T> {
-      return Promise.race([work, expired.promise]);
-    },
-    clear(): void {
-      clearTimeout(timer);
-    },
-    onExpire(callback: () => Promise<void>): void {
-      void expired.promise.catch(callback).catch(() => {});
-    },
-  };
-}
+// Puppeteer's isolated realm is intentionally absent from its public bundled types, though its
+// own security-sensitive DOM helpers use it. Keep this narrow until the method is public.
+type FrameWithIsolatedRealm = ReturnType<Page["mainFrame"]> & {
+  isolatedRealm(): Pick<Page, "evaluate">;
+};
 
 async function closeBrowser(browser: Awaited<ReturnType<typeof launch>>): Promise<void> {
   let timer: ReturnType<typeof setTimeout>;
@@ -121,10 +124,7 @@ export class BrowserRpcTransport implements RpcTransport {
     ++this.#pendingSendCount;
     this.#pendingSendChars += message.length;
     let delivered = this.#sendChain.then(() =>
-      this.#untilAborted(this.page.evaluate(
-        text => globalThis.__workshopExportSendToBrowser(text),
-        message,
-      )));
+      this.#untilAborted(this.page.evaluate(sendToBrowser, message)));
     let settled = delivered.finally(() => {
       --this.#pendingSendCount;
       this.#pendingSendChars -= message.length;
@@ -135,7 +135,7 @@ export class BrowserRpcTransport implements RpcTransport {
 
   async receive(): Promise<string> {
     let message = await this.#untilAborted(
-      this.page.evaluate(() => globalThis.__workshopExportReceiveFromBrowser()),
+      this.page.evaluate(receiveFromBrowser),
     );
     if (typeof message !== "string") {
       throw new Error("The Gadget export RPC message from the browser was not a string.");
@@ -161,8 +161,9 @@ function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
-function makeExportHtml(): string {
+function makeExportHtml(formatId = "pdf"): string {
   let runtimeUrl = scriptUrl(
+      `globalThis.gadgetExportFormatId = ${JSON.stringify(formatId)};\n` +
       `globalThis.__workshopExportClientUrl = ${JSON.stringify(EXPORT_CLIENT_URL)};\n` +
       BROWSER_EXPORT_RUNTIME);
 
@@ -209,35 +210,6 @@ export function limitStream(
   return limiter.readable;
 }
 
-/** Releases the browser session once the export stream completes, fails, or is cancelled. */
-function releaseWhenSettled(
-  source: ReadableStream<Uint8Array>,
-  release: () => Promise<void>,
-): ReadableStream<Uint8Array> {
-  let reader = source.getReader();
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      let chunk;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        await release();
-        throw error;
-      }
-      if (chunk.done) {
-        await release();
-        controller.close();
-      } else {
-        controller.enqueue(chunk.value);
-      }
-    },
-    async cancel(reason) {
-      await reader.cancel(reason).catch(() => {});
-      await release();
-    },
-  });
-}
-
 async function waitForDomSettled(page: Page): Promise<void> {
   await page.evaluate(async (quietMs: number) => {
     const browser = globalThis as unknown as {
@@ -281,10 +253,11 @@ async function openRenderedGadget(
   clientCode: string,
   gadget: RpcStub<any>,
   engine: GadgetBrowserEngine,
-  deadline: ReturnType<typeof createDeadline>,
+  deadline: ReturnType<typeof createExportDeadline>,
   observePage?: (page: Page) => void,
   options: GadgetUiVerificationOptions = {},
   reportPhase: (phase: string) => void = () => {},
+  formatId = "pdf",
 ): Promise<RenderedGadget> {
   reportPhase("launching the browser");
   let launchPromise = launch(browserEndpoint(browserBinding, engine));
@@ -320,7 +293,7 @@ async function openRenderedGadget(
           status: 200,
           contentType: "text/html",
           headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-          body: makeExportHtml(),
+          body: makeExportHtml(formatId),
         });
       } else if (url === EXPORT_CLIENT_URL) {
         void request.respond({
@@ -379,8 +352,10 @@ export async function verifyGadgetUi(
   options: GadgetUiVerificationOptions = {},
 ): Promise<GadgetUiVerification> {
   let phase = "starting verification";
-  let deadline = createDeadline(MAX_EXPORT_DURATION_MS,
-      () => `Browser verification timed out while ${phase}.`);
+  let deadline = createExportDeadline(
+    () => `Browser verification timed out while ${phase}.`,
+    MAX_EXPORT_DURATION_MS,
+  );
   let consoleMessages: GadgetUiVerification["console"] = [];
   let pageErrors: string[] = [];
   let opened: RenderedGadget | undefined;
@@ -491,24 +466,34 @@ export class BrowserVerifier extends WorkerEntrypoint<Cloudflare.Env> {
     return verifyGadgetUi(browser, clientCode, gadget, selectors, engine, options);
   }
 }
-
 /**
- * Renders a Gadget's UI as PDF in a remote browser and streams the bytes back.
+ * Renders a Gadget's browser-mode export and streams the bytes back.
  *
  * Takes ownership of `gadget` and disposes it once the export settles. The
  * returned stream must be consumed or cancelled: the browser session stays open
  * until it settles or times out.
  */
-export async function renderGadgetPdf(
+export async function renderGadgetInBrowser(
   browserBinding: BrowserRun,
   clientCode: string,
   documentTitle: string,
   gadget: RpcStub<any>,
+  format: GadgetExportFormat,
 ): Promise<ReadableStream<Uint8Array>> {
-  let deadline = createDeadline(MAX_EXPORT_DURATION_MS, "Browser export timed out.");
+  const deadline = createExportDeadline("Browser export timed out.");
   let opened: RenderedGadget;
   try {
-    opened = await openRenderedGadget(browserBinding, clientCode, gadget, "chromium", deadline);
+    opened = await openRenderedGadget(
+      browserBinding,
+      clientCode,
+      gadget,
+      "chromium",
+      deadline,
+      undefined,
+      {},
+      undefined,
+      format.id,
+    );
   } catch (error) {
     deadline.clear();
     logger.warn("failed to launch browser for gadget export", {
@@ -520,23 +505,75 @@ export async function renderGadgetPdf(
 
   try {
     let source = await deadline.race((async () => {
-      await opened.page.emulateMediaType("print");
-      await opened.page.evaluate(title => {
-        let browser = globalThis as unknown as { document: { title: string } };
-        browser.document.title = title;
-      }, documentTitle);
-      return opened.page.createPDFStream({
-        preferCSSPageSize: true,
-        printBackground: true,
-        waitForFonts: true,
-      });
+      let page = opened.page;
+      await page.emulateMediaType(
+        format.contentType === "application/pdf" ? "print" : "screen",
+      );
+      await page.evaluate(waitForClientModule);
+      const frame = page.mainFrame() as FrameWithIsolatedRealm;
+      const isolatedRealm = frame.isolatedRealm();
+      await isolatedRealm.evaluate(setDocumentTitle, documentTitle);
+      switch (format.contentType) {
+        case "application/pdf":
+          return page.createPDFStream({
+            preferCSSPageSize: true,
+            printBackground: true,
+            waitForFonts: true,
+          });
+        case "text/html": {
+          await isolatedRealm.evaluate(HTML_SANITIZER_RUNTIME);
+          const html = await isolatedRealm.evaluate(
+            createStaticHtmlSnapshot,
+            STATIC_HTML_CSP,
+            MAX_EXPORT_BYTES,
+          );
+          return streamBytes(new TextEncoder().encode(html));
+        }
+        case "image/png": {
+          const clip = await isolatedRealm.evaluate(
+            getValidatedScreenshotClip,
+            MAX_SCREENSHOT_PIXELS,
+          );
+          return streamBytes(await page.screenshot({
+            type: "png",
+            clip,
+            captureBeyondViewport: true,
+          }));
+        }
+        case "image/jpeg": {
+          const clip = await isolatedRealm.evaluate(
+            getValidatedScreenshotClip,
+            MAX_SCREENSHOT_PIXELS,
+          );
+          return streamBytes(await page.screenshot({
+            type: "jpeg",
+            clip,
+            captureBeyondViewport: true,
+          }));
+        }
+        default:
+          throw new Error(`Unsupported browser export content type: ${format.contentType}`);
+      }
     })());
-    return releaseWhenSettled(limitStream(source, MAX_EXPORT_BYTES), opened.release);
+    return limitExportStream(source, deadline, opened.release);
   } catch (error) {
     // Deliberately omits the caught value: failures here can carry Gadget-authored exception text,
     // which must not reach logs or the external issue Reporter.
     logger.warn("failed to render gadget export", { event: "gadget.export.render.failed" });
-    await opened.release();
+    if (error === deadline.error) {
+      void opened.release();
+    } else {
+      await opened.release();
+    }
     throw error;
   }
+}
+
+function streamBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
 }

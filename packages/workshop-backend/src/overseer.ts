@@ -43,13 +43,14 @@ import { assertAdultFamilyProfile } from "./family.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp";
+import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import {
-  renderGadgetPdf,
+  renderGadgetInBrowser,
   type GadgetBrowserEngine,
   type GadgetUiVerification,
   type GadgetUiVerificationOptions,
@@ -63,6 +64,13 @@ import {
   splitCodeSnapshot,
   type CodeSnapshotPart,
 } from "./code-snapshot-parts";
+import {
+  defaultExportFormats,
+  exportServerFormat,
+  GADGET_EXPORT_ENTRYPOINT,
+  type GadgetExportEntrypoint,
+  readCustomExportFormats,
+} from "./gadget-export";
 
 const logger = createWorkshopLogger("workshop.overseer");
 // Yjs string updates carry UTF-8 plus structural overhead. A quarter of the persisted snapshot-row
@@ -2475,11 +2483,83 @@ class OverseerImpl implements AgentHooks {
       },
     });
 
-    // Explicitly construct at RpcStub around the proxy to work around a workerd bug where
+    // Explicitly construct an RpcStub around the proxy to work around a workerd bug where
     // returning an RpcTarget proxy as the top-level return value from an RPC isn't detected
     // correctly.
     // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
     return new NativeRpcStub(proxy) as RpcStub<any>;
+  }
+
+  getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): UiBundle | null {
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+
+    let {ydoc} = this.buildYDoc("current");
+    if (chatId !== undefined) {
+      this.getProposedChanges(chatId).forEach(({update}) => {
+        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
+      });
+    }
+
+    let file = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId)).get("client.js");
+    return file ? {jsCode: file.toString()} : null;
+  }
+
+  async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
+      : Promise<GadgetExportFormat[]> {
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+    let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    resolved.gadget[Symbol.dispose]();
+    return resolved.formats;
+  }
+
+  async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number)
+      : Promise<ReadableStream<Uint8Array>> {
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+    let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    using exportGadget = gadget;
+    let format = formats.find(candidate => candidate.id === formatId);
+    if (!format) throw new Error(`This Gadget does not support export format: ${formatId}`);
+
+    if (format.mode === "server") {
+      if (!handler) throw new Error("The Gadget export handler is unavailable.");
+      return await exportServerFormat(() =>
+        handler.export(exportGadget, format.id));
+    } else {
+      let browser = this.env.BROWSER;
+      if (!browser) throw new Error("Gadget export is not configured for this deployment.");
+      let bundle = this.getGadgetUiBundle(gadgetId, chatId);
+      if (!bundle) throw new Error("This Gadget does not have a UI to export.");
+      let title = this.getGadgetRecord(gadgetId).title;
+      return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.move(), format);
+    }
+  }
+
+  checkChatExistsAndMaterializeDrafts(chatId?: number): void {
+    if (chatId !== undefined) {
+      let meta = this.getChatMetaOrThrow(chatId);
+      if (!meta.activeAgent) this.materializeChatDraft(chatId, meta);
+    }
+  }
+
+  async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number): Promise<{
+    formats: GadgetExportFormat[];
+    handler: Fetcher<GadgetExportEntrypoint> | null;
+    gadget: NativeRpcStub<any>;
+  }> {
+    let handler = this.loadGadgetWorker(gadgetId, chatId)
+      .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
+    // getGadgetFacet() wraps this native stub for Cap'n Web's type system, but this path invokes
+    // native Worker RPC and needs its actual runtime type.
+    let gadget = await this.getGadgetFacet(gadgetId, chatId) as unknown as NativeRpcStub<any>;
+    try {
+      let formats = await readCustomExportFormats(handler, gadget);
+      return formats === null
+        ? {formats: defaultExportFormats(), handler: null, gadget}
+        : {formats, handler, gadget};
+    } catch (error) {
+      gadget[Symbol.dispose]();
+      throw error;
+    }
   }
 
   // Load a WorkerEntrypoint exported by the gadget, used to implement a hook.
@@ -9325,14 +9405,12 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     return this.impl.getGadgetFacet(this.id, chatId);
   }
 
-  async exportPdf(chatId?: number): Promise<ReadableStream<Uint8Array>> {
-    let browser = this.impl.env.BROWSER;
-    if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-    let bundle = await this.getUiBundle(chatId);
-    if (!bundle) throw new Error("This Gadget does not have a UI to export.");
-    let gadget = await this.impl.getGadgetFacet(this.id, chatId);
-    let title = this.impl.getGadgetRecord(this.id).title;
-    return renderGadgetPdf(browser, bundle.jsCode, title, gadget);
+  async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
+    return this.impl.getGadgetExportFormats(this.id, chatId);
+  }
+
+  async export(formatId: string, chatId?: number): Promise<ReadableStream<Uint8Array>> {
+    return this.impl.exportGadget(this.id, formatId, chatId);
   }
 
   async listBindings(chatId?: number): Promise<GadgetBindingInfo[]> {
@@ -9570,7 +9648,6 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     if (chatId !== undefined) {
       this.#deny();
     }
-
     let {ydoc} = this.impl.buildYDoc("current");
     return readUiBundle(ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)));
   }
@@ -9588,15 +9665,14 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     return this.impl.getGadgetFacet(this.id, undefined);
   }
 
-  async exportPdf(chatId?: number): Promise<ReadableStream<Uint8Array>> {
+  async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
     if (chatId !== undefined) this.#deny();
-    let browser = this.impl.env.BROWSER;
-    if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-    let bundle = await this.getUiBundle();
-    if (!bundle) throw new Error("This Gadget does not have a UI to export.");
-    let gadget = await this.impl.getGadgetFacet(this.id);
-    let title = this.impl.getGadgetRecord(this.id).title;
-    return renderGadgetPdf(browser, bundle.jsCode, title, gadget);
+    return this.impl.getGadgetExportFormats(this.id);
+  }
+
+  async export(id: string, chatId?: number): Promise<ReadableStream<Uint8Array>> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.exportGadget(this.id, id);
   }
 
   // --- Denied methods (build-only) ---
