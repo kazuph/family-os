@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi, FamilyEntry } from '@gadgets/workshop-shared/api'
+import { setReportedUserId } from './errorReporting'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
@@ -29,6 +30,34 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   authenticatedApiRef.current = authState.authenticatedApi
   const familyEntryRef = useRef<RpcStub<FamilyEntry> | null>(null)
   familyEntryRef.current = authState.familyEntry
+
+  /**
+   * Names the signed-in user on error reports, for as long as this stub is the current one.
+   *
+   * Keyed on the stub rather than called from each authenticate path, so it covers however the
+   * session was established — stored token, inline login, or CF Access. This is why the claim lives
+   * in the hook and not in `AuthProvider`: the public blueprint page renders outside that provider
+   * and logs in inline, so reports from the rest of its session would otherwise name nobody.
+   *
+   * `whoami` is pipelined rather than awaited, so its answer can outlive the session that asked.
+   * The cleanup drops it when the stub is replaced or cleared, which is what stops a logout or a
+   * newer login from being overwritten by the previous user. Disposal would not be enough on its
+   * own: capnweb does not guarantee that disposing a stub rejects calls already in flight.
+   *
+   * Nothing is cleared here. Cleanup also runs on unmount, and two instances of this hook can be
+   * mounted at once — the blueprint page runs its own inside the root's — so an inner one going
+   * away must not blank an identity the outer still holds. `logout` is the only thing that clears.
+   */
+  useEffect(() => {
+    const authenticatedApi = authState.authenticatedApi
+    if (!authenticatedApi) return
+    let cancelled = false
+    authenticatedApi.whoami().then((info) => {
+      // Only a real user account names a person: for a gadget author `id` is its owner's id.
+      if (!cancelled && info.type === 'user') setReportedUserId(info.id)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [authState.authenticatedApi])
 
   useEffect(() => {
     if (CF_ACCESS_MODE) {
@@ -106,6 +135,8 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   }
 
   const logout = () => {
+    setReportedUserId(undefined)
+
     if (CF_ACCESS_MODE) {
       window.location.assign('/cdn-cgi/access/logout')
       return
