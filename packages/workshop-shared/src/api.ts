@@ -616,6 +616,7 @@ export interface AuthenticatedApi extends RpcTarget {
   // `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
   // grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
   // authorization for all of the vendor's resource types is requested.
+  // An empty array requests no resource authorization, which is useful for billing-only accounts.
   // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (connector setup is adult-only).
   connectAccount(vendorId: string, resourceUrlPatterns?: string[])
       : Promise<FamilyRpcResult<{url: string}>>;

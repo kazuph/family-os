@@ -58,7 +58,9 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
     if (!auth) return
     setConnecting(true)
     try {
-      const { url } = unwrapFamilyRpcResult(await auth.authenticatedApi.connectAccount('cloudflare'))
+      const { url } = unwrapFamilyRpcResult(
+        await auth.authenticatedApi.connectAccount('cloudflare', []),
+      )
       window.open(url, '_blank', 'noopener,noreferrer')
     } catch {
       // ignore

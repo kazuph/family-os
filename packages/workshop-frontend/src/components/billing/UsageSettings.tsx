@@ -58,7 +58,9 @@ export default function UsageSettings() {
     try {
       // Connecting (or signing in with) Cloudflare is handled by the Cloudflare gatekeeper. Open its
       // OAuth popup; the connected-accounts subscription + focus refresh pick up the result.
-      const { url } = unwrapFamilyRpcResult(await authenticatedApi.connectAccount('cloudflare'))
+      const { url } = unwrapFamilyRpcResult(
+        await authenticatedApi.connectAccount('cloudflare', []),
+      )
       window.open(url, '_blank', 'noopener,noreferrer')
     } catch {
       toasts.add({ title: 'Failed to start Cloudflare connection', variant: 'error' })
