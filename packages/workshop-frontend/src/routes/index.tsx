@@ -52,12 +52,14 @@ export function HomePageContent({ prompt }: HomeSearch) {
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [destinationId, setDestinationId] = useState<HomeWorkspaceDestinationId>(null);
+  const [draftText, setDraftText] = useState("");
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
-  const [seed, setSeed] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
+  const [seedNonce, setSeedNonce] = useState(0);
 
   useEffect(() => {
     if (!prompt) return;
-    setSeed((previous) => ({ text: prompt, nonce: previous.nonce + 1 }));
+    setDraftText(prompt);
+    setSeedNonce((previous) => previous + 1);
     navigate({ to: "/", search: {}, replace: true });
   }, [navigate, prompt]);
 
@@ -213,8 +215,9 @@ export function HomePageContent({ prompt }: HomeSearch) {
           offerFormats
           autoFocus
           minRows={3}
-          seedText={seed.text}
-          seedNonce={seed.nonce}
+          seedText={draftText}
+          seedNonce={seedNonce}
+          onDraftChange={setDraftText}
           beforeAttach={
             <HomeWorkspaceSelector
               selectedId={destinationId}
@@ -227,9 +230,10 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
         {/* A few example work tasks to spark ideas. Picking one seeds the composer above. */}
         <HomeTaskSuggestions
-          onPick={(suggestion) =>
-            setSeed((prev) => ({ text: suggestion, nonce: prev.nonce + 1 }))
-          }
+          onPick={(suggestion) => {
+            setDraftText(suggestion);
+            setSeedNonce((previous) => previous + 1);
+          }}
         />
       </div>
     </div>
