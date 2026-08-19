@@ -31,7 +31,7 @@ import { familyLabel, familyUi } from '../../familyUi'
 //   • brand row                            pinned
 //   • primary nav (Home, Workspaces, …)    pinned
 //   • workspace tools (⌘K search)          pinned
-//   • Favorites / Recent workspaces        SCROLLS
+//   • Favorites / Recent chats / Workspaces SCROLLS
 //   • utility strip (plug, avatar)         pinned
 export default function Sidebar({
   collapsed,
@@ -191,7 +191,7 @@ export default function Sidebar({
           <SidebarWorkspacesTools collapsed={collapsed} />
         </div>
 
-        {/* Scrolling middle: only the Favorites / Recent workspaces / Recent blueprints lists.
+        {/* Scrolling middle: only the Favorites / Recent chats / Workspaces lists.
             min-h-0 lets flex children compute scroll height correctly. */}
         <div className="sidebar-scroll mt-1 min-h-0 flex-1 overflow-y-auto">
           <SidebarWorkspacesLists collapsed={collapsed} />
