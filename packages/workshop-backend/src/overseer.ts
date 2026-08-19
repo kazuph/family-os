@@ -2508,7 +2508,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<GadgetExportFormat[]> {
     this.checkChatExistsAndMaterializeDrafts(chatId);
     let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
-    resolved.gadget[Symbol.dispose]();
+    resolved.gadget?.[Symbol.dispose]();
     return resolved.formats;
   }
 
@@ -2516,6 +2516,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<ReadableStream<Uint8Array>> {
     this.checkChatExistsAndMaterializeDrafts(chatId);
     let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    if (!gadget) throw new Error("The Gadget server stub is unavailable.");
     using exportGadget = gadget;
     let format = formats.find(candidate => candidate.id === formatId);
     if (!format) throw new Error(`This Gadget does not support export format: ${formatId}`);
@@ -2544,8 +2545,17 @@ class OverseerImpl implements AgentHooks {
   async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number): Promise<{
     formats: GadgetExportFormat[];
     handler: Fetcher<GadgetExportEntrypoint> | null;
-    gadget: NativeRpcStub<any>;
+    gadget: NativeRpcStub<any> | null;
   }> {
+    let {ydoc} = this.buildYDoc("current");
+    if (chatId !== undefined) {
+      this.getProposedChanges(chatId).forEach(({update}) => {
+        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
+      });
+    }
+    let files = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId));
+    if (!files.has("server.js")) return {formats: [], handler: null, gadget: null};
+
     let handler = this.loadGadgetWorker(gadgetId, chatId)
       .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
     // getGadgetFacet() wraps this native stub for Cap'n Web's type system, but this path invokes
@@ -2554,7 +2564,11 @@ class OverseerImpl implements AgentHooks {
     try {
       let formats = await readCustomExportFormats(handler, gadget);
       return formats === null
-        ? {formats: defaultExportFormats(), handler: null, gadget}
+        ? {
+          formats: files.has("client.js") ? defaultExportFormats() : [],
+          handler: null,
+          gadget,
+        }
         : {formats, handler, gadget};
     } catch (error) {
       gadget[Symbol.dispose]();
