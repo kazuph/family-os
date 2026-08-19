@@ -6411,6 +6411,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         this.impl.ownerId = userId;
 
         this.impl.storage.ownerId.put(userId);
+        this.impl.storage.title.put(meta.title);
 
         this.#initializeEmptyCodeSnapshot();
       });

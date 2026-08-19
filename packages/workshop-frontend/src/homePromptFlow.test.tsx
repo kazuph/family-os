@@ -8,12 +8,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const testState = vi.hoisted(() => {
   const listModels = vi.fn<() => Promise<never[]>>(async () => []);
   const newGadget = vi.fn<() => never>();
+  const getOrCreateInternalWorkspace = vi.fn<() => never>();
+  const getInternalWorkspaceId = vi.fn<() => Promise<string | null>>(async () => null);
+  const listGadgets = vi.fn<() => Promise<never[]>>(async () => []);
   return {
     addToast: vi.fn<(toast: unknown) => void>(),
-    authenticatedApi: { listModels, newGadget },
+    authenticatedApi: {
+      listModels,
+      newGadget,
+      getOrCreateInternalWorkspace,
+      getInternalWorkspaceId,
+      listGadgets,
+    },
     listModels,
     navigate: vi.fn<(options: unknown) => void>(),
     newGadget,
+    getOrCreateInternalWorkspace,
     seeds: [] as Array<{ text?: string; nonce?: number }>,
   };
 });
@@ -42,6 +52,8 @@ vi.mock("./ChatInterface", () => ({
 
 vi.mock("./components/MeshBackground", () => ({ default: () => null }));
 vi.mock("./components/AppShell/HomeTaskSuggestions", () => ({ default: () => null }));
+vi.mock("./components/HomeRecentInternalChats", () => ({ default: () => null }));
+vi.mock("./components/HomeWorkspaceSelector", () => ({ default: () => null }));
 vi.mock("./useDocumentTitle", () => ({ useDocumentTitle: () => {} }));
 
 import { HomePageContent } from "./routes/index";
@@ -72,5 +84,6 @@ describe("Home prompt route flow", () => {
     expect(Math.max(...testState.seeds.map(({ nonce }) => nonce ?? 0))).toBe(1);
     expect(testState.navigate).toHaveBeenCalledWith({ to: "/", search: {}, replace: true });
     expect(testState.newGadget).not.toHaveBeenCalled();
+    expect(testState.getOrCreateInternalWorkspace).not.toHaveBeenCalled();
   });
 });

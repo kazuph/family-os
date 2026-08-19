@@ -1832,6 +1832,7 @@ export const ChatInput = ({
   seedText,
   seedNonce,
   attachLabel,
+  beforeAttach,
   draftUpdateBanner,
   blockedReason,
   chatKey,
@@ -1876,6 +1877,8 @@ export const ChatInput = ({
   seedNonce?: number;
   /** Optional label for the attach menu item. */
   attachLabel?: string;
+  /** Rendered immediately left of Add resources (home workspace selector). */
+  beforeAttach?: ReactNode;
   draftUpdateBanner?: ReactNode;
   /** When set, the composer is disabled and shows this message — the user must resolve something
    * (e.g. accept/deny a pending connection request) before they can type or send. */
@@ -3389,6 +3392,7 @@ export const ChatInput = ({
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu>
+            {beforeAttach}
             <button
               type="button"
               onClick={handleAttachOpen}
