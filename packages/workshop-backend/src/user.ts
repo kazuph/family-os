@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, INTERNAL_WORKSPACE_TITLE } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -104,10 +104,16 @@ type GadgetRecord = GadgetMetadata & {
   lastActive?: Date;  // if missing, gadget is provisional
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // GadgetMetadata).
+  // True for the one per-profile home container omitted from ordinary listings.
+  internal?: true;
 };
 
 function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
   return g.lastActive !== undefined;
+}
+
+function isListedWorkspace(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
+  return g.internal !== true && isFullyCreated(g);
 }
 
 // One output of a workspace, as pushed into a user's output index by the Overseer that owns it
@@ -220,6 +226,9 @@ function makeUserStorage(storage: DurableObjectStorage) {
       //
       // null = password disabled (e.g. because some other auth mechanism is used)
       passwordHashHash: <Uint8Array | null>null,
+
+      // Id of this profile's internal home workspace, once created. Ordinary listings omit it.
+      internalWorkspaceId: <string | null>null,
     }
   });
 }
@@ -758,11 +767,40 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
     let result: GadgetMetadataWithTimestamps[] = [];
     for (let gadget of this.storage.gadgets.list()) {
-      if (isFullyCreated(gadget)) {
+      if (isListedWorkspace(gadget)) {
         result.push(gadget);
       }
     }
     return result;
+  }
+
+  async getInternalWorkspaceId(): Promise<string | null> {
+    let id = this.storage.internalWorkspaceId.get();
+    if (id) {
+      let record = this.storage.gadgets.get(id);
+      if (record?.internal) return id;
+    }
+    for (let gadget of this.storage.gadgets.list()) {
+      if (gadget.internal) {
+        this.storage.internalWorkspaceId.put(gadget.id);
+        return gadget.id;
+      }
+    }
+    if (id) this.storage.internalWorkspaceId.put(null);
+    return null;
+  }
+
+  async ensureInternalWorkspace(proposedId: string): Promise<string> {
+    let existing = await this.getInternalWorkspaceId();
+    if (existing) return existing;
+    this.storage.gadgets.put({
+      id: proposedId,
+      title: INTERNAL_WORKSPACE_TITLE,
+      created: new Date(),
+      internal: true,
+    });
+    this.storage.internalWorkspaceId.put(proposedId);
+    return proposedId;
   }
 
   async updateTitle(gadgetId: string, title: string) {
@@ -809,6 +847,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async deleteGadget(id: string): Promise<void> {
+    if (this.storage.internalWorkspaceId.get() === id) {
+      this.storage.internalWorkspaceId.put(null);
+    }
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
   }

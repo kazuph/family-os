@@ -193,6 +193,14 @@ export function validateBindingName(name: string): void {
 export const DEFAULT_CHAT_TITLE = "New Chat";
 
 /**
+ * Display title of the per-profile internal home workspace.
+ *
+ * The workspace is omitted from ordinary listings (`listGadgets()`, sidebar, selectors) but remains
+ * openable by id. Existing visible workspaces are never renamed to this title.
+ */
+export const INTERNAL_WORKSPACE_TITLE = "Home";
+
+/**
  * Normalize a chat title: strip control characters, collapse whitespace, trim.
  * Throws if the result is empty. Same shape as gadget-title checks (`createGadget`); there is no
  * separate numeric cap — agent length guidance stays the existing "2-8 words" phrase.
@@ -556,9 +564,26 @@ export interface AuthenticatedApi extends RpcTarget {
   // TODO(multi-gadget): This should be renamed to newWorkspace().
   newGadget(): Promise<RpcStub<Overseer>>;
 
+  /**
+   * Open this profile's single internal home workspace, creating it if needed.
+   *
+   * Repeated calls return the same workspace. The workspace is omitted from `listGadgets()` and
+   * other ordinary navigation, but remains openable by id (`openGadget`) and keeps its chats.
+   * Existing visible workspaces are not migrated, renamed, hidden, or deleted.
+   */
+  getOrCreateInternalWorkspace(): Promise<RpcStub<Overseer>>;
+
+  /**
+   * The id of this profile's internal home workspace, or `null` if it has never been created.
+   *
+   * A cheap read so the home page can offer chat re-entry without minting the container.
+   */
+  getInternalWorkspaceId(): Promise<string | null>;
+
   // List metadata about all the user's Gadgets. Used to display the front-page listing.
   //
-  // Provisional gadgets are hidden.
+  // Provisional gadgets are hidden. The per-profile internal home workspace is also omitted;
+  // open it with `getOrCreateInternalWorkspace()` or `openGadget(id)` instead.
   //
   // TODO: Pagination, sort options.
   listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;

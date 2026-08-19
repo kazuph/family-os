@@ -372,6 +372,31 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return result;
   }
 
+  async getInternalWorkspaceId(): Promise<string | null> {
+    await this.#assertFamilyCapability();
+    return this.user.getInternalWorkspaceId();
+  }
+
+  async getOrCreateInternalWorkspace(): Promise<RpcStub<Overseer>> {
+    await this.#assertFamilyCapability();
+    let before = await this.user.getInternalWorkspaceId();
+    let proposed = before ?? this.overseers.newUniqueId().toString();
+    let id = await this.user.ensureInternalWorkspace(proposed);
+    if (!before && id === proposed) {
+      recordAnalytics(this.ctx, this.env, {
+        event_name: "gadget_created",
+        user_id: this.user.id.toString(),
+        gadget_id: id,
+        source: "blank",
+      });
+    }
+    let result = await this.openGadget(id);
+    if (!result) {
+      throw new Error("Open failed despite internal workspace?");
+    }
+    return result;
+  }
+
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
     return this.user.listGadgets();
   }

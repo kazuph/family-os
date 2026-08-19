@@ -1831,7 +1831,9 @@ export const ChatInput = ({
   minRows = 2,
   seedText,
   seedNonce,
+  onDraftChange,
   attachLabel,
+  beforeAttach,
   draftUpdateBanner,
   blockedReason,
   chatKey,
@@ -1874,8 +1876,12 @@ export const ChatInput = ({
    * whenever `seedNonce` changes, so the same text can be re-seeded by bumping the nonce. */
   seedText?: string;
   seedNonce?: number;
+  /** Reports composer text changes so a parent can preserve the draft across a deliberate remount. */
+  onDraftChange?: (text: string) => void;
   /** Optional label for the attach menu item. */
   attachLabel?: string;
+  /** Rendered immediately left of Add resources (home workspace selector). */
+  beforeAttach?: ReactNode;
   draftUpdateBanner?: ReactNode;
   /** When set, the composer is disabled and shows this message — the user must resolve something
    * (e.g. accept/deny a pending connection request) before they can type or send. */
@@ -1891,7 +1897,7 @@ export const ChatInput = ({
    * pre-approval catalog and proactively offer to pre-approve its actions. */
 }) => {
   const toasts = useKumoToastManager();
-  const [inputValue, setInputValue] = useState("");
+  const [inputValue, setInputValue] = useState(seedNonce === undefined ? "" : seedText ?? "");
   const [capsules, setCapsules] = useState<InputCapsule[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [isSending, setIsSending] = useState(false);
@@ -1970,6 +1976,9 @@ export const ChatInput = ({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedNonce]);
+  useEffect(() => {
+    onDraftChange?.(inputValue);
+  }, [inputValue, onDraftChange]);
   const capsulesRef = useRef(capsules);
   capsulesRef.current = capsules;
   // Sync mirror div size with the textarea via ResizeObserver.
@@ -3389,6 +3398,7 @@ export const ChatInput = ({
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu>
+            {beforeAttach}
             <button
               type="button"
               onClick={handleAttachOpen}

@@ -5,6 +5,8 @@ import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatInput } from "../ChatInterface";
 import MeshBackground from "../components/MeshBackground";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
+import HomeWorkspaceSelector from "../components/HomeWorkspaceSelector";
+import HomeRecentInternalChats from "../components/HomeRecentInternalChats";
 import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
@@ -15,6 +17,7 @@ import {
   MessageFormatRef,
   SlashCommandRequest,
 } from "@gadgets/workshop-shared/api";
+import type { HomeWorkspaceDestinationId } from "../homeWorkspaceTarget";
 import {
   getStoredSelectedModel,
   persistSelectedModel,
@@ -48,12 +51,15 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [destinationId, setDestinationId] = useState<HomeWorkspaceDestinationId>(null);
+  const [draftText, setDraftText] = useState("");
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
-  const [seed, setSeed] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
+  const [seedNonce, setSeedNonce] = useState(0);
 
   useEffect(() => {
     if (!prompt) return;
-    setSeed((previous) => ({ text: prompt, nonce: previous.nonce + 1 }));
+    setDraftText(prompt);
+    setSeedNonce((previous) => previous + 1);
     navigate({ to: "/", search: {}, replace: true });
   }, [navigate, prompt]);
 
@@ -86,21 +92,32 @@ export function HomePageContent({ prompt }: HomeSearch) {
     persistSelectedModel(value);
   }, []);
 
-  // Pre-create a provisional gadget as soon as the user starts interacting, so that navigation
-  // after submit is instant. Same pattern as before — disposed on unmount if never consumed.
-  const provisionalOverseerRef = useRef<{ stub: RpcStub<Overseer> } | null>(null);
+  const handleDestinationChange = useCallback((id: HomeWorkspaceDestinationId) => {
+    setDestinationId(id);
+  }, []);
 
-  const ensureProvisionalGadget = useCallback(() => {
-    if (!provisionalOverseerRef.current) {
-      const overseer = authenticatedApi.newGadget();
-      provisionalOverseerRef.current = { stub: overseer };
+  // Reuse one overseer stub for the current destination so attach/capsule setup and submit share
+  // the same workspace. Default is the per-profile internal home workspace; a selected id opens
+  // that existing visible workspace.
+  const overseerRef = useRef<{ stub: RpcStub<Overseer>; key: string } | null>(null);
+  const destinationKey = destinationId ?? "internal";
+
+  const ensureOverseer = useCallback(() => {
+    if (overseerRef.current?.key === destinationKey) {
+      return overseerRef.current.stub;
     }
-  }, [authenticatedApi]);
+    overseerRef.current?.stub[Symbol.dispose]();
+    const stub = destinationId
+      ? authenticatedApi.openGadget(destinationId)
+      : authenticatedApi.getOrCreateInternalWorkspace();
+    overseerRef.current = { stub, key: destinationKey };
+    return stub;
+  }, [authenticatedApi, destinationId, destinationKey]);
 
   useEffect(() => {
     return () => {
-      provisionalOverseerRef.current?.stub[Symbol.dispose]();
-      provisionalOverseerRef.current = null;
+      overseerRef.current?.stub[Symbol.dispose]();
+      overseerRef.current = null;
     };
   }, []);
 
@@ -113,48 +130,43 @@ export function HomePageContent({ prompt }: HomeSearch) {
       formats?: MessageFormatRef[],
     ) => {
       try {
-        ensureProvisionalGadget();
-        const overseer = provisionalOverseerRef.current!.stub;
+        const overseer = ensureOverseer();
         // Pipeline both independent calls in one batch, but settle both before releasing the stub.
         const [chat, {id}] = await Promise.all([
           overseer.newChat(message, modelId, capsules, attachments, formats),
           overseer.getMetadata(),
         ]);
-        provisionalOverseerRef.current?.stub[Symbol.dispose]();
-        provisionalOverseerRef.current = null;
-        // Open the conversation we just started.
+        overseerRef.current?.stub[Symbol.dispose]();
+        overseerRef.current = null;
         navigate({ to: "/workspace/$id", params: { id }, search: { chat } });
       } catch (err) {
-        const transient = logRpcFailure("Failed to create gadget:", err,
+        const transient = logRpcFailure("Failed to start chat:", err,
             { reportSite: "workspace.create" });
-        // A retry reuses the provisional gadget while the draft contains gadget-scoped references.
         if (!attachments?.length && !capsules?.length) {
-          provisionalOverseerRef.current?.stub[Symbol.dispose]();
-          provisionalOverseerRef.current = null;
+          overseerRef.current?.stub[Symbol.dispose]();
+          overseerRef.current = null;
         }
         if (!transient) {
           toasts.add({
-            title: familyLabel("Failed to create workspace", familyUi.failedCreateWorkspace),
+            title: familyLabel("Couldn't start chat", familyUi.failedStartChat),
             variant: "error",
           });
         }
         throw err;
       }
     },
-    [ensureProvisionalGadget, navigate, toasts],
+    [ensureOverseer, navigate, toasts],
   );
 
   const getOverseer = useCallback((): RpcStub<Overseer> => {
-    ensureProvisionalGadget();
-    return provisionalOverseerRef.current!.stub;
-  }, [ensureProvisionalGadget]);
+    return ensureOverseer();
+  }, [ensureOverseer]);
 
   const createCapsuleGatekeeper = useCallback(
     (accountId: number, url: string) => {
-      ensureProvisionalGadget();
-      return provisionalOverseerRef.current!.stub.newGatekeeper(accountId, url);
+      return ensureOverseer().newGatekeeper(accountId, url);
     },
-    [ensureProvisionalGadget],
+    [ensureOverseer],
   );
 
   return (
@@ -191,6 +203,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
         {/* Composer */}
         <ChatInput
+          key={destinationKey}
           createCapsuleGatekeeper={createCapsuleGatekeeper}
           getOverseer={getOverseer}
           onSend={handleSend}
@@ -202,15 +215,25 @@ export function HomePageContent({ prompt }: HomeSearch) {
           offerFormats
           autoFocus
           minRows={3}
-          seedText={seed.text}
-          seedNonce={seed.nonce}
+          seedText={draftText}
+          seedNonce={seedNonce}
+          onDraftChange={setDraftText}
+          beforeAttach={
+            <HomeWorkspaceSelector
+              selectedId={destinationId}
+              onChange={handleDestinationChange}
+            />
+          }
         />
+
+        <HomeRecentInternalChats />
 
         {/* A few example work tasks to spark ideas. Picking one seeds the composer above. */}
         <HomeTaskSuggestions
-          onPick={(suggestion) =>
-            setSeed((prev) => ({ text: suggestion, nonce: prev.nonce + 1 }))
-          }
+          onPick={(suggestion) => {
+            setDraftText(suggestion);
+            setSeedNonce((previous) => previous + 1);
+          }}
         />
       </div>
     </div>

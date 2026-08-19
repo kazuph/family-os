@@ -3,7 +3,7 @@
  * for non-Access local password mode; Family mode must never surface them to users.
  */
 import { CF_ACCESS_MODE } from './useAuth'
-import { DEFAULT_CHAT_TITLE, FAMILY_ADULT_PASSCODE_LENGTH } from '@gadgets/workshop-shared/api'
+import { DEFAULT_CHAT_TITLE, FAMILY_ADULT_PASSCODE_LENGTH, INTERNAL_WORKSPACE_TITLE } from '@gadgets/workshop-shared/api'
 
 /** True when this build is the household Family OS Access deployment. */
 export const isFamilyMode = CF_ACCESS_MODE
@@ -75,6 +75,11 @@ export const familyUi = {
   homeHeading: '何をしますか？',
   homeSubheading: '質問する、アウトプットを作る、ツールと連携するアプリを作る、から始められます。',
   addResource: 'リソースを追加',
+  chooseWorkspace: '保存先のワークスペースを選ぶ',
+  homeDestination: 'ホーム',
+  homeDestinationDefault: 'ホーム（デフォルト）',
+  recentHomeChats: '最近のチャット',
+  failedStartChat: 'チャットを開始できませんでした',
   getStarted: 'はじめる',
   suggestMeetingDeck: 'チーム会議の資料を作る',
   suggestMeetingDeckDesc: '進捗・リスク・決めることをまとめたスライド',
@@ -369,6 +374,9 @@ export function workspaceTitle(title: string | undefined): string {
   const raw = (title || '').trim()
   if (!raw || /^untitled(\s+workspace)?$/i.test(raw)) {
     return familyLabel('Untitled Workspace', familyUi.untitledWorkspace)
+  }
+  if (raw === INTERNAL_WORKSPACE_TITLE) {
+    return familyLabel(INTERNAL_WORKSPACE_TITLE, familyUi.homeDestination)
   }
   return raw
 }
