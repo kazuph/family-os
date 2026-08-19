@@ -1,42 +1,12 @@
-import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import type { AiChatMetadata } from "@gadgets/workshop-shared/api";
-import { useAuthenticatedApi } from "../AuthContext";
 import { chatTitle, familyLabel, familyRelativeTime, familyUi } from "../familyUi";
-import { logRpcFailure } from "../rpcErrors";
-
-const RECENT_CHAT_LIMIT = 8;
+import { selectRecentInternalHomeChats, useInternalHomeChats } from "../internalHomeChats";
 
 export default function HomeRecentInternalChats() {
-  const { authenticatedApi } = useAuthenticatedApi();
-  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [chats, setChats] = useState<AiChatMetadata[]>([]);
+  const { workspaceId, chats } = useInternalHomeChats();
+  const recentChats = selectRecentInternalHomeChats(chats);
 
-  useEffect(() => {
-    let cancelled = false;
-    let overseer: ReturnType<typeof authenticatedApi.openGadget> | undefined;
-    authenticatedApi.getInternalWorkspaceId()
-      .then(async (id) => {
-        if (cancelled || !id) return;
-        overseer = authenticatedApi.openGadget(id);
-        const list = await overseer.listChats();
-        if (cancelled) return;
-        const sorted = [...list].toSorted(
-          (a, b) => b.lastActive.getTime() - a.lastActive.getTime(),
-        );
-        setWorkspaceId(id);
-        setChats(sorted.slice(0, RECENT_CHAT_LIMIT));
-      })
-      .catch((err) => {
-        logRpcFailure("Failed to load home chats:", err);
-      });
-    return () => {
-      cancelled = true;
-      overseer?.[Symbol.dispose]();
-    };
-  }, [authenticatedApi]);
-
-  if (!workspaceId || chats.length === 0) return null;
+  if (!workspaceId || recentChats.length === 0) return null;
 
   return (
     <section className="w-full" aria-label={familyLabel("Recent chats", familyUi.recentHomeChats)}>
@@ -44,7 +14,7 @@ export default function HomeRecentInternalChats() {
         {familyLabel("Recent chats", familyUi.recentHomeChats)}
       </h2>
       <ul className="flex flex-col gap-0.5">
-        {chats.map((chat) => (
+        {recentChats.map((chat) => (
           <li key={chat.id}>
             <Link
               to="/workspace/$id"

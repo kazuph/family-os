@@ -13,6 +13,7 @@ import { Link } from '@tanstack/react-router'
 import {
   ArrowRight,
   CaretDown,
+  ChatCircleText,
   MagnifyingGlass,
   Star,
 } from '@phosphor-icons/react'
@@ -28,14 +29,15 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
-import { familyLabel, familyUi, isFamilyMode } from '../../familyUi'
+import { chatTitle, familyLabel, familyRelativeTime, familyUi, isFamilyMode } from '../../familyUi'
+import { selectRecentInternalHomeChats, useInternalHomeChats } from '../../internalHomeChats'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
 const RECENT_INITIAL_LIMIT = 6
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shape of the workspaces state shared between the rail's pinned tools (search) and the scrolling
-// lists (Favorites / Recent workspaces). Centralized here so both sibling components subscribe to
+// lists (Favorites / Recent chats / Workspaces). Centralized here so both sibling components subscribe to
 // the same data and the dialog state has a single owner.
 // ─────────────────────────────────────────────────────────────────────────────
 type WorkspacesContextValue = {
@@ -322,7 +324,7 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lists (Favorites / Recent workspaces). Lives in the rail's scrolling middle
+// Lists (Favorites / Recent chats / Workspaces). Lives in the rail's scrolling middle
 // region. In collapsed mode shows a compact avatar stack.
 // ─────────────────────────────────────────────────────────────────────────────
 export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: boolean }) {
@@ -339,7 +341,13 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
   } = useWorkspacesContext()
 
   const [favOpen, setFavOpen] = useState(true)
+  const [chatsOpen, setChatsOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
+  const {
+    workspaceId: internalWorkspaceId,
+    chats: internalChats,
+    loading: internalChatsLoading,
+  } = useInternalHomeChats()
 
   if (collapsed) {
     const compact = [...favorites, ...recent].slice(0, 8)
@@ -393,6 +401,49 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             ))}
           </div>
         )}
+      </SidebarSection>
+
+      <SidebarSection
+        label={familyLabel('Recent chats', familyUi.recentHomeChats)}
+        open={chatsOpen}
+        onToggle={() => setChatsOpen((o) => !o)}
+        icon={<ChatCircleText size={12} weight="regular" className="text-kumo-inactive" />}
+      >
+        {internalChatsLoading ? (
+          <div className="flex flex-col gap-1 px-1">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="h-7 animate-pulse rounded-md bg-kumo-elevated" />
+            ))}
+          </div>
+        ) : internalChats.length === 0 || !internalWorkspaceId ? (
+          <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
+            {familyLabel('No chats yet.', familyUi.noHomeChats)}
+          </p>
+        ) : (
+          <div className="flex flex-col">
+            {selectRecentInternalHomeChats(internalChats).map((chat) => (
+              <Link
+                key={chat.id}
+                to="/workspace/$id"
+                params={{ id: internalWorkspaceId }}
+                search={{ chat: chat.id }}
+                className="flex h-8 items-center gap-2 rounded-lg px-2.5 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
+              >
+                <span className="min-w-0 flex-1 truncate">{chatTitle(chat.title)}</span>
+                <span className="shrink-0 text-[10px] text-kumo-inactive">
+                  {familyRelativeTime(chat.lastActive)}
+                </span>
+              </Link>
+            ))}
+          </div>
+        )}
+        <Link
+          to="/chats"
+          className="mt-0.5 flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
+        >
+          {familyLabel('Show all', familyUi.showAllHomeChats)}
+          <ArrowRight size={11} weight="bold" />
+        </Link>
       </SidebarSection>
 
       {/* Recent workspaces — no count here; the "Show all (N)" link already carries it. */}
