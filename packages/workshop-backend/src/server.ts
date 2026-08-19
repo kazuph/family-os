@@ -41,7 +41,7 @@ import { readCfAccessLoginIdentity, verifyCfAccessJwt, type CfAccessFetch } from
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
-import { wrapDoStubForTelemetry } from "./do-telemetry";
+import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -163,7 +163,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async whoami(): Promise<AiChatAuthorInfo> {
     await this.#assertFamilyCapability();
-    return this.#user.whoami();
+    // Pure-read delegations retry once across a user-DO reset (see retryOnDoReset); writes never do.
+    return retryOnDoReset(() => this.#user.whoami());
   }
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
@@ -172,10 +173,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.changePassword(oldHash, newHash);
   }
   hasPasswordLogin(): Promise<boolean> {
-    return this.#user.hasPasswordLogin();
+    return retryOnDoReset(() => this.#user.hasPasswordLogin());
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#user.listModels();
+    return retryOnDoReset(() => this.#user.listModels());
   }
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<FamilyRpcResult<void>> {
     let gate = await this.#adultFamilyResult();
@@ -196,11 +197,11 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return { ok: true, value: undefined };
   }
   getQuickModel(): Promise<null | string> {
-    return this.#user.getQuickModel();
+    return retryOnDoReset(() => this.#user.getQuickModel());
   }
 
   getPreferredModel(): Promise<string | null> {
-    return this.#user.getPreferredModel();
+    return retryOnDoReset(() => this.#user.getPreferredModel());
   }
   async setPreferredModel(id: string | null): Promise<FamilyRpcResult<void>> {
     let gate = await this.#adultFamilyResult();
@@ -216,7 +217,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return { ok: true, value: undefined };
   }
   isOnboardingCompleted(): Promise<boolean> {
-    return this.#user.isOnboardingCompleted();
+    return retryOnDoReset(() => this.#user.isOnboardingCompleted());
   }
   async completeOnboarding(): Promise<void> {
     try {
@@ -390,12 +391,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async getInternalWorkspaceId(): Promise<string | null> {
     await this.#assertFamilyCapability();
-    return this.#user.getInternalWorkspaceId();
+    return retryOnDoReset(() => this.#user.getInternalWorkspaceId());
   }
 
   async getOrCreateInternalWorkspace(): Promise<RpcStub<Overseer>> {
     await this.#assertFamilyCapability();
-    let before = await this.#user.getInternalWorkspaceId();
+    let before = await retryOnDoReset(() => this.#user.getInternalWorkspaceId());
     let proposed = before ?? this.overseers.newUniqueId().toString();
     let id = await this.#user.ensureInternalWorkspace(proposed);
     if (!before && id === proposed) {
@@ -414,7 +415,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return this.#user.listGadgets();
+    return retryOnDoReset(() => this.#user.listGadgets());
   }
 
   listOutputs(): Promise<ListOutputsResult> {
@@ -431,7 +432,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     await this.#assertFamilyCapability();
     // Connector discovery is adult-only; children get an empty catalog (no Cap'n Web throw).
     if (this.familyGuard?.childProfile) return [];
-    return this.#user.listGatekeeperVendors(filter);
+    return retryOnDoReset(() => this.#user.listGatekeeperVendors(filter));
   }
 
   async connectAccount(vendorId: string, resourceUrlPatterns?: string[])
@@ -448,7 +449,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
     await this.#assertAdultFamilyCapability();
-    return this.#user.listAddableGatekeepers();
+    return retryOnDoReset(() => this.#user.listAddableGatekeepers());
   }
 
   async provisionAmbientAccount(vendorId: string): Promise<void> {
@@ -485,15 +486,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
-    return this.#user.listBlueprints();
+    return retryOnDoReset(() => this.#user.listBlueprints());
   }
 
   async getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null> {
-    return this.#user.getBlueprint(blueprintId);
+    return retryOnDoReset(() => this.#user.getBlueprint(blueprintId));
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {
-    return this.#user.listLibraryBlueprints();
+    return retryOnDoReset(() => this.#user.listLibraryBlueprints());
   }
 
   async setBlueprintPinned(blueprintId: string, pinned: boolean): Promise<void> {
@@ -501,7 +502,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async isBlueprintPinned(blueprintId: string): Promise<boolean> {
-    return this.#user.isBlueprintPinned(blueprintId);
+    return retryOnDoReset(() => this.#user.isBlueprintPinned(blueprintId));
   }
 
   async listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]> {
@@ -518,7 +519,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null> {
-    return this.#user.isBlueprintInLibrary(blueprintId);
+    return retryOnDoReset(() => this.#user.isBlueprintInLibrary(blueprintId));
   }
 
   async importBlueprint(archive: ReadableStream<Uint8Array>): Promise<string> {
