@@ -5,7 +5,6 @@ import { TooltipProvider, Toasty } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi, FamilyEntry, FamilyState, FAMILY_ADULT_PASSCODE_LENGTH, isFamilyAdultPasscode } from '@gadgets/workshop-shared/api'
 import { useRpcStub, useConnectionLost } from '../RpcContext'
-import { markConnectionRestored } from '../main'
 import { useAuth, CF_ACCESS_MODE } from '../useAuth'
 import { AuthProvider } from '../AuthContext'
 import { applyFamilyRpcResult, handleFamilyRpcFailure, requireFamilyRpcResult } from '../familyRpc'
@@ -38,11 +37,6 @@ function RootComponent() {
   const connectionLost = useConnectionLost()
   const { isAuthenticated, authenticatedApi, familyEntry, isLoading, error, logout, login, setFamilyAuthenticatedApi } = useAuth(rpcStub)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-
-  // When authenticatedApi becomes available, the connection is proven alive.
-  useEffect(() => {
-    if (authenticatedApi) markConnectionRestored()
-  }, [authenticatedApi])
 
   // Routes that don't require auth (public routes)
   const isSignup = pathname === '/signup'
