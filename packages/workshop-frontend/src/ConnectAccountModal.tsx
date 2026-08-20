@@ -86,7 +86,7 @@ export default function ConnectAccountModal({
 
   return (
     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <Dialog className="p-6" size="base">
+      <Dialog className="responsive-dialog overflow-y-auto p-6" size="base">
         <Dialog.Title className="text-lg font-semibold mb-4">
           {familyLabel('Connect Account', 'アカウントを接続')}
         </Dialog.Title>

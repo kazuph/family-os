@@ -424,7 +424,7 @@ export default function OnboardingWizard({
             style={{ transform: `translateX(-${step * 100}%)` }}
           >
             {/* ── Step 0: Profile ───────────────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <h2 className="text-lg font-medium text-kumo-default mb-1">
                 {familyLabel('Create your profile', familyUi.createYourProfile)}
               </h2>
@@ -436,7 +436,7 @@ export default function OnboardingWizard({
               </p>
 
               {/* Avatar + Display name side by side */}
-              <div className="flex items-start gap-5">
+              <div className="flex flex-col items-start gap-5 min-[380px]:flex-row">
                 {CF_ACCESS_MODE && familyEntry ? (
                   <div className="flex flex-col gap-3 flex-1 min-w-0">
                     <FamilyMonsterPicker
@@ -519,14 +519,14 @@ export default function OnboardingWizard({
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
                     placeholder={familyLabel('How should we call you?', familyUi.displayNamePlaceholder)}
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:border-kumo-brand transition-colors"
+                    className="w-full rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5 text-[16px] text-kumo-default transition-colors placeholder:text-kumo-inactive focus:border-kumo-brand focus:outline-none sm:text-sm"
                   />
                 </div>
               </div>
             </div>
 
             {/* ── Step 1: Model selection ───────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <div>
                 <h2 className="text-lg font-medium text-kumo-default mb-1">
                   {familyLabel('Choose your model', familyUi.chooseModel)}
