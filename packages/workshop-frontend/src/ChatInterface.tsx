@@ -123,11 +123,11 @@ import { useVendorBranding } from "./useVendorBranding";
 import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { useSlashCommandPicker } from "./components/chat/SlashCommandPicker";
 import {
-  isImeCompositionEvent,
   shouldSubmitChatInput,
 } from "./components/chat/chat-input-keydown";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
+import { isImeComposing } from "./keyboardEvent";
 import {
   composerDraftStorageKey,
   decorateComposerDraft,
@@ -3439,7 +3439,12 @@ export const ChatInput = ({
                   isComposing: e.nativeEvent.isComposing,
                   keyCode: e.nativeEvent.keyCode,
                 };
-                if (isImeCompositionEvent(keyEvent)) return;
+                // An IME commits a composition with Enter, and the browser reports that as an
+                // ordinary keydown. Reading it as "send" truncates the message mid-word for every
+                // user who types through an IME, so hand the whole keystroke back to the IME: Enter
+                // is not the only key it owns -- Escape cancels a composition and the arrows move
+                // through candidates.
+                if (isImeComposing(e)) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
@@ -6813,6 +6818,7 @@ function ChatInterface({
                             onChange={(e) => setRenamingInput(e.target.value)}
                             onClick={(e) => e.stopPropagation()}
                             onKeyDown={(e) => {
+                              if (isImeComposing(e)) return;
                               if (e.key === "Enter") {
                                 e.preventDefault();
                                 handleSaveListRename(chat.id);
@@ -7037,6 +7043,7 @@ function ChatInterface({
                         value={titleInput}
                         onChange={(e) => setTitleInput(e.target.value)}
                         onKeyDown={(e) => {
+                          if (isImeComposing(e)) return;
                           if (e.key === "Enter") handleSaveChatTitle();
                           if (e.key === "Escape") handleCancelTitleEdit();
                         }}

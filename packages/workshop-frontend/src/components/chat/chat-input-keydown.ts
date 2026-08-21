@@ -1,4 +1,4 @@
-const IME_COMPOSITION_KEY_CODE = 229;
+import { isImeComposing } from "../../keyboardEvent";
 
 export type ChatInputKeyEvent = Pick<
   KeyboardEvent,
@@ -6,7 +6,7 @@ export type ChatInputKeyEvent = Pick<
 >;
 
 export function isImeCompositionEvent(event: ChatInputKeyEvent): boolean {
-  return event.isComposing || event.keyCode === IME_COMPOSITION_KEY_CODE;
+  return isImeComposing(event);
 }
 
 export function shouldSubmitChatInput(event: ChatInputKeyEvent): boolean {
