@@ -9,7 +9,7 @@
     "./rpc-client": "./src/rpc-client.ts"
   },
   "scripts": {
-    "test:prebuild": "pnpm --filter @gadgets/workshop-backend build:integration-worker",
+    "test:prebuild": "pnpm --filter @gadgets/workshop-backend build:integration-worker && pnpm exec capnweb-validate build --cwd fixtures/gatekeeper-test --out .wrangler/validate",
     "test": "pnpm run test:prebuild && vitest run",
     "test:watch": "pnpm run test:prebuild && vitest",
     "types:check": "tsc --noEmit"
@@ -23,6 +23,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "@types/node": "^26.1.0",
+    "capnweb-validate": "0.3.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10",
     "wrangler": "~4.119.0"
