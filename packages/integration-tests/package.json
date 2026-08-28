@@ -9,8 +9,9 @@
     "./rpc-client": "./src/rpc-client.ts"
   },
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test:prebuild": "pnpm --filter @gadgets/workshop-backend build:integration-worker",
+    "test": "pnpm run test:prebuild && vitest run",
+    "test:watch": "pnpm run test:prebuild && vitest",
     "types:check": "tsc --noEmit"
   },
   "dependencies": {
