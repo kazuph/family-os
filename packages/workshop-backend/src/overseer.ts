@@ -50,6 +50,7 @@ import {
 import { renderGadgetPdf } from "./browser-export";
 import { readUiBundle } from "./ui-bundle";
 import {
+  CODE_SNAPSHOT_PART_BYTES,
   codeSnapshotPartKey,
   codeSnapshotPartPrefix,
   latestCodeSnapshot,
@@ -58,6 +59,9 @@ import {
 } from "./code-snapshot-parts";
 
 const logger = createWorkshopLogger("workshop.overseer");
+// Yjs string updates carry UTF-8 plus structural overhead. A quarter of the persisted snapshot-row
+// boundary remains safe even when every source character needs several bytes.
+const BLUEPRINT_IMPORT_CHUNK_CHARS = CODE_SNAPSHOT_PART_BYTES / 4;
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
 let CODE_MODE_HARNESS =
@@ -6708,17 +6712,25 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     let {ydoc} = this.impl.buildYDoc("current");
     let root = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(gadgetId));
-    for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
+    let persist = (mutate: () => void) => {
       let updates: Uint8Array[] = [];
       let listener = (update: Uint8Array) => updates.push(update);
       ydoc.on("updateV2", listener);
-      ydoc.transact(() => {
-        let text = new Y.Text();
-        text.insert(0, content.toString());
-        root.set(file, text);
-      });
-      ydoc.off("updateV2", listener);
+      try {
+        ydoc.transact(mutate);
+      } finally {
+        ydoc.off("updateV2", listener);
+      }
       if (updates.length > 0) this.impl.updateCode(Y.mergeUpdatesV2(updates));
+    };
+    for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
+      persist(() => root.set(file, new Y.Text()));
+      let text = root.get(file)!;
+      let source = content.toString();
+      for (let offset = 0; offset < source.length; offset += BLUEPRINT_IMPORT_CHUNK_CHARS) {
+        persist(() => text.insert(text.length,
+            source.slice(offset, offset + BLUEPRINT_IMPORT_CHUNK_CHARS)));
+      }
     }
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
