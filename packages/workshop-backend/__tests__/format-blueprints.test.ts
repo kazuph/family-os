@@ -11,7 +11,16 @@ async function readClientCode(entry: (typeof FORMAT_BLUEPRINTS)[number]): Promis
   let update = new Uint8Array(await new Response(decompressed).arrayBuffer());
   let doc = new Y.Doc();
   Y.applyUpdateV2(doc, update);
-  return doc.getMap<Y.Text>().get("client.js")?.toString() ?? "";
+  let files = doc.getMap<Y.Text>();
+  let client = files.get("client.js");
+  if (client) return client.toString();
+  let encoded = [...files]
+    .filter(([name]) => name.startsWith("client.js.gz/"))
+    .toSorted(([a], [b]) => a.localeCompare(b))
+    .map(([, part]) => part.toString()).join("");
+  if (!encoded) return "";
+  let compressed = new Response(Uint8Array.fromBase64(encoded) as BufferSource).body!;
+  return new Response(compressed.pipeThrough(new DecompressionStream("gzip"))).text();
 }
 
 // Minimal in-memory stand-ins for the two bindings the installer writes to. They record what was

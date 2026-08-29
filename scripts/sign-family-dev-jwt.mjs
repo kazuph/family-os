@@ -15,6 +15,7 @@ const { importJWK, SignJWT } = require("jose");
 const issuer = "https://access.integration.test";
 const audience = "family-integration-audience";
 const adult = { sub: "family-integration-adult", email: "adult@integration.test" };
+const service = { sub: "family-integration-service", common_name: "family-mcp.integration" };
 const privateJwk = {
   kty: "RSA",
   n: "sYECP43MmvP-e65qnw-Tj7HY1waghWpua7W_jb9TmFix3PSzJ__V4K04dBtP-5j3Z7nqoKm5OI7L85oc2v_ANHvAmazt76v3SkVgk92z1sCnCPjVSPqeZb6onA-2l34QouGH__tgLuPDCdc51d5F98SS87WrP7u2Mt_-hZ00Gl49R4YFZknAcPYgjnyx7_lcrJXeIo7FdswXGAUsreUkf6LQqy7yjQZoapIQkuWO43kltvMcjFBLnp69m7YKhKJT1UVQrrN2j8M-sgau4NCTheX1T6krZcL-rchewQH6M-tiMv3OJyukf_LnEJPHF2IAd9TZ-G0Yuiqt7OiyyQypcQ",
@@ -27,9 +28,10 @@ const privateJwk = {
   qi: "c6pzZHHA337JbvAIKZnuqcpu2TUapW1axG94MsSkDJ6xFvC5FvQCTDYCiICSaS2NfQK3Ws4kr_HKYfxQPtaeukdSH07enQR2e668xQfrioow0_yu8h0gR8g-DcoX404Bcy6FGFh7ZuVXDRv32D83hGNIfLDTbB7LiMzwYpEsopQ",
 };
 
-let appIat = Number(process.argv[2] ?? 1);
+let serviceMode = process.argv[2] === "--service";
+let appIat = Number(process.argv[serviceMode ? 3 : 2] ?? 1);
 let key = await importJWK(privateJwk, "RS256");
-let jwt = await new SignJWT(adult)
+let jwt = await new SignJWT(serviceMode ? service : adult)
   .setProtectedHeader({ alg: "RS256", kid: "family-integration-key" })
   .setIssuer(issuer)
   .setAudience(audience)
