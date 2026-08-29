@@ -10,7 +10,14 @@ export type BookMcpWorkspace = {
   gadgetId: number;
 };
 
+/** Blueprint every book workspace is created from; it carries the bundled chapters. */
+export const BOOK_BLUEPRINT_ID = "format.book";
+
+/** Model bound as the book's tutor when the caller does not name one. */
+export const DEFAULT_BOOK_TUTOR_MODEL = "deepseek-v4-flash";
+
 export interface BookMcpStore {
+  createBook(ownerEmail: string, title?: string, modelId?: string): Promise<BookMcpWorkspace>;
   listBooks(ownerEmail: string): Promise<BookMcpWorkspace[]>;
   readFiles(ownerEmail: string, workspaceId: string, paths?: string[]): Promise<BookMcpFile[]>;
   putFiles(ownerEmail: string, workspaceId: string, files: BookMcpFile[]): Promise<BookMcpFile[]>;
@@ -65,6 +72,22 @@ function resolveOwnerEmail(identity: BookMcpIdentity, args: Record<string, unkno
 }
 
 const tools = [
+  {
+    name: "book.create",
+    description: "Create a new book workspace from the bundled book blueprint. The blueprint's "
+      + "chapters come with it, so the new workspace is readable immediately.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: [],
+      properties: {
+        ownerEmail: ownerEmailProperty(),
+        title: { type: "string", description: "Defaults to the blueprint's own title." },
+        modelId: {
+          type: "string",
+          description: `The AI model bound as the book's tutor. Defaults to ${DEFAULT_BOOK_TUTOR_MODEL}.`,
+        },
+      },
+    },
+  },
   {
     name: "book.list",
     description: "List book workspaces owned by a Family OS account.",
@@ -211,6 +234,14 @@ export async function handleBookMcpRequest(
     let value: unknown;
     if (name === "book.list") {
       value = await store.listBooks(ownerEmail);
+    } else if (name === "book.create") {
+      for (let key of ["title", "modelId"] as const) {
+        if (args[key] !== undefined && (typeof args[key] !== "string" || !(args[key] as string).trim())) {
+          throw new Error(`${key} must be a non-empty string.`);
+        }
+      }
+      value = await store.createBook(
+        ownerEmail, args.title as string | undefined, args.modelId as string | undefined);
     } else {
       let workspaceId = stringField(args, "workspaceId");
       if (name === "book.read_files") {
