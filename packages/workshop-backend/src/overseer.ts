@@ -48,6 +48,7 @@ import {
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetPdf } from "./browser-export";
+import { readUiBundle } from "./ui-bundle";
 import {
   codeSnapshotPartKey,
   codeSnapshotPartPrefix,
@@ -9209,19 +9210,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       });
     }
 
-    let files = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id));
-    let file = files.get("client.js");
-    if (file) {
-      return { jsCode: file.toString() };
-    }
-    let compressedParts = [...files]
-      .filter(([name]) => name.startsWith("client.js.gz/"))
-      .toSorted(([a], [b]) => a.localeCompare(b));
-    if (compressedParts.length === 0) return null;
-    let compressed = Uint8Array.fromBase64(compressedParts.map(([, part]) => part.toString()).join(""));
-    let stream = new Response(compressed).body;
-    if (!stream) throw new Error("Unable to read compressed Gadget UI.");
-    return { jsCode: await new Response(stream.pipeThrough(new DecompressionStream("gzip"))).text() };
+    return readUiBundle(ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)));
   }
 
   async connectToGadget(chatId?: number): Promise<RpcStub<any>> {
@@ -9474,8 +9463,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     }
 
     let {ydoc} = this.impl.buildYDoc("current");
-    let file = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)).get("client.js");
-    return file ? { jsCode: file.toString() } : null;
+    return readUiBundle(ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)));
   }
 
   async connectToGadget(chatId?: number): Promise<RpcStub<any>> {
