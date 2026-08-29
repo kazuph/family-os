@@ -973,6 +973,7 @@
       "assetsConfig": {
         "not_found_handling": "single-page-application",
         "run_worker_first": [
+          "/mcp",
           "/api",
           "/api/*",
           "/blueprint-screenshot",
@@ -1087,6 +1088,10 @@
           "type": "durable-object"
         },
         "FamilyDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
+        "LanguageModelGatekeeper": {
           "storage": "sqlite",
           "type": "durable-object"
         },

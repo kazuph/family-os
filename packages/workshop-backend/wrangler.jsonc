@@ -50,6 +50,7 @@
     "OverseerDurableObject": { "type": "durable-object", "storage": "sqlite" },
     "AdminSettings": { "type": "durable-object", "storage": "sqlite" },
     "PendingLogin": { "type": "durable-object", "storage": "sqlite" },
+    "LanguageModelGatekeeper": { "type": "durable-object", "storage": "sqlite" },
     "FamilyDurableObject": { "type": "durable-object", "storage": "sqlite" },
     "FamilyDeviceSessionDurableObject": { "type": "durable-object", "storage": "sqlite" }
   },
@@ -85,7 +86,7 @@
   // "assets": {
   //   "directory": "../workshop-frontend/dist",
   //   "not_found_handling": "single-page-application",
-  //   "run_worker_first": ["/api", "/api/*", "/blueprint-screenshot/*"]
+  //   "run_worker_first": ["/mcp", "/api", "/api/*", "/blueprint-screenshot/*"]
   // },
   "observability": {
     "enabled": true,

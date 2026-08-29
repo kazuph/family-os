@@ -41,12 +41,20 @@ import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { assertAdultFamilyProfile } from "./family.js";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
+import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetPdf } from "./browser-export";
+import {
+  codeSnapshotPartKey,
+  codeSnapshotPartPrefix,
+  latestCodeSnapshot,
+  splitCodeSnapshot,
+  type CodeSnapshotPart,
+} from "./code-snapshot-parts";
 
 const logger = createWorkshopLogger("workshop.overseer");
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
@@ -747,6 +755,12 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
       // storage size of the DO is no more than 2x the size of the update history.
       snapshots: collection<CodeUpdate>()({
         primaryKey: "version"
+      }),
+
+      // New snapshots are split across storage-safe rows. The legacy `snapshots` collection
+      // remains readable so existing deployments can upgrade without rewriting their data.
+      snapshotParts: collection<CodeSnapshotPart>()({
+        primaryKey: "key"
       }),
 
       // Registry of gadget workpieces.
@@ -1934,12 +1948,26 @@ class OverseerImpl implements AgentHooks {
                 apply: (update: CodeUpdate) => void): number {
     let endConstraint = toVersion === "current" ? {} : {end: toVersion + 1};
 
-    let snapshot: CodeUpdate | undefined = [...this.storage.snapshots.list({
+    let legacySnapshot: CodeUpdate | undefined = [...this.storage.snapshots.list({
       startAfter: fromVersion,
       reverse: true,
       limit: 1,
       ...endConstraint
     })][0];
+
+    let partEnd = toVersion === "current"
+      ? undefined
+      : codeSnapshotPartKey(toVersion + 1, 0);
+    let latestPart = [...this.storage.snapshotParts.list({
+      start: codeSnapshotPartKey(fromVersion + 1, 0),
+      end: partEnd,
+      reverse: true,
+      limit: 1,
+    })][0];
+    let partitionedParts = latestPart
+      ? this.storage.snapshotParts.list({prefix: codeSnapshotPartPrefix(latestPart.version)})
+      : [];
+    let snapshot = latestCodeSnapshot(legacySnapshot, partitionedParts);
 
     if (!snapshot && fromVersion === 0) {
       // We are starting from the beginning and we don't have a snapshot. But version 1 is itself
@@ -2015,7 +2043,9 @@ class OverseerImpl implements AgentHooks {
         traced("code.snapshot.rebuild", (span) => {
           let {ydoc} = this.buildYDoc("current");
           let snapshotUpdate = Y.encodeStateAsUpdateV2(ydoc);
-          this.storage.snapshots.put({version, timestamp, update: snapshotUpdate});
+          for (let part of splitCodeSnapshot({version, timestamp, update: snapshotUpdate})) {
+            this.storage.snapshotParts.put(part);
+          }
           span.setAttribute("gadgetId", this.ctx.id.toString());
           span.setAttribute("size", snapshotUpdate.length);
           span.setAttribute("logBytes", logBytes);
@@ -6676,18 +6706,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     Y.applyUpdateV2(archiveDoc, code);
 
     let {ydoc} = this.impl.buildYDoc("current");
-    let updates: Uint8Array[] = [];
-    ydoc.on("updateV2", update => updates.push(update));
-    ydoc.transact(() => {
-      let root = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(gadgetId));
-      for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
+    let root = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(gadgetId));
+    for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
+      let updates: Uint8Array[] = [];
+      let listener = (update: Uint8Array) => updates.push(update);
+      ydoc.on("updateV2", listener);
+      ydoc.transact(() => {
         let text = new Y.Text();
         text.insert(0, content.toString());
         root.set(file, text);
-      }
-    });
-    if (updates.length > 0) {
-      this.impl.updateCode(Y.mergeUpdatesV2(updates));
+      });
+      ydoc.off("updateV2", listener);
+      if (updates.length > 0) this.impl.updateCode(Y.mergeUpdatesV2(updates));
     }
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
@@ -6695,6 +6725,54 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
       await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
     }
+  }
+
+  private getOwnedBook(ownerId: string): GadgetRecord {
+    if (this.impl.ownerId !== ownerId) throw new Error("The account does not own this workspace.");
+    let gadget = this.impl.getGadgetRecord(this.impl.resolveGadgetId(undefined));
+    if (gadget.output?.id !== "book") throw new Error("The workspace is not a book.");
+    return gadget;
+  }
+
+  async getBookMcpWorkspace(ownerId: string): Promise<BookMcpWorkspace | null> {
+    if (this.impl.ownerId !== ownerId || this.impl.defaultGadgetId === undefined) return null;
+    let gadget = this.impl.getGadgetRecord(this.impl.defaultGadgetId);
+    if (gadget.output?.id !== "book") return null;
+    return { workspaceId: this.ctx.id.toString(), title: this.impl.storage.title.get(), gadgetId: gadget.id };
+  }
+
+  async readBookMcpFiles(ownerId: string, paths?: string[]): Promise<BookMcpFile[]> {
+    let gadget = this.getOwnedBook(ownerId);
+    let requested = paths ? new Set(paths) : undefined;
+    for (let path of requested ?? []) validateBookFilePath(path);
+    let facet: any = await this.impl.getGadgetFacet(gadget.id);
+    let stored = await facet.getBookFiles() as Record<string, string>;
+    let files: BookMcpFile[] = [];
+    for (let [path, content] of Object.entries(stored)) {
+      try {
+        validateBookFilePath(path);
+      } catch {
+        continue;
+      }
+      if (!requested || requested.has(path)) files.push({ path, content });
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return files;
+  }
+
+  async putBookMcpFiles(ownerId: string, files: BookMcpFile[]): Promise<BookMcpFile[]> {
+    let gadget = this.getOwnedBook(ownerId);
+    for (let file of files) validateBookFilePath(file.path);
+    let facet: any = await this.impl.getGadgetFacet(gadget.id);
+    await facet.putBookFiles(files);
+    return files.map(({ path, content }) => ({ path, content }));
+  }
+
+  async readBookMcpProgress(ownerId: string): Promise<unknown> {
+    let gadget = this.getOwnedBook(ownerId);
+    let facet: any = await this.impl.getGadgetFacet(gadget.id);
+    let state = await facet.getState() as { progress?: unknown };
+    return state?.progress ?? {};
   }
 
   async startGatekeeperSession(
@@ -9131,12 +9209,19 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       });
     }
 
-    let file = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)).get("client.js");
+    let files = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id));
+    let file = files.get("client.js");
     if (file) {
       return { jsCode: file.toString() };
-    } else {
-      return null;
     }
+    let compressedParts = [...files]
+      .filter(([name]) => name.startsWith("client.js.gz/"))
+      .toSorted(([a], [b]) => a.localeCompare(b));
+    if (compressedParts.length === 0) return null;
+    let compressed = Uint8Array.fromBase64(compressedParts.map(([, part]) => part.toString()).join(""));
+    let stream = new Response(compressed).body;
+    if (!stream) throw new Error("Unable to read compressed Gadget UI.");
+    return { jsCode: await new Response(stream.pipeThrough(new DecompressionStream("gzip"))).text() };
   }
 
   async connectToGadget(chatId?: number): Promise<RpcStub<any>> {

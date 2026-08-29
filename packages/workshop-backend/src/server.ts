@@ -30,6 +30,7 @@ import {
 } from "./family-device-session.js";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
 import { ExternalMessageGateway } from "./external-message-gateway";
+import { handleBookMcpRequest, type BookMcpStore } from "./book-mcp";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -1055,6 +1056,45 @@ function accessFetch(env: Env): CfAccessFetch {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
+
+    if (url.pathname === "/mcp") {
+      let accessPayload = env.CF_ACCESS_AUD
+        ? await verifyCfAccessJwt(req, env, undefined, accessFetch(env))
+        : null;
+      let users = ctx.exports.UserDurableObject;
+      let overseers = ctx.exports.OverseerDurableObject;
+      let owner = (email: string) => users.getByName(email);
+      let workspace = (id: string) => overseers.get(overseers.idFromString(id));
+      let ownedWorkspace = async (email: string, workspaceId: string) => {
+        let ownerStub = owner(email);
+        if (!(await ownerStub.listGadgets()).some(({ id }) => id === workspaceId)) {
+          throw new Error("The account does not own this workspace.");
+        }
+        return { ownerId: ownerStub.id.toString(), workspace: workspace(workspaceId) };
+      };
+      let store: BookMcpStore = {
+        async listBooks(ownerEmail) {
+          let ownerStub = owner(ownerEmail);
+          let ownerId = ownerStub.id.toString();
+          let books = await Promise.all((await ownerStub.listGadgets()).map(({ id }) =>
+            workspace(id).getBookMcpWorkspace(ownerId)));
+          return books.filter(book => book !== null);
+        },
+        async readFiles(ownerEmail, workspaceId, paths) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.readBookMcpFiles(owned.ownerId, paths);
+        },
+        async putFiles(ownerEmail, workspaceId, files) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.putBookMcpFiles(owned.ownerId, files);
+        },
+        async readProgress(ownerEmail, workspaceId) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.readBookMcpProgress(owned.ownerId);
+        },
+      };
+      return handleBookMcpRequest(req, accessPayload, store);
+    }
 
     if (url.pathname === SITE_LOGO_PATH) {
       return serveSiteLogo(req, env.BLUEPRINT_CONTENT);

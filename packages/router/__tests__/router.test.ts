@@ -24,8 +24,9 @@ async function route(env: Env, path: string): Promise<string> {
 }
 
 describe('router fetch', () => {
-  it('routes /api and /blueprint-screenshot prefixes to the backend', async () => {
+  it('routes /mcp, /api, and /blueprint-screenshot prefixes to the backend', async () => {
     const env = makeEnv({ ASSETS: stubFetcher('assets') });
+    expect(await route(env, '/mcp')).toBe('backend');
     expect(await route(env, '/api')).toBe('backend');
     expect(await route(env, '/api/workshop')).toBe('backend');
     expect(await route(env, '/blueprint-screenshot')).toBe('backend');
@@ -110,8 +111,9 @@ describe('router email', () => {
 describe('wrangler.jsonc contract', () => {
   const config = parse(wranglerConfigText);
 
-  it('runs the worker first for API, screenshot, and gatekeeper prefixes', () => {
+  it('runs the worker first for MCP, API, screenshot, and gatekeeper prefixes', () => {
     const first: string[] = config.assets.run_worker_first;
+    expect(first).toContain('/mcp');
     expect(first).toContain('/api');
     expect(first).toContain('/api/*');
     expect(first).toContain('/blueprint-screenshot');
