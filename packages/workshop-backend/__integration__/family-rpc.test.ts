@@ -79,7 +79,13 @@ describe("Family OS Access device generation", () => {
     await onboardingApi.setOwnDisplayName("Guardian");
     unwrapFamilyRpcResult(await first.family.setMonsterAvatar("monster-01-warm"));
     let onboardingModels = await onboardingApi.listModels();
-    expect(onboardingModels.some(model => model.id === "deepseek-v4-flash")).toBe(true);
+    expect(onboardingModels.map(model => model.id)).toEqual(expect.arrayContaining([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "glm-5.3",
+      "glm-5.3-flash",
+      "kimi-k3",
+    ]));
     unwrapFamilyRpcResult(await onboardingApi.setPreferredModel("deepseek-v4-flash"));
     await onboardingApi.completeOnboarding();
     await expect(onboardingApi.isOnboardingCompleted()).resolves.toBe(true);
