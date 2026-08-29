@@ -4,14 +4,40 @@ import type { UiBundle } from "@gadgets/workshop-shared/api";
 /** Prefix of the Yjs file names holding a gzipped, base64-encoded UI bundle, in sorted order. */
 export const COMPRESSED_UI_PREFIX = "client.js.gz/";
 
-// A Gadget normally keeps its UI in a plain `client.js`. A Gadget whose UI is too large for one
-// Yjs text -- the book format, whose reader bundles every chapter -- ships it gzipped and
-// base64-encoded across `client.js.gz/0000`, `client.js.gz/0001`, ... instead. Every caller that
-// serves a UI has to understand both, so they all come through here: a caller that only reads
-// `client.js` silently hands a book reader nothing at all.
+/** Prefix for opaque, text-encoded UI assets kept separate from editable client source. */
+export const UI_ASSET_PREFIX = "client.assets/";
+
+function readUiAssets(files: Y.Map<Y.Text>): Record<string, string> {
+  let grouped = new Map<string, Array<[string, string]>>();
+  for (let [name, content] of files) {
+    if (!name.startsWith(UI_ASSET_PREFIX)) continue;
+    let rest = name.slice(UI_ASSET_PREFIX.length);
+    let separator = rest.lastIndexOf("/");
+    if (separator <= 0) continue;
+    let encodedPath = rest.slice(0, separator);
+    let parts = grouped.get(encodedPath) ?? [];
+    parts.push([rest.slice(separator + 1), content.toString()]);
+    grouped.set(encodedPath, parts);
+  }
+
+  return Object.fromEntries([...grouped].map(([encodedPath, parts]) => [
+    decodeURIComponent(encodedPath),
+    parts.toSorted(([a], [b]) => a.localeCompare(b)).map(([, part]) => part).join(""),
+  ]));
+}
+
+function withUiAssets(source: string, files: Y.Map<Y.Text>): string {
+  let assets = readUiAssets(files);
+  if (Object.keys(assets).length === 0) return source;
+  return `globalThis.__gadgetAssets=${JSON.stringify(assets)};\n${source}`;
+}
+
+// A Gadget normally keeps its UI in a plain `client.js`. Older book archives compressed and split
+// that source across `client.js.gz/0000`, `client.js.gz/0001`, ... to work around the former
+// single-row snapshot storage. Every caller uses this helper while those archives still exist.
 export async function readUiBundle(files: Y.Map<Y.Text>): Promise<UiBundle | null> {
   let file = files.get("client.js");
-  if (file) return { jsCode: file.toString() };
+  if (file) return { jsCode: withUiAssets(file.toString(), files) };
 
   let compressedParts = [...files]
     .filter(([name]) => name.startsWith(COMPRESSED_UI_PREFIX))
