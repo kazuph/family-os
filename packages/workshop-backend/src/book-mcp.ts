@@ -19,6 +19,45 @@ export interface BookMcpStore {
 
 type JsonRpcRequest = { jsonrpc: "2.0"; id?: string | number; method: string; params?: unknown };
 
+// Two kinds of caller reach this endpoint, and they differ in whose books they may name.
+//
+// A service token is not a person: the Access assertion carries `common_name` and no identity, so
+// the caller has to say which account's books it means, and nothing here can narrow that down.
+//
+// A signed-in person arrives through Access Managed OAuth -- the local AI opens a browser, the
+// human authenticates against the same policy that guards the rest of Family OS, and the token
+// that comes back stands for that human. Their identity is the authorization, so `ownerEmail` is
+// filled in from the assertion and may not be pointed at somebody else.
+type BookMcpIdentity = { kind: "service" } | { kind: "user"; email: string };
+
+function identify(accessPayload: JWTPayload | null): BookMcpIdentity | null {
+  if (!accessPayload) return null;
+  if (typeof accessPayload.email === "string" && accessPayload.email.trim()) {
+    return { kind: "user", email: accessPayload.email.toLowerCase() };
+  }
+  if (typeof accessPayload.common_name === "string" && accessPayload.common_name.trim()) {
+    return { kind: "service" };
+  }
+  return null;
+}
+
+function resolveOwnerEmail(identity: BookMcpIdentity, args: Record<string, unknown>): string {
+  let requested = args.ownerEmail;
+  if (requested !== undefined && (typeof requested !== "string" || !requested.trim())) {
+    throw new Error("ownerEmail must be a non-empty string.");
+  }
+  let named = requested?.toLowerCase();
+
+  if (identity.kind === "service") {
+    if (!named) throw new Error("ownerEmail is required when calling with a service token.");
+    return named;
+  }
+  if (named && named !== identity.email) {
+    throw new Error(`This Access session can only reach books owned by ${identity.email}.`);
+  }
+  return identity.email;
+}
+
 const tools = [
   {
     name: "book.list",
@@ -29,9 +68,9 @@ const tools = [
     name: "book.read_files",
     description: "Read all editable book files, or selected paths, from an owned book workspace.",
     inputSchema: {
-      type: "object", additionalProperties: false, required: ["ownerEmail", "workspaceId"],
+      type: "object", additionalProperties: false, required: ["workspaceId"],
       properties: {
-        ownerEmail: { type: "string" }, workspaceId: { type: "string" },
+        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" },
         paths: { type: "array", items: { type: "string" } },
       },
     },
@@ -40,9 +79,9 @@ const tools = [
     name: "book.put_files",
     description: "Add or replace the table of contents and chapter files in an owned book workspace.",
     inputSchema: {
-      type: "object", additionalProperties: false, required: ["ownerEmail", "workspaceId", "files"],
+      type: "object", additionalProperties: false, required: ["workspaceId", "files"],
       properties: {
-        ownerEmail: { type: "string" }, workspaceId: { type: "string" },
+        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" },
         files: {
           type: "array", minItems: 1,
           items: {
@@ -60,17 +99,26 @@ const tools = [
   },
 ] as const;
 
+function ownerEmailProperty() {
+  return {
+    type: "string",
+    description: "Whose books to work on. Omit it when signed in as a person -- it is then taken "
+      + "from the Access session, and naming anyone else is refused. A service token has no "
+      + "identity of its own and must supply it.",
+  } as const;
+}
+
 function ownerSchema() {
   return {
-    type: "object", additionalProperties: false, required: ["ownerEmail"],
-    properties: { ownerEmail: { type: "string" } },
+    type: "object", additionalProperties: false, required: [],
+    properties: { ownerEmail: ownerEmailProperty() },
   } as const;
 }
 
 function workspaceSchema() {
   return {
-    type: "object", additionalProperties: false, required: ["ownerEmail", "workspaceId"],
-    properties: { ownerEmail: { type: "string" }, workspaceId: { type: "string" } },
+    type: "object", additionalProperties: false, required: ["workspaceId"],
+    properties: { ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" } },
   } as const;
 }
 
@@ -121,8 +169,12 @@ function toolResult(value: unknown) {
 export async function handleBookMcpRequest(
     request: Request, accessPayload: JWTPayload | null, store: BookMcpStore): Promise<Response> {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-  if (!accessPayload || typeof accessPayload.common_name !== "string" || accessPayload.email !== undefined) {
-    return new Response("A Cloudflare Access service token is required.", { status: 403 });
+  let identity = identify(accessPayload);
+  if (!identity) {
+    return new Response(
+      "A Cloudflare Access session is required: either sign in through Managed OAuth or "
+        + "present a service token.",
+      { status: 403 });
   }
 
   let rpc: JsonRpcRequest;
@@ -149,7 +201,7 @@ export async function handleBookMcpRequest(
     let params = object(rpc.params);
     let name = stringField(params, "name");
     let args = object(params.arguments);
-    let ownerEmail = stringField(args, "ownerEmail").toLowerCase();
+    let ownerEmail = resolveOwnerEmail(identity, args);
     let value: unknown;
     if (name === "book.list") {
       value = await store.listBooks(ownerEmail);

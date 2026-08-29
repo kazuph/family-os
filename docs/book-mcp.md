@@ -3,18 +3,26 @@
 Family OS exposes a stateless Streamable HTTP MCP endpoint at `/mcp` so a local authoring agent can
 read and update the table of contents and Markdown chapters of a Workspace Book instance.
 
-## Security boundary
+## Who may call it
 
-Put `/mcp` behind a Cloudflare Access policy that accepts service tokens. The Worker validates the
-signed `Cf-Access-Jwt-Assertion` and accepts only service-token assertions (`common_name` present,
-human `email` absent). Every tool call also names the owner's email. Before reading or writing, the
-backend resolves that account, verifies that it owns the requested workspace, and verifies that the
-workspace's default Gadget has output id `book`.
+Two kinds of caller reach `/mcp`, and they differ in whose books they may name. The Worker validates
+the signed `Cf-Access-Jwt-Assertion` either way, and the endpoint is disabled outright when
+`CF_ACCESS_AUD` / `CF_ACCESS_ISS` are not configured.
 
-The endpoint is disabled when `CF_ACCESS_AUD` / `CF_ACCESS_ISS` are not configured. It never accepts
-an application-supplied email as authentication, and it cannot edit `client.js`, `server.js`, or
-other executable files. The writable paths are `content/toc.json` and Markdown files under
-`content/` only.
+**A signed-in person, through Access Managed OAuth.** The agent opens a browser, the human
+authenticates against the same Access policy that guards the rest of Family OS, and the token that
+comes back stands for that human. Their identity is the authorization: `ownerEmail` is filled in
+from the assertion, and naming a different account is refused. This is the setup to prefer — there
+is no long-lived shared secret on disk, and the agent reaches exactly the books its human owns.
+
+**A service token.** The assertion carries `common_name` and no identity, so the caller has to say
+which account's books it means. Use this for unattended jobs where no human is present.
+
+Before reading or writing, the backend resolves the owning account, verifies that it owns the
+requested workspace, and verifies that the workspace's default Gadget has output id `book`. The
+endpoint never accepts an application-supplied email as authentication, and it cannot edit
+`client.js`, `server.js`, or other executable files. The writable paths are `content/toc.json` and
+Markdown files under `content/` only.
 
 ## Tools
 
@@ -23,14 +31,45 @@ other executable files. The writable paths are `content/toc.json` and Markdown f
 - `book.put_files`: add or replace the table of contents and Markdown chapter files.
 - `book.read_progress`: read the Gadget's persisted chapter completion map.
 
+`ownerEmail` is optional on every tool. Omit it when signed in as a person; a service token must
+supply it.
+
 `book.put_files` persists overrides in the book Gadget's own SQLite storage. The reader fetches the
 current table of contents and chapters when it opens, so edits survive reload without rebuilding the
 blueprint. The bundled chapters remain the default until an instance receives an override.
 
-## Local client setup
+## Setting up browser sign-in (Managed OAuth)
 
-Cloudflare Access normally accepts `CF-Access-Client-Id` and `CF-Access-Client-Secret`. Claude Code
-can send both directly:
+Without Managed OAuth, a non-browser client that hits an Access-protected URL gets a `302` to the
+login page and no usable token. Managed OAuth turns Access into an OAuth 2.0 authorization server
+for the application: the client gets a `401` with a `WWW-Authenticate` header, discovers the
+endpoints from `/.well-known/oauth-authorization-server`, opens the browser for the human, and
+receives a token it can refresh silently.
+
+In the Zero Trust dashboard:
+
+1. **Access controls → AI controls → MCP servers**, add the server with its full path, e.g.
+   `https://family.example/mcp`.
+2. Give it a policy that allows the humans who own books, and pick the identity provider.
+3. In the application's **Advanced settings**, enable **Managed OAuth**, and allow **localhost** and
+   **loopback** redirect URIs — a local agent listens on `http://localhost:<port>` for the callback.
+4. A short **access token lifetime** (5–15 minutes) with a **grant session duration** of 1–2 weeks
+   lets the agent refresh in the background while Access keeps re-evaluating the policy, and asks
+   the human to sign in again only when the grant expires.
+
+Then add the server to the client and authenticate once:
+
+```sh
+claude mcp add --transport http family-books https://family.example/mcp
+# then, inside a session: /mcp -> family-books -> Authenticate (a browser tab opens)
+```
+
+## Setting up a service token instead
+
+For unattended use, create a service token under **Access controls → Service credentials → Service
+Tokens**, and give the application a policy whose action is **Service Auth** — with any other action
+Access asks for an interactive login instead of honouring the token. The client then sends both
+header values:
 
 ```sh
 claude mcp add --transport http family-books https://family.example/mcp \

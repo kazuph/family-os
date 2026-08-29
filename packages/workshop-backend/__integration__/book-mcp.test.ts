@@ -53,9 +53,31 @@ describe("Family OS book MCP", () => {
     expect(initialize.status).toBe(200);
     await expect(initialize.json()).resolves.toMatchObject({ result: { serverInfo: { name: "family-os-books" } } });
 
+    // A person who signed in through Access Managed OAuth reaches the same endpoint. Their
+    // assertion carries an email rather than a common_name, and that email *is* the authorization.
     let humanToken = await signFamilyAccessJwt(3);
-    expect((await mcp(humanToken, "tools/list")).status).toBe(403);
+    expect((await mcp(humanToken, "tools/list")).status).toBe(200);
     expect((await mcp("invalid", "tools/list")).status).toBe(403);
+
+    // Signed in as a person, the owner is taken from the assertion, so no argument names it.
+    let ownList = await mcp(humanToken, "tools/call", { name: "book.list", arguments: {} });
+    await expect(ownList.json()).resolves.toMatchObject({ result: { structuredContent: { value: [
+      { workspaceId, title: "Workspace Book" },
+    ] } } });
+
+    // ...and pointing that session at somebody else's books is refused rather than obeyed.
+    let impersonation = await mcp(humanToken, "tools/call", { name: "book.list", arguments: {
+      ownerEmail: "someone-else@integration.test",
+    } });
+    await expect(impersonation.json()).resolves.toMatchObject({ error: {
+      message: `This Access session can only reach books owned by ${FAMILY_ACCESS_ADULT.email}.`,
+    } });
+
+    // A service token has no identity of its own, so it must still say whose books it means.
+    let anonymousService = await mcp(serviceToken, "tools/call", { name: "book.list", arguments: {} });
+    await expect(anonymousService.json()).resolves.toMatchObject({ error: {
+      message: "ownerEmail is required when calling with a service token.",
+    } });
     let listed = await mcp(serviceToken, "tools/call", { name: "book.list", arguments: {
       ownerEmail: FAMILY_ACCESS_ADULT.email,
     } });
@@ -104,6 +126,20 @@ describe("Family OS book MCP", () => {
     await expect(read.json()).resolves.toMatchObject({ result: { structuredContent: { value: [
       { path: "content/part1/ch03.md", content: expect.stringContaining("ローカルAIから追記") },
       { path: "content/toc.json", content: expect.stringContaining("MCPで追加した章") },
+    ] } } });
+
+    // The same authoring loop, driven entirely by the signed-in session: no owner argument
+    // anywhere, and the write is visible on the way back out.
+    let humanWrite = await mcp(humanToken, "tools/call", { name: "book.put_files", arguments: {
+      workspaceId,
+      files: [{ path: "content/part1/ch04.md", content: "# ブラウザ認証で追記した章\n\n本人のAccessセッションから書いた。" }],
+    } });
+    expect(humanWrite.status).toBe(200);
+    let humanRead = await mcp(humanToken, "tools/call", { name: "book.read_files", arguments: {
+      workspaceId, paths: ["content/part1/ch04.md"],
+    } });
+    await expect(humanRead.json()).resolves.toMatchObject({ result: { structuredContent: { value: [
+      { path: "content/part1/ch04.md", content: expect.stringContaining("ブラウザ認証で追記") },
     ] } } });
 
     api[Symbol.dispose]();
