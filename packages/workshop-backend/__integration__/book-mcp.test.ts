@@ -43,10 +43,20 @@ async function mcp(token: string, method: string, params?: unknown, id = 1) {
 describe("Family OS book MCP", () => {
   it("authenticates a service client and persists chapter additions in an owned book", async () => {
     let { api, family, root } = await authenticatedApi();
-    using workspace = await api.newGadgetFromBlueprint("format.book", {
-      AI: { type: "aiModel", modelId: "deepseek-v4-flash" },
-    });
-    let { id: workspaceId } = await workspace.getMetadata();
+    let humanToken = await signFamilyAccessJwt(3);
+
+    // The book is created over MCP as well: the blueprint carries the chapters, so an authoring
+    // agent can go from nothing to a readable book without anyone opening the browser.
+    let created = await mcp(humanToken, "tools/call", { name: "book.create", arguments: {
+      title: "MCPで作った書籍",
+    } });
+    expect(created.status).toBe(200);
+    let createdBody = await created.json() as {
+      result: { structuredContent: { value: { workspaceId: string, title: string } } },
+    };
+    let workspaceId = createdBody.result.structuredContent.value.workspaceId;
+    expect(createdBody.result.structuredContent.value.title).toBe("MCPで作った書籍");
+
     let serviceToken = await signFamilyServiceJwt(2);
 
     let initialize = await mcp(serviceToken, "initialize", { protocolVersion: "2025-06-18" });
@@ -55,14 +65,13 @@ describe("Family OS book MCP", () => {
 
     // A person who signed in through Access Managed OAuth reaches the same endpoint. Their
     // assertion carries an email rather than a common_name, and that email *is* the authorization.
-    let humanToken = await signFamilyAccessJwt(3);
     expect((await mcp(humanToken, "tools/list")).status).toBe(200);
     expect((await mcp("invalid", "tools/list")).status).toBe(403);
 
     // Signed in as a person, the owner is taken from the assertion, so no argument names it.
     let ownList = await mcp(humanToken, "tools/call", { name: "book.list", arguments: {} });
     await expect(ownList.json()).resolves.toMatchObject({ result: { structuredContent: { value: [
-      { workspaceId, title: "Workspace Book" },
+      { workspaceId, title: "MCPで作った書籍" },
     ] } } });
 
     // ...and pointing that session at somebody else's books is refused rather than obeyed.
@@ -82,7 +91,7 @@ describe("Family OS book MCP", () => {
       ownerEmail: FAMILY_ACCESS_ADULT.email,
     } });
     await expect(listed.json()).resolves.toMatchObject({ result: { structuredContent: { value: [
-      { workspaceId, title: "Workspace Book" },
+      { workspaceId, title: "MCPで作った書籍" },
     ] } } });
 
     let executableWrite = await mcp(serviceToken, "tools/call", { name: "book.put_files", arguments: {
