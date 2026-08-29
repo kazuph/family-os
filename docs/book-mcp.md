@@ -48,14 +48,27 @@ receives a token it can refresh silently.
 
 In the Zero Trust dashboard:
 
-1. **Access controls → AI controls → MCP servers**, add the server with its full path, e.g.
-   `https://family.example/mcp`.
-2. Give it a policy that allows the humans who own books, and pick the identity provider.
-3. In the application's **Advanced settings**, enable **Managed OAuth**, and allow **localhost** and
-   **loopback** redirect URIs — a local agent listens on `http://localhost:<port>` for the callback.
-4. A short **access token lifetime** (5–15 minutes) with a **grant session duration** of 1–2 weeks
-   lets the agent refresh in the background while Access keeps re-evaluating the policy, and asks
-   the human to sign in again only when the grant expires.
+1. **Access controls → Applications**, find the application that already protects this deployment,
+   and open its three-dot menu → **Edit**.
+2. On the **Advanced settings** tab, turn on **Managed OAuth**.
+3. Turn on **Allow localhost clients** and **Allow loopback clients**. These are toggles, and they
+   are what permits the `http://localhost:<port>/callback` a local agent listens on. Do not try to
+   type that address into **Allowed redirect URIs** — that field takes HTTPS URIs only, and a local
+   agent does not need an entry there.
+4. Set a short **access token lifetime** (5–15 minutes) with a **grant session duration** of 1–2
+   weeks. The agent then refreshes in the background while Access keeps re-evaluating the policy,
+   and the human signs in again only when the grant expires.
+
+Confirm it took effect from the outside: an unauthenticated `POST` to `/mcp` should stop answering
+with a `302` to the login page and start answering `401` with a `WWW-Authenticate` Bearer challenge.
+The `authentication_methods` list in the protected-resource metadata is not the thing to read — it
+names `cloudflared` either way.
+
+Scoping this to `/mcp` alone by giving that path its own Access application is the tidier end state,
+because a more specific path application takes precedence and can carry its own policy. It needs a
+code change first: a separate application is issued its own AUD, and `verifyCfAccessJwt` currently
+validates one `CF_ACCESS_AUD` for the whole Worker, so a path-scoped application would make every
+`/mcp` assertion fail until the endpoint validates that second audience.
 
 Then add the server to the client and authenticate once:
 

@@ -33,7 +33,12 @@ type BookMcpIdentity = { kind: "service" } | { kind: "user"; email: string };
 function identify(accessPayload: JWTPayload | null): BookMcpIdentity | null {
   if (!accessPayload) return null;
   if (typeof accessPayload.email === "string" && accessPayload.email.trim()) {
-    return { kind: "user", email: accessPayload.email.toLowerCase() };
+    // Verbatim, not lowercased. An account's User Durable Object is named by whatever the identity
+    // provider put in the assertion the first time that person signed in (see
+    // authenticateFromCfAccess in server.ts), so folding the case here would address a different,
+    // empty object for anyone whose provider returns a mixed-case address -- their books would
+    // simply not be there.
+    return { kind: "user", email: accessPayload.email };
   }
   if (typeof accessPayload.common_name === "string" && accessPayload.common_name.trim()) {
     return { kind: "service" };
@@ -46,13 +51,14 @@ function resolveOwnerEmail(identity: BookMcpIdentity, args: Record<string, unkno
   if (requested !== undefined && (typeof requested !== "string" || !requested.trim())) {
     throw new Error("ownerEmail must be a non-empty string.");
   }
-  let named = requested?.toLowerCase();
-
   if (identity.kind === "service") {
-    if (!named) throw new Error("ownerEmail is required when calling with a service token.");
-    return named;
+    if (!requested) throw new Error("ownerEmail is required when calling with a service token.");
+    return requested;
   }
-  if (named && named !== identity.email) {
+  // Comparing identities is case-insensitive -- nobody should have to reproduce their provider's
+  // capitalisation to name themselves -- but the address that goes on to resolve the account is
+  // always the one from the assertion.
+  if (requested && requested.toLowerCase() !== identity.email.toLowerCase()) {
     throw new Error(`This Access session can only reach books owned by ${identity.email}.`);
   }
   return identity.email;
