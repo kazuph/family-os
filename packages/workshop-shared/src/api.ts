@@ -1159,6 +1159,19 @@ export const SUGGESTED_MODELS: Record<
     "deepseek-v4-pro": {
       name: "DeepSeek V4 Pro (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
     },
+    // OpenCode's public models.dev catalog lists 1M context and 128K output for both GLM-5.3
+    // variants: https://models.dev/api.json
+    "glm-5.3": {
+      name: "GLM-5.3 (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 131_072,
+    },
+    "glm-5.3-flash": {
+      name: "GLM-5.3 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 131_072,
+    },
+    // OpenCode's public models.dev catalog lists 1,048,576 context and 131,072 output:
+    // https://models.dev/api.json
+    "kimi-k3": {
+      name: "Kimi K3 (OpenCode Go)", contextWindow: 1_048_576, outputLimit: 131_072,
+    },
   },
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {

@@ -11,7 +11,13 @@ export const OPENCODE_GO_FLASH_MODEL_ID = "deepseek-v4-flash";
 export const OPENCODE_GO_PRO_MODEL_ID = "deepseek-v4-pro";
 
 // Deployment-managed OpenCode Go models, in picker order (Flash first: it's the default).
-const OPENCODE_GO_MODEL_IDS = [OPENCODE_GO_FLASH_MODEL_ID, OPENCODE_GO_PRO_MODEL_ID] as const;
+const OPENCODE_GO_MODEL_IDS = [
+  OPENCODE_GO_FLASH_MODEL_ID,
+  OPENCODE_GO_PRO_MODEL_ID,
+  "glm-5.3",
+  "glm-5.3-flash",
+  "kimi-k3",
+] as const;
 
 export type OpenCodeGoModelId = typeof OPENCODE_GO_MODEL_IDS[number];
 
@@ -21,8 +27,8 @@ export function isOpenCodeGoModelId(id: string): id is OpenCodeGoModelId {
 }
 
 /**
- * Whether `model` is the Flash tier specifically (as opposed to Pro, or a model from another
- * provider entirely). Used to gate the `consultPro` advisor tool onto Flash-run turns only.
+ * Whether `model` is DeepSeek V4 Flash specifically (as opposed to another OpenCode Go model, or
+ * a model from another provider entirely). Used to gate `consultPro` onto DeepSeek Flash turns.
  */
 export function isOpenCodeGoFlashModel(model: {provider: string, id: string}): boolean {
   return model.provider === "opencode-go" && model.id === OPENCODE_GO_FLASH_MODEL_ID;
@@ -52,7 +58,7 @@ export function getOpenCodeGoModel(env: Cloudflare.Env, modelId: OpenCodeGoModel
   };
 }
 
-/** List OpenCode Go models in deployment-default order (Flash, then Pro). */
+/** List OpenCode Go models in deployment-default picker order. */
 export function listOpenCodeGoModels(env: Cloudflare.Env): AiChatAuthorInfo[] {
   if (!env.OPENCODE_GO_API_TOKEN) return [];
   return OPENCODE_GO_MODEL_IDS.map(id => getOpenCodeGoModel(env, id)!.profile);
