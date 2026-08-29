@@ -21,6 +21,7 @@ import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
+import { UI_ASSET_PREFIX } from "./ui-bundle";
 import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
   findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
@@ -1226,6 +1227,7 @@ export async function runAgent(
       for (let info of gadgetInfos) {
         let files = new Map<string, string>();
         for (let [filename, text] of getSessionYDoc().getMap<Y.Text>(info.rootName)) {
+          if (filename.startsWith(UI_ASSET_PREFIX)) continue;
           files.set(filename, text.toString());
         }
         rollingFileContents.set(info.rootName, files);
@@ -2214,7 +2216,8 @@ export async function runAgent(
           "gadget with the `createGadget` tool.";
     } else {
       let sections = gadgetInfos.map(info => {
-        let files = [...getSessionYDoc().getMap<Y.Text>(info.rootName).keys()];
+        let files = [...getSessionYDoc().getMap<Y.Text>(info.rootName).keys()]
+          .filter(filename => !filename.startsWith(UI_ASSET_PREFIX));
         let envName = chatNameFor(info.id);
         let lines = [envName !== undefined
             ? `## Gadget ${envName}: ${JSON.stringify(info.title)}`

@@ -33,9 +33,21 @@ describe("reading a Gadget UI bundle", () => {
     expect(bundle).toEqual({jsCode: "export const ui = 1;"});
   });
 
+  it("injects opaque asset parts without mixing them into editable client source", async () => {
+    let files = docFiles({
+      "client.js": "document.body.append(image);",
+      "client.assets/%2Fillustrations%2Fchapter.png/0001": "BBBB",
+      "client.assets/%2Fillustrations%2Fchapter.png/0000": "data:image/webp;base64,AAAA",
+    });
+    let bundle = await readUiBundle(files);
+    expect(bundle?.jsCode).toContain(
+      'globalThis.__gadgetAssets={"/illustrations/chapter.png":"data:image/webp;base64,AAAABBBB"};',
+    );
+    expect(bundle?.jsCode).toContain("document.body.append(image);");
+  });
+
   it("reassembles a UI that ships gzipped across several parts", async () => {
-    // The book format's reader is far too large for one Yjs text, so it is stored this way. A
-    // reader that only looked at client.js would hand the viewer nothing at all.
+    // Legacy book archives used this layout before snapshots were persisted in bounded parts.
     let source = `export const chapters = ${JSON.stringify(
       Array.from({length: 42}, (_, chapter) => `content/ch${chapter}.md`))};`;
     let files = docFiles(await gzipParts(source, 64));

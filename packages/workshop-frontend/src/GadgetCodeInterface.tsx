@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
-import { DownloadSimple } from '@phosphor-icons/react'
+import { DownloadSimple, UploadSimple } from '@phosphor-icons/react'
 import { Overseer, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
 import { RpcStub, RpcTarget } from 'capnweb'
 import * as Y from 'yjs'
@@ -11,6 +11,12 @@ import CodeEditor from './CodeEditor'
 import CodeDiffEditor from './CodeDiffEditor'
 import type { StreamingProposedChanges } from './ChatInterface'
 import { saveTextToFile } from './fileTransfers'
+import { readGadgetArchiveFiles } from './gadgetArchiveImport'
+
+const UI_ASSET_PREFIX = 'client.assets/'
+// A quarter of the backend's 512 KiB snapshot-part size keeps each Yjs update comfortably below
+// the persisted row boundary while preserving UTF-16 code-unit offsets.
+const ARCHIVE_IMPORT_CHUNK_CHARS = 128 * 1024
 
 // RpcTarget implementation for receiving code updates from the server
 class CodeSubscriberImpl extends RpcTarget implements CodeSubscriber {
@@ -161,6 +167,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   const [isReady, setIsReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [importingArchive, setImportingArchive] = useState(false)
+  const archiveInputRef = useRef<HTMLInputElement | null>(null)
   const [committedDocVersion, setCommittedDocVersion] = useState(0)
   const [, setEditableDocVersion] = useState(0)
 
@@ -231,7 +239,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     const filesMap = ydocRef.current.getMap<Y.Text>(filesRoot)
 
     const updateFileList = () => {
-      const names = Array.from(filesMap.keys()).toSorted()
+      const names = Array.from(filesMap.keys())
+        .filter(name => !name.startsWith(UI_ASSET_PREFIX))
+        .toSorted()
       setFileNames(names)
     }
 
@@ -256,7 +266,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
     const previewMap = streamingFilesMapRef.current ?? editableFilesMapRef.current
     const displayed = previewMap
-      ? Array.from(new Set([...fileNames, ...previewFileNames])).toSorted()
+      ? Array.from(new Set([...fileNames, ...previewFileNames]))
+        .filter(name => !name.startsWith(UI_ASSET_PREFIX)).toSorted()
       : fileNames
 
     if (displayed.length > 0) {
@@ -326,7 +337,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   // sidebar reflects files added/removed in the (mutable) preview map.
   const syncPreviewFileNames = useCallback((previewMap: Y.Map<Y.Text> | null) => {
     setPreviewFileNames(prev => {
-      const next = previewMap ? Array.from(previewMap.keys()).toSorted() : []
+      const next = previewMap
+        ? Array.from(previewMap.keys()).filter(name => !name.startsWith(UI_ASSET_PREFIX)).toSorted()
+        : []
       return areArraysEqual(prev, next) ? prev : next
     })
   }, [])
@@ -684,7 +697,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
     const updateHandler = async (update: Uint8Array, origin: any) => {
       // Don't send updates that came from the server back to the server
-      if (origin === 'server' || branchMode) {
+      if (origin === 'server' || origin === 'archive-import' || branchMode) {
         return
       }
 
@@ -815,6 +828,62 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     saveTextToFile(filename, ytext.toString())
   }, [getDownloadYText, toasts])
 
+  const handleArchiveImport = useCallback(async (file: File) => {
+    if (branchMode || importingArchive) return
+    if (!window.confirm(
+      `Replace this Gadget's ${filesMapRef.current.size} files with the files from ${file.name}?`,
+    )) return
+
+    setImportingArchive(true)
+    try {
+      const imported = await readGadgetArchiveFiles(file)
+      if (!imported.has('client.js') && !imported.has('server.js')) {
+        throw new Error('The archive has neither client.js nor server.js.')
+      }
+
+      const ydoc = ydocRef.current
+      const root = ydoc.getMap<Y.Text>(filesRoot)
+      const apply = async (mutate: () => void) => {
+        const updates: Uint8Array[] = []
+        const listener = (update: Uint8Array, origin: unknown) => {
+          if (origin === 'archive-import') updates.push(update)
+        }
+        ydoc.on('updateV2', listener)
+        ydoc.transact(mutate, 'archive-import')
+        ydoc.off('updateV2', listener)
+        if (updates.length > 0) await overseer.updateCode(Y.mergeUpdatesV2(updates))
+      }
+
+      for (const [name, content] of imported) {
+        await apply(() => {
+          root.delete(name)
+          root.set(name, new Y.Text())
+        })
+        const text = root.get(name)!
+        for (let offset = 0; offset < content.length; offset += ARCHIVE_IMPORT_CHUNK_CHARS) {
+          const chunk = content.slice(offset, offset + ARCHIVE_IMPORT_CHUNK_CHARS)
+          await apply(() => text.insert(text.length, chunk))
+        }
+      }
+      for (const name of root.keys()) {
+        if (!imported.has(name)) await apply(() => root.delete(name))
+      }
+
+      onCodeChange?.()
+      setActiveFile(imported.has('client.js') ? 'client.js' : 'server.js')
+      toasts.add({ title: `Imported ${imported.size} files from ${file.name}`, variant: 'success' })
+    } catch (error) {
+      console.error('Failed to import Gadget archive:', error)
+      toasts.add({
+        title: error instanceof Error ? error.message : 'Failed to import Gadget archive',
+        variant: 'error',
+      })
+    } finally {
+      setImportingArchive(false)
+      if (archiveInputRef.current) archiveInputRef.current.value = ''
+    }
+  }, [branchMode, filesRoot, importingArchive, onCodeChange, overseer, toasts])
+
   // Determine if we're in diff mode
   const isDiffMode = branchMode || (streamingProposedChanges !== undefined && streamingYdocRef.current !== null)
 
@@ -859,6 +928,26 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
           <span>Connection issue - changes will be saved when connection is restored</span>
         </div>
       )}
+      <div className="flex h-9 shrink-0 items-center justify-end gap-2 border-b border-kumo-line bg-kumo-base px-3">
+        <input
+          ref={archiveInputRef}
+          type="file"
+          accept=".gadget"
+          className="hidden"
+          onChange={event => {
+            const file = event.target.files?.[0]
+            if (file) void handleArchiveImport(file)
+          }}
+        />
+        <WorkshopButton
+          onClick={() => archiveInputRef.current?.click()}
+          disabled={branchMode || importingArchive || isEditingLocked}
+          className="!h-7"
+        >
+          <UploadSimple size={14} weight="bold" />
+          {importingArchive ? 'Importing…' : 'Import .gadget'}
+        </WorkshopButton>
+      </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <FileSidebar
           ref={fileSidebarRef}
