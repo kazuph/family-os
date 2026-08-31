@@ -19,7 +19,9 @@ import type { ProAdvisorInput } from "./pro-advisor";
 import { AgentCatalogSnapshot, formatAlwaysAvailableResourcesPrompt } from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
-import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
+import {
+  AgentTurnError, completeText, explainIncompleteStream, httpStatusFromError, zeroUsage,
+} from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import { UI_ASSET_PREFIX } from "./ui-bundle";
 import {
@@ -3036,8 +3038,9 @@ export async function runAgent(
   // Records a turn that ended with a provider error, so it can be rethrown for the overseer's
   // error triage after the loop settles. (pi never throws for provider failures; the loop
   // reports them as a final assistant message with stopReason "error"/"aborted".) Nothing from a
-  // failed turn is persisted.
-  let turnFailure: {message: string} | undefined;
+  // failed turn is persisted as model history. Partial text is retained only on the user-visible
+  // error record so a retry cannot feed an unfinished assistant turn back to the model.
+  let turnFailure: {message: string; partialResponse?: string} | undefined;
 
   // Turn cap, replacing the old stepCountIs(30).
   let turnCount = 0;
@@ -3104,9 +3107,16 @@ export async function runAgent(
         // the model has seen.
         let message = event.message as AssistantMessage;
         if (message.stopReason === "error" || message.stopReason === "aborted") {
-          // Persist nothing from a failed or cancelled model request; rethrown after the loop
-          // returns.
-          turnFailure = {message: message.errorMessage ?? "The model request failed."};
+          const rawError = message.errorMessage ?? "The model request failed.";
+          const partialResponse = message.content
+              .filter(block => block.type === "text")
+              .map(block => block.text).join("");
+          turnFailure = {
+            message: explainIncompleteStream(
+                rawError, message.content.some(block => block.type === "toolCall"),
+                partialResponse.length > 0),
+            ...(partialResponse ? {partialResponse} : {}),
+          };
           break;
         }
         // Note: a turn the model completed is persisted even if the user cancelled while its
@@ -3261,7 +3271,8 @@ export async function runAgent(
     // Other failures become an AgentTurnError carrying the failing request's HTTP status (when
     // it can be determined) for the overseer's triage.
     throw new AgentTurnError(
-        turnFailure.message, httpStatusFromError(turnFailure.message, handle));
+        turnFailure.message, httpStatusFromError(turnFailure.message, handle),
+        turnFailure.partialResponse);
   }
 
   // The turn ran, so there is no checkpoint to report.

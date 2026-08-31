@@ -22,10 +22,26 @@ export class AgentTurnError extends Error {
   /** HTTP status of the failing request, when the handle observed a response for it. */
   readonly statusCode?: number;
 
-  constructor(message: string, statusCode?: number) {
+  /** Text received before the provider failed, retained for the user but never replayed. */
+  readonly partialResponse?: string;
+
+  constructor(message: string, statusCode?: number, partialResponse?: string) {
     super(message);
     this.statusCode = statusCode;
+    this.partialResponse = partialResponse;
   }
+}
+
+/** Convert pi's missing-terminal-event error into an actionable user-facing explanation. */
+export function explainIncompleteStream(errorMessage: string, hasToolCalls: boolean,
+                                        hasPartialResponse: boolean): string {
+  if (!errorMessage.includes("Stream ended without finish_reason")) return errorMessage;
+  const retained = hasPartialResponse
+    ? "The partial text received before the disconnect is preserved below. "
+    : "";
+  const protectedFiles = hasToolCalls ? "Incomplete tool calls and file edits were not applied. " : "";
+  return "The model provider closed the stream without a completion marker. " + retained +
+      protectedFiles + "Retry the request to continue.";
 }
 
 /**

@@ -2102,6 +2102,8 @@ export type AiChatMessageBody = {
   // chat log sent to the LLM so the agent does not react to it.
   type: "error";
   message: string;
+  /** Text received before a failed stream ended; displayed to the user but never sent to the LLM. */
+  partialResponse?: string;
   // Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
   // the "connect Cloudflare / add credits" modal instead of a generic error + retry).
   code?: string;
