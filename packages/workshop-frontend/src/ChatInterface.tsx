@@ -7440,10 +7440,20 @@ function ChatInterface({
                                   )}
                                 </div>
                                 {expanded && (
-                                  <div className="ml-8 mt-1">
+                                  <div className="ml-8 mt-1 space-y-2">
                                     <pre className="max-h-48 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
                                       {msg.message}
                                     </pre>
+                                    {msg.partialResponse && (
+                                      <div>
+                                        <div className="mb-1 text-[12px] font-medium text-kumo-subtle">
+                                          Partial response received before disconnect
+                                        </div>
+                                        <pre className="max-h-80 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
+                                          {msg.partialResponse}
+                                        </pre>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>

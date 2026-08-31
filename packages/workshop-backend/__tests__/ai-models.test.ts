@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
+import type { Context } from "@earendil-works/pi-ai";
 import { getModel, type ModelHandle } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
@@ -44,6 +45,14 @@ const OPENCODE_GO_PRO_CONFIG: AiModelConfig = {
   apiToken: "must-be-ignored",
 };
 
+const OPENCODE_GO_INTERLEAVED_CONFIGS: AiModelConfig[] = [
+  OPENCODE_GO_CONFIG,
+  OPENCODE_GO_PRO_CONFIG,
+  { provider: "opencode-go", model: "glm-5.3", apiToken: "must-be-ignored" },
+  { provider: "opencode-go", model: "glm-5.3-flash", apiToken: "must-be-ignored" },
+  { provider: "opencode-go", model: "kimi-k3", apiToken: "must-be-ignored" },
+];
+
 const OPENCODE_GO_UNKNOWN_CONFIG: AiModelConfig = {
   provider: "opencode-go",
   model: "deepseek-v4-flash-free",
@@ -73,10 +82,12 @@ const fetchStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 // Runs one request through the handle with the fetch stub and returns what was sent.
-async function captureRequest(handle: ModelHandle): Promise<CapturedRequest> {
-  const stream = await handle.stream(handle.model, {
+async function captureRequest(handle: ModelHandle, context: Context = {
     messages: [{ role: "user", content: "hello", timestamp: 0 }],
-  }, { fetch: fetchStub, maxRetries: 0 });
+  }, options: {thinking?: boolean} = {}): Promise<CapturedRequest> {
+  const stream = await handle.stream(handle.model, context, {
+    fetch: fetchStub, maxRetries: 0, ...options,
+  });
   const message = await stream.result();
   expect(message.stopReason).toBe("error");
   expect(capturedRequests.length).toBeGreaterThan(0);
@@ -128,6 +139,65 @@ describe("getModel AI Gateway routing", () => {
     const request = await captureRequest(handle);
     expect(request.url).toBe("https://opencode.ai/zen/go/v1/chat/completions");
     expect(request.headers.get("authorization")).toBe("Bearer opencode-go-token");
+  }, 15000);
+
+  it.each(OPENCODE_GO_INTERLEAVED_CONFIGS)(
+      "replays reasoning_content without a family-specific thinking control for $model",
+      async (config) => {
+        const handle = getModel(
+            env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }), config, INITIATOR);
+        const request = await captureRequest(handle, {
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: "previous response" }],
+            api: "openai-completions",
+            provider: "opencode-go",
+            model: config.model,
+            usage: {
+              input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: 0,
+          }, { role: "user", content: "continue", timestamp: 1 }],
+        });
+        const body = JSON.parse(request.body);
+        expect(body.messages[0].reasoning_content).toBe("");
+        expect(body).not.toHaveProperty("thinking");
+        expect(body).not.toHaveProperty("reasoning_effort");
+      },
+      15000,
+  );
+
+  it("sends the same provider-default thinking shape when thinking is explicitly off", async () => {
+    const handle = getModel(
+        env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
+        { provider: "opencode-go", model: "glm-5.3-flash", apiToken: "" }, INITIATOR);
+    const request = await captureRequest(handle, undefined, {thinking: false});
+    const body = JSON.parse(request.body);
+    expect(body).not.toHaveProperty("thinking");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  }, 15000);
+
+  it("retains text when an OpenCode-compatible stream omits its terminal finish reason", async () => {
+    const handle = getModel(
+        env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
+        { provider: "opencode-go", model: "glm-5.3-flash", apiToken: "" }, INITIATOR);
+    const incompleteStreamFetch = (async () => new Response(
+      'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",' +
+      '"created":0,"model":"glm-5.3-flash","choices":[{"index":0,' +
+      '"delta":{"content":"partial answer"}}]}\n\n',
+      { headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+
+    const stream = handle.stream(handle.model, {
+      messages: [{ role: "user", content: "write a long answer", timestamp: 0 }],
+    }, { fetch: incompleteStreamFetch, maxRetries: 0 });
+    const message = await stream.result();
+
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toContain("Stream ended without finish_reason");
+    expect(message.content).toEqual([{ type: "text", text: "partial answer" }]);
   }, 15000);
 
   it("rejects an OpenCode Go model id the deployment doesn't serve, even with the secret set", () => {

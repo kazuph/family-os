@@ -362,8 +362,11 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
         cost: ZERO_COST,
         ...modelTokenWindow(config, undefined),
         compat: {
+          // Go exposes interleaved reasoning through reasoning_content. Preserve that field when
+          // replaying assistant turns, but leave thinking controls to the gateway/model default:
+          // the shared OpenAI-compatible endpoint does not use one native family's thinking
+          // request format for every model.
           requiresReasoningContentOnAssistantMessages: true,
-          thinkingFormat: "deepseek",
         },
       },
       apiKey: env.OPENCODE_GO_API_TOKEN,

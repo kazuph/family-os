@@ -4095,7 +4095,8 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
+      this.postAgentErrorMessage(
+          chatId, aiModel.profile, errorMessage, undefined, apiError?.partialResponse);
 
       // Reject any pending agent callback return promises.
       let error = err instanceof Error ? err : new Error(`${err}`);
@@ -5184,7 +5185,8 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  postAgentErrorMessage(chatId: number, author: AiChatAuthorInfo, message: string, code?: string) {
+  postAgentErrorMessage(chatId: number, author: AiChatAuthorInfo, message: string, code?: string,
+                        partialResponse?: string) {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
       // Chat thread deleted?
@@ -5199,6 +5201,7 @@ class OverseerImpl implements AgentHooks {
       author,
       type: "error",
       message,
+      ...(partialResponse ? { partialResponse } : {}),
       ...(code ? { code } : {}),
     });
   }
