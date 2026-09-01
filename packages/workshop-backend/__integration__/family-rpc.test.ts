@@ -155,6 +155,9 @@ describe("Family OS Access device generation", () => {
     );
     // Reads needed for existing AI use remain available to children.
     await expect(childApi.listModels()).resolves.toEqual(expect.any(Array));
+    // The Family guard must run before the reset-retry wrapper: child connector discovery stays
+    // hidden instead of reaching the User DO, while ordinary replay-safe reads remain available.
+    await expect(childApi.listGatekeeperVendors()).resolves.toEqual([]);
     using childWorkspace = await childApi.newGadget();
     childWorkspace.onRpcBroken(() => {});
     expectFamilyRpcError(
