@@ -64,6 +64,7 @@ export default defineConfig({
       // fetch handler) reject on their own schedule, independent of any awaited call.
       if (error.message?.includes("abortAllDurableObjects")) return true;
       // Same, for the test that aborts only the user DO (state.abort with this reason).
+      if (error.message?.includes("user-DO flag probe reset")) return true;
       if (error.message?.includes("user-DO reset injected by test")) return true;
     },
   },

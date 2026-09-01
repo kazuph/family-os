@@ -1,4 +1,4 @@
-import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
@@ -6,10 +6,13 @@ import {
   getOpenGadgetErrorCode,
   OPEN_GADGET_ERROR_CODES,
   type AuthenticatedApi,
+  type FamilyEntry,
   type OpenGadgetErrorCode,
   type PublicApi,
+  unwrapFamilyRpcResult,
 } from "@gadgets/workshop-shared/api";
 import { describe, expect, it } from "vitest";
+import { FAMILY_ACCESS_ADULT as adult, signFamilyAccessJwt } from "./family-access-jwt.js";
 
 type CodedError = Error & { code?: unknown };
 
@@ -56,6 +59,35 @@ async function connect(): Promise<RpcStub<PublicApi>> {
 
   socket.accept();
   return newWebSocketRpcSession<PublicApi>(socket);
+}
+
+async function connectAdult(loginIat: number): Promise<{
+  publicApi: RpcStub<PublicApi>;
+  family: RpcStub<FamilyEntry>;
+  authenticated: RpcStub<AuthenticatedApi>;
+}> {
+  const response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+    headers: {
+      Upgrade: "websocket",
+      Origin: "https://workshop.invalid",
+      Cookie: `CF_Authorization=login-${loginIat}`,
+      "cf-access-jwt-assertion": await signFamilyAccessJwt(loginIat),
+    },
+  }));
+  expect(response.status).toBe(101);
+  const socket = response.webSocket;
+  if (!socket) throw new TypeError("Expected a WebSocket response.");
+
+  socket.addEventListener("error", () => {});
+  socket.accept();
+  const publicApi = newWebSocketRpcSession<PublicApi>(socket);
+  publicApi.onRpcBroken(() => {});
+  const family = await publicApi.authenticateFromCfAccess();
+  family.onRpcBroken(() => {});
+  unwrapFamilyRpcResult(await family.selectAdultProfile());
+  const authenticated = unwrapFamilyRpcResult(await family.getAuthenticatedApi());
+  authenticated.onRpcBroken(() => {});
+  return { publicApi, family, authenticated };
 }
 
 async function createAccount(
@@ -138,17 +170,15 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
   });
 });
 
-// In production, workerd tags rejections from a reset DO with the structured flags
-// do-retry.ts reads. Locally, vitest-pool-workers aborts reject FLAGLESS — this test pins that, so if a
-// future pool upgrade starts attaching the production flags, it fails and the flag paths can
-// graduate from synthetic unit tests to real-reset integration tests. abortAllDurableObjects()
-// is the non-graceful teardown (deliberately not evictDurableObject(), which never breaks a
-// stub).
+// workerd tags rejections from a reset DO with the structured flags do-retry.ts reads. The fork
+// aborts only the User DO so the Family device-session generation guard remains alive while the
+// replay-safe read recovers through a freshly minted User DO stub.
 describe("user-DO reset flags", () => {
-  it("local aborts reject flagless — flag-based recovery is untestable locally", async () => {
-    using publicApi = await connect();
-    const account = await createAccount(publicApi, "probe");
-    using authenticated = await publicApi.authenticate(account.token);
+  it("a tagged User DO reset is retried without bypassing the Family generation guard", async () => {
+    const connection = await connectAdult(600);
+    using publicApi = connection.publicApi;
+    using family = connection.family;
+    using authenticated = connection.authenticated;
 
     expect(await authenticated.listModels()).toBeInstanceOf(Array);
 
@@ -156,10 +186,12 @@ describe("user-DO reset flags", () => {
     // the abort would simply restart the object and succeed. This poisoned-stub rejection is
     // the exact shape AuthenticatedApiImpl sees when one of its calls loses the reset race.
     const userStub = exports.UserDurableObject.get(
-      exports.UserDurableObject.idFromName(account.username));
+      exports.UserDurableObject.idFromName(adult.email));
     expect(await userStub.listModels()).toBeInstanceOf(Array);
 
-    await abortAllDurableObjects();
+    await rejection(runInDurableObject(userStub, (_instance, state) => {
+      state.abort("user-DO flag probe reset");
+    }));
 
     // The session recovers: AuthenticatedApiImpl resolves a fresh stub per call, so the
     // restarted object serves this read — the browser never sees the reset.
@@ -172,15 +204,15 @@ describe("user-DO reset flags", () => {
       retryable: (nativeErr as Record<string, unknown>).retryable,
       overloaded: (nativeErr as Record<string, unknown>).overloaded,
     }).toEqual({
-      message: "Application called abortAllDurableObjects().",
-      durableObjectReset: undefined,
+      message: "user-DO flag probe reset",
+      durableObjectReset: true,
       retryable: undefined,
       overloaded: undefined,
     });
 
     // Permanently broken, not fail-once: the fresh-stub-per-call design rests on this.
     const nativeErr2 = await rejection(userStub.listModels());
-    expect(nativeErr2.message).toBe("Application called abortAllDurableObjects().");
+    expect(nativeErr2.message).toBe("user-DO flag probe reset");
   });
 });
 
@@ -189,22 +221,21 @@ describe("user-DO reset flags", () => {
 // once at open(); after the user DO's incarnation died, every user-DO-carrying call on the
 // still-open session — newChat, listModels, createGadget, setPinned — failed against the
 // poisoned stub until the WebSocket reconnected. The session capabilities now mint a fresh stub
-// per call, so the first post-reset call simply restarts the object — no reset flags needed,
-// which is also why this is testable despite local aborts rejecting flagless (see above).
-// abortAllDurableObjects() can't produce the asymmetry (it kills the Overseer too), so the
-// reset is injected into the one object via runInDurableObject + state.abort().
+// per call, so the first post-reset call restarts the object. The reset is injected into the one
+// object via runInDurableObject + state.abort(), leaving the Family device-session DO alive.
 describe("workspace session across a user-DO-only reset", () => {
   it("chat, models, and gadget capabilities survive the user DO resetting", async () => {
-    using publicApi = await connect();
-    const account = await createAccount(publicApi, "chatreset");
-    using authenticated = await publicApi.authenticate(account.token);
+    const connection = await connectAdult(700);
+    using publicApi = connection.publicApi;
+    using family = connection.family;
+    using authenticated = connection.authenticated;
     using workspace = await authenticated.newGadget();
 
     // Model id null: commits the message without starting an agent — the pure chat-start path.
     expect(await workspace.newChat("before the reset", null)).toEqual(expect.any(Number));
 
     const userStub = exports.UserDurableObject.get(
-      exports.UserDurableObject.idFromName(account.username));
+      exports.UserDurableObject.idFromName(adult.email));
     // The abort kills the very call delivering it, so the rejection is the success signal.
     await rejection(runInDurableObject(userStub, (_instance, state) => {
       state.abort(USER_DO_ABORT_REASON);

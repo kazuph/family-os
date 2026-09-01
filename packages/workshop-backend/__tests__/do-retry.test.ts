@@ -2,9 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { isDoResetError, retryOnDoReset } from "../src/do-retry";
 import { createWorkshopLogger } from "../src/observability";
 
-// Synthetic errors shaped like workerd's tagged rejections (jsg/util.c++). Local aborts reject
-// flagless (pinned by the "user-DO reset flags" integration test), so the predicates and the
-// retry path are exercised here with the production shapes.
+// Synthetic errors shaped like workerd's tagged rejections (jsg/util.c++). The integration suite
+// covers a real tagged reset; these tests exhaust the predicate matrix and retry boundaries.
 function resetError(flags: Record<string, unknown>): Error {
   return Object.assign(new Error("Durable Object reset."), flags);
 }
@@ -128,7 +127,7 @@ describe("retryOnDoReset", () => {
     expect(recoveredEvents(info)).toBe(0);
   });
 
-  it("does not retry a flagless error (the local-abort shape)", async () => {
+  it("does not retry a flagless error", async () => {
     const info = spies();
     const error = new Error("Durable Object reset.");
     const thunk = failingThunk([error]);

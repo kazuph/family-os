@@ -10,9 +10,8 @@
 // `durableObjectReset` or the `durableObjectId` we log:
 // https://developers.cloudflare.com/durable-objects/best-practices/error-handling/
 //
-// Local vitest-pool-workers aborts reject FLAGLESS (pinned by the "user-DO reset flags"
-// integration test), so the predicates and the retry path are unit-tested with synthetic
-// production shapes.
+// The integration suite pins the real workerd reset shape and recovery through a Family-authenticated
+// session. Unit tests still cover the full predicate matrix and exact single-retry contract.
 
 import { createWorkshopLogger } from "./observability";
 
