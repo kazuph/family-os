@@ -46,10 +46,16 @@ const MAX_PENDING_RPC_SENDS = 1024;
 const MAX_PENDING_RPC_SEND_CHARS = 32 * 1024 * 1024;
 /** CSP ignores `sandbox` in a meta tag, so serve the document through interception with a header. */
 const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
+const EXPORT_CLIENT_URL = new URL("client.js", EXPORT_DOCUMENT_URL).href;
+const EXPORT_CLIENT_PREFIX = String.raw`//# sourceURL=client.js
+const { gadget, RpcStub, RpcTarget } = globalThis.__workshopExportRuntime;
+delete globalThis.__workshopExportRuntime;
+`;
 // TODO: CSP and request interception do not cover WebRTC/STUN. The same gap exists for Gadgets
 // running inside an iframe in the user's browser. We should close the gap in both places. For now,
 // extending the same gap to remotely-rendered gadgets is acceptable.
-const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; script-src data:; " +
+const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; " +
+  `script-src data: ${new URL(EXPORT_DOCUMENT_URL).origin}; ` +
   "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
@@ -152,14 +158,9 @@ function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
-function makeExportHtml(clientCode: string): string {
-  let clientPrefix = String.raw`//# sourceURL=client.js
-const { gadget, RpcStub, RpcTarget } = globalThis.__workshopExportRuntime;
-delete globalThis.__workshopExportRuntime;
-`;
-  let clientUrl = scriptUrl(clientPrefix + clientCode);
+function makeExportHtml(): string {
   let runtimeUrl = scriptUrl(
-      `globalThis.__workshopExportClientUrl = ${JSON.stringify(clientUrl)};\n` +
+      `globalThis.__workshopExportClientUrl = ${JSON.stringify(EXPORT_CLIENT_URL)};\n` +
       BROWSER_EXPORT_RUNTIME);
 
   return `<!DOCTYPE html>
@@ -313,7 +314,13 @@ async function openRenderedGadget(
           status: 200,
           contentType: "text/html",
           headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-          body: makeExportHtml(clientCode),
+          body: makeExportHtml(),
+        });
+      } else if (url === EXPORT_CLIENT_URL) {
+        void request.respond({
+          status: 200,
+          contentType: "text/javascript",
+          body: EXPORT_CLIENT_PREFIX + clientCode,
         });
       } else if (url === "about:blank" || url.startsWith("data:") || url.startsWith("blob:")) {
         void request.continue();

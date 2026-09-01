@@ -8,7 +8,9 @@ const { BrowserRpcTransport, limitStream, renderGadgetPdf, verifyGadgetUi } =
 
 type Harness = {
   browserClosed: () => boolean;
+  clientResponseBody: () => string | undefined;
   clientInitialized: () => boolean;
+  documentResponseBody: () => string | undefined;
   gadgetDisposed: () => boolean;
   navigatedUrl: () => string | undefined;
   pdfRequested: () => boolean;
@@ -18,7 +20,9 @@ type Harness = {
 
 function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let browserClosed = false;
+  let clientResponseBody: string | undefined;
   let clientInitialized = false;
+  let documentResponseBody: string | undefined;
   let documentTitle: string | undefined;
   let gadgetDisposed = false;
   let navigatedUrl: string | undefined;
@@ -27,14 +31,32 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let waitedSelector: string | undefined;
 
   let listeners = new Map<string, ((value: any) => void)[]>();
+  let mainFrame = {};
   let page = {
     setRequestInterception: async () => {},
     on: (name: string, listener: (value: any) => void) => {
       listeners.set(name, [...(listeners.get(name) ?? []), listener]);
     },
-    goto: async (url: string) => { navigatedUrl = url; },
+    goto: async (url: string) => {
+      navigatedUrl = url;
+      let request = listeners.get("request")?.[0];
+      let documentRequestUrl = new URL(url);
+      documentRequestUrl.hash = "";
+      request?.({
+        url: () => documentRequestUrl.href,
+        isNavigationRequest: () => true,
+        frame: () => mainFrame,
+        respond: ({body}: {body: string}) => { documentResponseBody = body; },
+      });
+      request?.({
+        url: () => "https://gadget-export.invalid/client.js",
+        isNavigationRequest: () => false,
+        frame: () => mainFrame,
+        respond: ({body}: {body: string}) => { clientResponseBody = body; },
+      });
+    },
     waitForSelector: async (selector: string) => { waitedSelector = selector; },
-    mainFrame: () => ({}),
+    mainFrame: () => mainFrame,
     emulateMediaType: async () => {},
     evaluate: (fn: (...args: never[]) => unknown, ...args: unknown[]) => {
       if (fn.toString().includes("__workshopExportModulePromise")) {
@@ -92,7 +114,9 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
 
   let harness: Harness = {
     browserClosed: () => browserClosed,
+    clientResponseBody: () => clientResponseBody,
     clientInitialized: () => clientInitialized,
+    documentResponseBody: () => documentResponseBody,
     gadgetDisposed: () => gadgetDisposed,
     navigatedUrl: () => navigatedUrl,
     pdfRequested: () => pdfRequested,
@@ -244,6 +268,17 @@ describe("renderGadgetPdf", () => {
 });
 
 describe("verifyGadgetUi", () => {
+  it("serves client.js separately instead of nesting it in the HTML data URL", async () => {
+    let {gadget, harness} = makeHarness();
+    let source = "export default { marker: 'large-readable-client' }";
+
+    await verifyGadgetUi({} as BrowserRun, source, gadget as never, [], "chromium");
+
+    expect(harness.clientResponseBody()).toContain(source);
+    expect(harness.documentResponseBody()).not.toContain("large-readable-client");
+    expect(harness.documentResponseBody()).toContain("https%3A%2F%2Fgadget-export.invalid%2Fclient.js");
+  });
+
   it("returns browser diagnostics and a PNG while releasing the browser", async () => {
     let {gadget, harness} = makeHarness();
 
