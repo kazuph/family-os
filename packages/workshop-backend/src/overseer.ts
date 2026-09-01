@@ -49,7 +49,6 @@ import {
 } from "./chat-attachment-validation";
 import {
   renderGadgetPdf,
-  verifyGadgetUi,
   type GadgetBrowserEngine,
   type GadgetUiVerification,
   type GadgetUiVerificationOptions,
@@ -5462,8 +5461,9 @@ class OverseerImpl implements AgentHooks {
     report: Omit<GadgetUiVerification, "screenshot">;
     screenshot: Uint8Array;
   }> {
-    let browser = this.env.BROWSER;
-    if (!browser) throw new Error("Browser verification is not configured for this deployment.");
+    if (!this.env.BROWSER) {
+      throw new Error("Browser verification is not configured for this deployment.");
+    }
     let gadgetClient = new GadgetClientImpl(
         this, gadgetId, this.#ownerUserStub());
     let bundle = await gadgetClient.getUiBundle(chatId);
@@ -5474,8 +5474,8 @@ class OverseerImpl implements AgentHooks {
         new Error("Gadget restarted for browser verification."));
     this.#runningChatIds.delete(gadgetId);
     let gadget = await this.getGadgetFacet(gadgetId, chatId);
-    let {screenshot, ...report} = await verifyGadgetUi(
-        browser, bundle.jsCode, gadget, selectors, engine, options);
+    let {screenshot, ...report} = await this.ctx.exports.BrowserVerifier({}).verify(
+        bundle.jsCode, gadget, selectors, engine, options);
     return {report, screenshot};
   }
 

@@ -30,6 +30,7 @@ import {
 } from "./family-device-session.js";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
 import { ExternalMessageGateway } from "./external-message-gateway";
+import { BrowserVerifier } from "./browser-export";
 import {
   BOOK_BLUEPRINT_ID, DEFAULT_BOOK_TUTOR_MODEL, handleBookMcpRequest, type BookMcpStore,
 } from "./book-mcp";
@@ -75,6 +76,9 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
+
+// Re-export the isolated Browser Run verifier so Durable Objects can invoke it through ctx.exports.
+export { BrowserVerifier };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {

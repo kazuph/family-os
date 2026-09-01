@@ -1,5 +1,6 @@
 import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, RpcTarget, type RpcStub, type RpcTransport } from "capnweb";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "./chat-attachment-validation";
@@ -449,6 +450,22 @@ export async function verifyGadgetUi(
   } finally {
     if (opened) await opened.release();
     else deadline.clear();
+  }
+}
+
+/** Runs Browser Run verification outside the calling Durable Object's isolate. */
+export class BrowserVerifier extends WorkerEntrypoint<Cloudflare.Env> {
+  /** Renders a Gadget UI and returns its browser-observed diagnostics and screenshot. */
+  verify(
+    clientCode: string,
+    gadget: RpcStub<any>,
+    selectors: string[],
+    engine: GadgetBrowserEngine,
+    options: GadgetUiVerificationOptions,
+  ): Promise<GadgetUiVerification> {
+    let browser = this.env.BROWSER;
+    if (!browser) throw new Error("Browser verification is not configured for this deployment.");
+    return verifyGadgetUi(browser, clientCode, gadget, selectors, engine, options);
   }
 }
 

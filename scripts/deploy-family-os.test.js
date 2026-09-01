@@ -62,8 +62,6 @@ function flagsFromArgs(args) {
 
 function assertCliParsedConstructedArgs(probe) {
   assert.equal(/Unknown arguments/i.test(probe.output), false, probe.output);
-  assert.notEqual(probe.status, 0, probe.output);
-  assert.match(probe.output, /wrangler\.prod\.jsonc/);
 }
 
 describe("parseDeployArgs", () => {
@@ -149,8 +147,8 @@ describe("pinned wrangler CLI contract", () => {
       assert.equal(options.has(flag), true, `${flag} must be a wrangler deploy option`);
     }
 
-    // Same argv as CD before upload. Missing generated config is later than CLI parse;
-    // Wrangler 4.119.0 rejected --log-level here (run 31774001566).
+    // `--dry-run` is safe whether or not a generated production config already exists. A missing
+    // config may fail after parsing; an existing config may complete without uploading anything.
     const probe = runPinnedWrangler(args, workshopDir);
     assertCliParsedConstructedArgs(probe);
   });
@@ -168,8 +166,8 @@ describe("pinned wrangler CLI contract", () => {
       assert.equal(options.has(flag), true, `${flag} must be a wrangler secret put option`);
     }
 
-    const probe = runPinnedWrangler(args, workshopDir);
-    assertCliParsedConstructedArgs(probe);
+    // Do not execute `secret put` here. The pinned CLI help plus the exact argv assertion above
+    // cover this contract without risking a production mutation from an authenticated checkout.
   });
 });
 
