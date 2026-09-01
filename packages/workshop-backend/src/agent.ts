@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, type ChatAttachmentRef, isTextLikeAttachmentMimeType, validateBindingName, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -289,6 +289,7 @@ export interface AgentHooks {
     report: unknown;
     screenshot: Uint8Array;
   }>;
+  saveAgentAttachment(chatId: number, attachment: ChatAttachmentRef, data: Uint8Array): void;
   activeAgentCallbackCount(chatId: number): number;
   rejectAllAgentCallbacks(chatId: number, error: string): void;
   consumeCapturedActions(chatId: number)
@@ -2417,6 +2418,8 @@ export async function runAgent(
     content: [{type: "text" as const, text}],
     details: notes,
   });
+  let generatedAttachments: ChatAttachmentRef[] = [];
+  let generatedAttachmentData = new Map<string, Uint8Array>();
 
   // Schema fragment for the file tools' workpiece reference. Note that although historical logs
   // allow these tool calls to omit this param, is is required in all new tool calls, hence we do
@@ -2854,9 +2857,18 @@ export async function runAgent(
           if (gadgetId === undefined) throw new Error("There is no Gadget to verify.");
           let {report, screenshot} = await hooks.verifyGadgetUi(
               chatId, gadgetId, selectors, engine ?? "chromium");
+          let attachment: ChatAttachmentRef = {
+            id: crypto.randomUUID(),
+            mimeType: "image/png",
+            name: `browser-verify-${toolCallId}.png`,
+            size: screenshot.byteLength,
+          };
+          generatedAttachments.push(attachment);
+          generatedAttachmentData.set(attachment.id, screenshot);
           let output = jsonToolResultText({
             ...(report as Record<string, unknown>),
-            screenshot: {mimeType: "image/png", byteLength: screenshot.byteLength},
+            screenshot: {attachmentId: attachment.id, mimeType: attachment.mimeType,
+              byteLength: screenshot.byteLength},
           });
           return {
             content: [
@@ -3195,6 +3207,7 @@ export async function runAgent(
             type: "message",
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
+            ...(generatedAttachments.length > 0 ? {attachments: generatedAttachments} : {}),
           };
           let reasoning = message.content
               .flatMap(block =>
@@ -3265,9 +3278,15 @@ export async function runAgent(
           msgs.push(cr);
         }
 
+        for (let attachment of generatedAttachments) {
+          hooks.saveAgentAttachment(
+              chatId, attachment, generatedAttachmentData.get(attachment.id)!);
+        }
+        generatedAttachmentData.clear();
         hooks.addChatMessages(chatId, author, msgs, message.usage.totalTokens,
             handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute,
             message.usage.cost.total);
+        generatedAttachments = [];
 
         // Reset per-step streaming state.
         toolCallNotes.clear();

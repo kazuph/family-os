@@ -5472,6 +5472,14 @@ class OverseerImpl implements AgentHooks {
     return {report, screenshot};
   }
 
+  saveAgentAttachment(chatId: number, attachment: ChatAttachmentRef, data: Uint8Array): void {
+    this.storage.chatAttachmentContent.put({
+      fileId: validateChatAttachmentId(attachment.id),
+      data,
+      state: {type: "committed", chatId},
+    });
+  }
+
   async executeCodeMode(chatId: number, code: string,
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
