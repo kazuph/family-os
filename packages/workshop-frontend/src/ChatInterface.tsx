@@ -678,6 +678,8 @@ function getToolCallSummary(
           : undefined,
       };
     }
+    case "browserVerify":
+      return {verb: "Verified UI", target: tc.input.gadget};
     case "giveUp":
       return { verb: "Stopped" };
     case "webFetch": {
@@ -779,6 +781,8 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
         : familyLabel(`Consulted DeepSeek V4 Pro ${formatTimes(count)}`, `Proに${count}回相談`);
     case "executeCode":
       return count === 1 ? "Ran code" : `Ran code ${formatTimes(count)}`;
+    case "browserVerify":
+      return count === 1 ? "Verified UI" : `Verified UI ${formatTimes(count)}`;
     case "describeBinding":
       return `Inspected ${pluralize(count, "binding")}`;
     case "setBindingHook":
@@ -822,6 +826,8 @@ function getToolIcon(
       return PencilSimple;
     case "executeCode":
       return Terminal;
+    case "browserVerify":
+      return MagnifyingGlass;
     case "webFetch":
       return Globe;
     case "webSearch":
@@ -869,6 +875,8 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Creating gadget";
     case "executeCode":
       return "Running code";
+    case "browserVerify":
+      return "Verifying UI";
     case "webFetch":
       return "Fetching web page";
     case "webSearch":
@@ -902,6 +910,7 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "saveCapsuleAsBinding": return "Saving";
     case "createGadget": return "Creating gadget";
     case "executeCode": return "Running code";
+    case "browserVerify": return "Verifying UI";
     case "webFetch": return "Fetching";
     case "webSearch": return familyLabel("Searching", familyUi.searchingWeb);
     case "consultPro": return familyLabel("Consulting", familyUi.consultingPro);
@@ -929,6 +938,7 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "consultPro":
       return familyLabel(`Consulting DeepSeek V4 Pro ${formatTimes(count)}`, `Proに${count}回相談中`);
     case "executeCode": return count === 1 ? "Running code" : `Running code ${formatTimes(count)}`;
+    case "browserVerify": return count === 1 ? "Verifying UI" : `Verifying UI ${formatTimes(count)}`;
     case "describeBinding": return `Inspecting ${pluralize(count, "binding")}`;
     case "setBindingHook": return `Connecting ${pluralize(count, "binding")}`;
     case "setGadgetBinding": return `Wiring up ${pluralize(count, "binding")}`;

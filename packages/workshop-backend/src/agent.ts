@@ -284,6 +284,11 @@ export interface AgentHooks {
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
                    onOutputText?: (delta: string) => void): Promise<string>;
+  verifyGadgetUi(chatId: number, gadgetId: WorkpieceId, selectors: string[],
+                 engine: "chromium" | "kitesurf"): Promise<{
+    report: unknown;
+    screenshot: Uint8Array;
+  }>;
   activeAgentCallbackCount(chatId: number): number;
   rejectAllAgentCallbacks(chatId: number, error: string): void;
   consumeCapturedActions(chatId: number)
@@ -443,6 +448,14 @@ document.body.appendChild(document.createTextNode(greeting));
 \`\`\`
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
+
+After writing or changing client.js, ALWAYS call \`browserVerify\` before reporting completion. Pass
+CSS selectors for the UI elements the task requires. The result contains a concise DOM landmark
+summary, counts for those selectors, image load totals and failed sources, console warnings and
+errors, uncaught page exceptions, canvas pixel/frame diagnostics, and a PNG screenshot. Inspect the
+screenshot as well as the structured report. A UI verification passes only when console errors and
+page exceptions are both zero, every image loaded, and every expected selector has the required
+elements. Fix failures and run \`browserVerify\` again; do not claim that an unverified UI works.
 
 Every Gadget UI can be exported to PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. When asked to support or improve PDF export, only add standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the PDF remains readable.
 
@@ -1752,6 +1765,12 @@ export async function runAgent(
                 case "executeCode":
                   toolOutput = {text: toolCall.output!};
                   break;
+                case "browserVerify":
+                  if (toolCall.output === undefined) {
+                    throw new Error("browserVerify tool call in log is missing output");
+                  }
+                  toolOutput = {text: toolCall.output};
+                  break;
                 case "giveUp":
                   toolOutput = {text: jsonToolResultText({rejected: true})};
                   break;
@@ -2808,6 +2827,49 @@ export async function runAgent(
           throw error;
         }
       }
+    }),
+
+    browserVerify: defineTool({
+      name: "browserVerify",
+      label: "Verify UI in browser",
+      description:
+          "Render a Gadget's current client.js in Browser Run. Returns a DOM summary, selector " +
+          "counts, image load failures, console warnings/errors, page exceptions, canvas frame " +
+          "diagnostics, and a PNG screenshot. Use this after every client.js change and fix all " +
+          "reported failures before finishing.",
+      parameters: Type.Object({
+        gadget: workpieceParam,
+        selectors: Type.Array(Type.String(), {
+          description: "CSS selectors whose matching element counts should be checked.",
+        }),
+        engine: Type.Optional(Type.Union([
+          Type.Literal("chromium"),
+          Type.Literal("kitesurf"),
+        ], {description: "Browser Run engine. Defaults to chromium."})),
+      }),
+      execute: async (toolCallId, {gadget, selectors, engine}) => {
+        try {
+          flushCapturedYdocChanges();
+          let gadgetId = resolveToolWorkpieceId(gadget);
+          if (gadgetId === undefined) throw new Error("There is no Gadget to verify.");
+          let {report, screenshot} = await hooks.verifyGadgetUi(
+              chatId, gadgetId, selectors, engine ?? "chromium");
+          let output = jsonToolResultText({
+            ...(report as Record<string, unknown>),
+            screenshot: {mimeType: "image/png", byteLength: screenshot.byteLength},
+          });
+          return {
+            content: [
+              {type: "text" as const, text: output},
+              {type: "image" as const, data: screenshot.toBase64(), mimeType: "image/png"},
+            ],
+            details: {output} as Partial<AiToolCall>,
+          };
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      },
     }),
 
     executeCode: defineTool({

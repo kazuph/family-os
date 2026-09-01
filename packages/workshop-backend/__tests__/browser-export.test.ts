@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const launch = vi.hoisted(() => vi.fn());
 vi.mock("@cloudflare/puppeteer", () => ({ launch }));
 
-const { BrowserRpcTransport, limitStream, renderGadgetPdf } =
+const { BrowserRpcTransport, limitStream, renderGadgetPdf, verifyGadgetUi } =
     await import("../src/browser-export.js");
 
 type Harness = {
@@ -22,9 +22,12 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let pdfRequested = false;
   let renderSettled = false;
 
+  let listeners = new Map<string, ((value: any) => void)[]>();
   let page = {
     setRequestInterception: async () => {},
-    on: () => {},
+    on: (name: string, listener: (value: any) => void) => {
+      listeners.set(name, [...(listeners.get(name) ?? []), listener]);
+    },
     goto: async () => {},
     mainFrame: () => ({}),
     emulateMediaType: async () => {},
@@ -33,6 +36,18 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
         clientInitialized = true;
         renderSettled = fn.toString().includes("MutationObserver");
         return Promise.resolve();
+      }
+      if (fn.toString().includes("requestedSelectors")) {
+        listeners.get("console")?.forEach(listener => listener({
+          type: () => "warn",
+          text: () => "layout warning",
+        }));
+        return Promise.resolve({
+          dom: {title: "Rendered Gadget", landmarks: [{tag: "main", text: "Hello"}]},
+          selectors: [{selector: "canvas", count: 1}],
+          images: {total: 1, loaded: 1, failed: []},
+          canvases: [{width: 300, height: 150, hasPixels: true, frameChanged: true}],
+        });
       }
       if (fn.toString().includes("document.title")) {
         documentTitle = typeof args[0] === "string" ? args[0] : undefined;
@@ -53,14 +68,16 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
         },
       });
     },
+    screenshot: async () => new Uint8Array([137, 80, 78, 71]),
   };
 
-  launch.mockResolvedValue({
+  let browser = {
     newPage: async () => page,
     close: async () => {
       browserClosed = true;
     },
-  });
+  };
+  launch.mockResolvedValue(browser);
 
   let gadget = {
     [Symbol.dispose]: () => {
@@ -75,7 +92,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     pdfRequested: () => pdfRequested,
     renderSettled: () => renderSettled,
   };
-  return { gadget, harness };
+  return { gadget, harness, browser };
 }
 
 function render(pdfChunks?: string[], closePdf = true) {
@@ -216,5 +233,48 @@ describe("renderGadgetPdf", () => {
       { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
     )).rejects.toThrow("no browser available");
     expect(gadgetDisposed).toBe(true);
+  });
+});
+
+describe("verifyGadgetUi", () => {
+  it("returns browser diagnostics and a PNG while releasing the browser", async () => {
+    let {gadget, harness} = makeHarness();
+
+    let result = await verifyGadgetUi(
+      {} as BrowserRun,
+      "export default {}",
+      gadget as never,
+      ["canvas"],
+      "chromium",
+    );
+
+    expect(result).toMatchObject({
+      engine: "chromium",
+      selectors: [{selector: "canvas", count: 1}],
+      images: {total: 1, loaded: 1, failed: []},
+      console: [{level: "warning", text: "layout warning"}],
+      pageErrors: [],
+      canvases: [{hasPixels: true, frameChanged: true}],
+    });
+    expect(result.screenshot).toEqual(new Uint8Array([137, 80, 78, 71]));
+    expect(harness.browserClosed()).toBe(true);
+  });
+
+  it("opts Kitesurf sessions in without changing Chromium requests", async () => {
+    let requestedUrl = "";
+    let binding = {
+      fetch(input: RequestInfo | URL) {
+        requestedUrl = new Request(input).url;
+        return Promise.resolve(new Response(JSON.stringify({sessionId: "test"})));
+      },
+    } as BrowserRun;
+    let {gadget, browser} = makeHarness();
+    launch.mockImplementationOnce(async (endpoint: {fetch: typeof fetch}) => {
+      await endpoint.fetch("https://fake.host/v1/devtools/browser?keep_alive=10000");
+      return browser;
+    });
+
+    await verifyGadgetUi(binding, "export default {}", gadget as never, [], "kitesurf");
+    expect(requestedUrl).toContain("browser=kitesurf");
   });
 });

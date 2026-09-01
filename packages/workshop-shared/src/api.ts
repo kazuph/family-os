@@ -2334,6 +2334,16 @@ export type AiToolCall = {
   // Output, if the code actually ran. (Otherwise, `error` should be present.)
   output?: string;
 } | {
+  toolName: "browserVerify";
+  input: {
+    gadget: string;
+    selectors: string[];
+    engine?: "chromium" | "kitesurf";
+  };
+
+  // JSON report without screenshot bytes. The live result also includes the PNG as image content.
+  output?: string;
+} | {
   toolName: "giveUp";
   input: {
     error: string;
