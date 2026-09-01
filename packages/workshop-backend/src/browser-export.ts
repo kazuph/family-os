@@ -427,8 +427,19 @@ export async function verifyGadgetUi(
         image.addEventListener("error", resolve, {once: true});
       })));
       let canvasElements = Array.from(browser.document.querySelectorAll("canvas"));
-      let before = canvasElements.map(canvas => canvas.toDataURL());
-      await new Promise<void>(resolve => browser.setTimeout(resolve, frameSampleMs));
+      let canvases = [];
+      for (let canvas of canvasElements) {
+        canvas.scrollIntoView({block: "center"});
+        await new Promise<void>(resolve => browser.setTimeout(resolve, frameSampleMs));
+        let before = canvas.toDataURL();
+        await new Promise<void>(resolve => browser.setTimeout(resolve, frameSampleMs));
+        let blank = browser.document.createElement("canvas");
+        blank.width = canvas.width;
+        blank.height = canvas.height;
+        canvases.push({width: canvas.width, height: canvas.height,
+          hasPixels: canvas.toDataURL() !== blank.toDataURL(),
+          frameChanged: before !== canvas.toDataURL()});
+      }
       return {
         dom: {
           title: browser.document.title,
@@ -449,14 +460,7 @@ export async function verifyGadgetUi(
           failed: images.filter(image => !image.complete || image.naturalWidth === 0)
               .map(image => ({src: image.currentSrc || image.src, alt: image.alt})),
         },
-        canvases: canvasElements.map((canvas, index) => {
-          let blank = browser.document.createElement("canvas");
-          blank.width = canvas.width;
-          blank.height = canvas.height;
-          let hasPixels = canvas.toDataURL() !== blank.toDataURL();
-          return {width: canvas.width, height: canvas.height, hasPixels,
-            frameChanged: before[index] !== canvas.toDataURL()};
-        }),
+        canvases,
       };
     }, {requestedSelectors: selectors, frameSampleMs: DOM_SETTLE_MS}));
     phase = "capturing the screenshot";
