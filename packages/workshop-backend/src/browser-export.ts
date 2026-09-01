@@ -2,6 +2,7 @@ import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
+import { MAX_CHAT_ATTACHMENT_BYTES } from "./chat-attachment-validation";
 
 type BrowserExportLogFields = {
   event?: string;
@@ -407,9 +408,9 @@ export async function verifyGadgetUi(
         }),
       };
     }, selectors));
-    let png = await deadline.race(opened.page.screenshot({type: "png", fullPage: true}));
-    if (png.byteLength > MAX_EXPORT_BYTES) {
-      throw new Error(`Gadget screenshots may not exceed ${MAX_EXPORT_BYTES} bytes.`);
+    let png = await deadline.race(opened.page.screenshot({type: "png"}));
+    if (png.byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
+      throw new Error(`Gadget screenshots may not exceed ${MAX_CHAT_ATTACHMENT_BYTES} bytes.`);
     }
     return {...observed, engine, console: consoleMessages, pageErrors,
       screenshot: new Uint8Array(png)};
