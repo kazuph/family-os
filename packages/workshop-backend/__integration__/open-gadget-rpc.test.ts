@@ -176,8 +176,8 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
 describe("user-DO reset flags", () => {
   it("a tagged User DO reset is retried without bypassing the Family generation guard", async () => {
     const connection = await connectAdult(600);
-    using publicApi = connection.publicApi;
-    using family = connection.family;
+    using _publicApi = connection.publicApi;
+    using _family = connection.family;
     using authenticated = connection.authenticated;
 
     expect(await authenticated.listModels()).toBeInstanceOf(Array);
@@ -226,8 +226,8 @@ describe("user-DO reset flags", () => {
 describe("workspace session across a user-DO-only reset", () => {
   it("chat, models, and gadget capabilities survive the user DO resetting", async () => {
     const connection = await connectAdult(700);
-    using publicApi = connection.publicApi;
-    using family = connection.family;
+    using _publicApi = connection.publicApi;
+    using _family = connection.family;
     using authenticated = connection.authenticated;
     using workspace = await authenticated.newGadget();
 
