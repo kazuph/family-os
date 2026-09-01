@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, type ChatAttachmentRef, isTextLikeAttachmentMimeType, validateBindingName, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -284,6 +284,12 @@ export interface AgentHooks {
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
                    onOutputText?: (delta: string) => void): Promise<string>;
+  verifyGadgetUi(chatId: number, gadgetId: WorkpieceId, selectors: string[],
+                 engine: "chromium" | "kitesurf"): Promise<{
+    report: unknown;
+    screenshot: Uint8Array;
+  }>;
+  saveAgentAttachment(chatId: number, attachment: ChatAttachmentRef, data: Uint8Array): void;
   activeAgentCallbackCount(chatId: number): number;
   rejectAllAgentCallbacks(chatId: number, error: string): void;
   consumeCapturedActions(chatId: number)
@@ -443,6 +449,14 @@ document.body.appendChild(document.createTextNode(greeting));
 \`\`\`
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
+
+After writing or changing client.js, ALWAYS call \`browserVerify\` before reporting completion. Pass
+CSS selectors for the UI elements the task requires. The result contains a concise DOM landmark
+summary, counts for those selectors, image load totals and failed sources, console warnings and
+errors, uncaught page exceptions, canvas pixel/frame diagnostics, and a PNG screenshot. Inspect the
+screenshot as well as the structured report. A UI verification passes only when console errors and
+page exceptions are both zero, every image loaded, and every expected selector has the required
+elements. Fix failures and run \`browserVerify\` again; do not claim that an unverified UI works.
 
 Every Gadget UI can be exported to PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. When asked to support or improve PDF export, only add standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the PDF remains readable.
 
@@ -1752,6 +1766,12 @@ export async function runAgent(
                 case "executeCode":
                   toolOutput = {text: toolCall.output!};
                   break;
+                case "browserVerify":
+                  if (toolCall.output === undefined) {
+                    throw new Error("browserVerify tool call in log is missing output");
+                  }
+                  toolOutput = {text: toolCall.output};
+                  break;
                 case "giveUp":
                   toolOutput = {text: jsonToolResultText({rejected: true})};
                   break;
@@ -2398,6 +2418,8 @@ export async function runAgent(
     content: [{type: "text" as const, text}],
     details: notes,
   });
+  let generatedAttachments: ChatAttachmentRef[] = [];
+  let generatedAttachmentData = new Map<string, Uint8Array>();
 
   // Schema fragment for the file tools' workpiece reference. Note that although historical logs
   // allow these tool calls to omit this param, is is required in all new tool calls, hence we do
@@ -2810,6 +2832,58 @@ export async function runAgent(
       }
     }),
 
+    browserVerify: defineTool({
+      name: "browserVerify",
+      label: "Verify UI in browser",
+      description:
+          "Render a Gadget's current client.js in Browser Run. Returns a DOM summary, selector " +
+          "counts, image load failures, console warnings/errors, page exceptions, canvas frame " +
+          "diagnostics, and a PNG screenshot. Use this after every client.js change and fix all " +
+          "reported failures before finishing.",
+      parameters: Type.Object({
+        gadget: workpieceParam,
+        selectors: Type.Array(Type.String(), {
+          description: "CSS selectors whose matching element counts should be checked.",
+        }),
+        engine: Type.Optional(Type.Union([
+          Type.Literal("chromium"),
+          Type.Literal("kitesurf"),
+        ], {description: "Browser Run engine. Defaults to chromium."})),
+      }),
+      execute: async (toolCallId, {gadget, selectors, engine}) => {
+        try {
+          flushCapturedYdocChanges();
+          let gadgetId = resolveToolWorkpieceId(gadget);
+          if (gadgetId === undefined) throw new Error("There is no Gadget to verify.");
+          let {report, screenshot} = await hooks.verifyGadgetUi(
+              chatId, gadgetId, selectors, engine ?? "chromium");
+          let attachment: ChatAttachmentRef = {
+            id: crypto.randomUUID(),
+            mimeType: "image/png",
+            name: `browser-verify-${toolCallId}.png`,
+            size: screenshot.byteLength,
+          };
+          generatedAttachments.push(attachment);
+          generatedAttachmentData.set(attachment.id, screenshot);
+          let output = jsonToolResultText({
+            ...(report as Record<string, unknown>),
+            screenshot: {attachmentId: attachment.id, mimeType: attachment.mimeType,
+              byteLength: screenshot.byteLength},
+          });
+          return {
+            content: [
+              {type: "text" as const, text: output},
+              {type: "image" as const, data: screenshot.toBase64(), mimeType: "image/png"},
+            ],
+            details: {output} as Partial<AiToolCall>,
+          };
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      },
+    }),
+
     executeCode: defineTool({
       name: "executeCode",
       label: "Execute code",
@@ -3133,6 +3207,7 @@ export async function runAgent(
             type: "message",
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
+            ...(generatedAttachments.length > 0 ? {attachments: generatedAttachments} : {}),
           };
           let reasoning = message.content
               .flatMap(block =>
@@ -3203,9 +3278,15 @@ export async function runAgent(
           msgs.push(cr);
         }
 
+        for (let attachment of generatedAttachments) {
+          hooks.saveAgentAttachment(
+              chatId, attachment, generatedAttachmentData.get(attachment.id)!);
+        }
+        generatedAttachmentData.clear();
         hooks.addChatMessages(chatId, author, msgs, message.usage.totalTokens,
             handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute,
             message.usage.cost.total);
+        generatedAttachments = [];
 
         // Reset per-step streaming state.
         toolCallNotes.clear();

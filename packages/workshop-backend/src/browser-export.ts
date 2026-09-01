@@ -2,10 +2,26 @@ import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
+import { MAX_CHAT_ATTACHMENT_BYTES } from "./chat-attachment-validation";
 
 type BrowserExportLogFields = {
   event?: string;
   error?: unknown;
+};
+
+/** Browser Run engine used to render a Gadget UI. */
+export type GadgetBrowserEngine = "chromium" | "kitesurf";
+
+/** Browser-observed state returned after rendering a Gadget UI. */
+export type GadgetUiVerification = {
+  engine: GadgetBrowserEngine;
+  dom: {title: string; landmarks: {tag: string; text: string; id?: string; className?: string}[]};
+  selectors: {selector: string; count?: number; error?: string}[];
+  images: {total: number; loaded: number; failed: {src: string; alt: string}[]};
+  console: {level: "error" | "warning"; text: string}[];
+  pageErrors: string[];
+  canvases: {width: number; height: number; hasPixels: boolean; frameChanged: boolean}[];
+  screenshot: Uint8Array;
 };
 
 const logger = createLogger<BrowserExportLogFields>({ component: "workshop.browser-export" });
@@ -151,6 +167,18 @@ delete globalThis.__workshopExportRuntime;
 </html>`;
 }
 
+function browserEndpoint(binding: BrowserRun, engine: GadgetBrowserEngine): BrowserRun {
+  if (engine === "chromium") return binding;
+  return {
+    fetch(input: RequestInfo | URL, init?: RequestInit) {
+      let request = new Request(input, init);
+      let url = new URL(request.url);
+      if (url.pathname === "/v1/devtools/browser") url.searchParams.set("browser", engine);
+      return binding.fetch(new Request(url, request));
+    },
+  } as BrowserRun;
+}
+
 /** Limits the size of the exported file streamed back to the client. */
 export function limitStream(
   source: ReadableStream<Uint8Array>,
@@ -233,6 +261,165 @@ async function waitForDomSettled(page: Page): Promise<void> {
   }, DOM_SETTLE_MS);
 }
 
+type RenderedGadget = {
+  page: Page;
+  release(): Promise<void>;
+};
+
+async function openRenderedGadget(
+  browserBinding: BrowserRun,
+  clientCode: string,
+  gadget: RpcStub<any>,
+  engine: GadgetBrowserEngine,
+  deadline: ReturnType<typeof createDeadline>,
+  observePage?: (page: Page) => void,
+): Promise<RenderedGadget> {
+  let launchPromise = launch(browserEndpoint(browserBinding, engine));
+  let browser: Awaited<ReturnType<typeof launch>>;
+  try {
+    browser = await deadline.race(launchPromise);
+  } catch (error) {
+    gadget[Symbol.dispose]();
+    void launchPromise.then(closeBrowser, () => {});
+    throw error;
+  }
+
+  let sessionCloser: RpcStub<any> | undefined;
+  let releasePromise: Promise<void> | undefined;
+  let release = () => releasePromise ??= (async () => {
+    deadline.clear();
+    if (sessionCloser) sessionCloser[Symbol.dispose]();
+    else gadget[Symbol.dispose]();
+    await closeBrowser(browser);
+  })();
+  deadline.onExpire(release);
+
+  try {
+    let page = await deadline.race(browser.newPage());
+    observePage?.(page);
+    await deadline.race(page.setRequestInterception(true));
+    page.on("request", request => {
+      let url = request.url();
+      if (url === EXPORT_DOCUMENT_URL && request.isNavigationRequest() &&
+          request.frame() === page.mainFrame()) {
+        void request.respond({
+          status: 200,
+          contentType: "text/html",
+          headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
+          body: makeExportHtml(clientCode),
+        });
+      } else if (url === "about:blank" || url.startsWith("data:") || url.startsWith("blob:")) {
+        void request.continue();
+      } else {
+        void request.abort();
+      }
+    });
+    await deadline.race(page.goto(EXPORT_DOCUMENT_URL, {waitUntil: "load"}));
+    let transport = new BrowserRpcTransport(page);
+    page.on("close", () => transport.abort(new Error("Browser page closed.")));
+    let rpcSession = new RpcSession(transport, gadget);
+    sessionCloser = rpcSession.getRemoteMain();
+    await deadline.race(waitForDomSettled(page));
+    return {page, release};
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+/** Renders a Gadget in Browser Run and returns diagnostics plus a PNG screenshot. */
+export async function verifyGadgetUi(
+  browserBinding: BrowserRun,
+  clientCode: string,
+  gadget: RpcStub<any>,
+  selectors: string[],
+  engine: GadgetBrowserEngine = "chromium",
+): Promise<GadgetUiVerification> {
+  let deadline = createDeadline(MAX_EXPORT_DURATION_MS, "Browser verification timed out.");
+  let consoleMessages: GadgetUiVerification["console"] = [];
+  let pageErrors: string[] = [];
+  let opened: RenderedGadget | undefined;
+  try {
+    opened = await openRenderedGadget(browserBinding, clientCode, gadget, engine, deadline, page => {
+      page.on("console", message => {
+        let type = message.type();
+        if (type === "error" || type === "warn") {
+          consoleMessages.push({level: type === "warn" ? "warning" : type, text: message.text()});
+        }
+      });
+      page.on("pageerror", error => pageErrors.push(error.message));
+    });
+    let observed = await deadline.race(opened.page.evaluate(async requestedSelectors => {
+      let browser = globalThis as unknown as {
+        document: {
+          title: string;
+          images: ArrayLike<{
+            complete: boolean; naturalWidth: number; currentSrc: string; src: string; alt: string;
+            addEventListener(type: string, listener: () => void, options: {once: boolean}): void;
+          }>;
+          querySelectorAll(selector: string): ArrayLike<any>;
+          createElement(tag: "canvas"): any;
+        };
+        requestAnimationFrame(callback: () => void): void;
+      };
+      let selectorCounts = requestedSelectors.map(selector => {
+        try {
+          return {selector, count: browser.document.querySelectorAll(selector).length};
+        } catch (error) {
+          return {selector, error: error instanceof Error ? error.message : String(error)};
+        }
+      });
+      let images = Array.from(browser.document.images);
+      await Promise.all(images.map(image => image.complete ? undefined : new Promise<void>(resolve => {
+        image.addEventListener("load", resolve, {once: true});
+        image.addEventListener("error", resolve, {once: true});
+      })));
+      let canvasElements = Array.from(browser.document.querySelectorAll("canvas"));
+      let before = canvasElements.map(canvas => canvas.toDataURL());
+      await new Promise<void>(resolve =>
+        browser.requestAnimationFrame(() => browser.requestAnimationFrame(() => resolve())));
+      return {
+        dom: {
+          title: browser.document.title,
+          landmarks: Array.from(browser.document.querySelectorAll(
+              "main,nav,header,footer,article,section,h1,h2,h3,h4,h5,h6,form,button"), element => ({
+            tag: element.tagName.toLowerCase(),
+            text: element.matches("h1,h2,h3,h4,h5,h6,button")
+              ? (element.innerText || element.textContent || "").trim()
+              : "",
+            ...(element.id ? {id: element.id} : {}),
+            ...(element.className ? {className: element.className} : {}),
+          })),
+        },
+        selectors: selectorCounts,
+        images: {
+          total: images.length,
+          loaded: images.filter(image => image.complete && image.naturalWidth > 0).length,
+          failed: images.filter(image => !image.complete || image.naturalWidth === 0)
+              .map(image => ({src: image.currentSrc || image.src, alt: image.alt})),
+        },
+        canvases: canvasElements.map((canvas, index) => {
+          let blank = browser.document.createElement("canvas");
+          blank.width = canvas.width;
+          blank.height = canvas.height;
+          let hasPixels = canvas.toDataURL() !== blank.toDataURL();
+          return {width: canvas.width, height: canvas.height, hasPixels,
+            frameChanged: before[index] !== canvas.toDataURL()};
+        }),
+      };
+    }, selectors));
+    let png = await deadline.race(opened.page.screenshot({type: "png"}));
+    if (png.byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
+      throw new Error(`Gadget screenshots may not exceed ${MAX_CHAT_ATTACHMENT_BYTES} bytes.`);
+    }
+    return {...observed, engine, console: consoleMessages, pageErrors,
+      screenshot: new Uint8Array(png)};
+  } finally {
+    if (opened) await opened.release();
+    else deadline.clear();
+  }
+}
+
 /**
  * Renders a Gadget's UI as PDF in a remote browser and streams the bytes back.
  *
@@ -247,16 +434,11 @@ export async function renderGadgetPdf(
   gadget: RpcStub<any>,
 ): Promise<ReadableStream<Uint8Array>> {
   let deadline = createDeadline(MAX_EXPORT_DURATION_MS, "Browser export timed out.");
-
-  let launchPromise = launch(browserBinding);
-  let browser: Awaited<ReturnType<typeof launch>>;
+  let opened: RenderedGadget;
   try {
-    browser = await deadline.race(launchPromise);
+    opened = await openRenderedGadget(browserBinding, clientCode, gadget, "chromium", deadline);
   } catch (error) {
     deadline.clear();
-    gadget[Symbol.dispose]();
-    // A timed-out launch cannot be cancelled. Close it if it eventually produces a browser.
-    void launchPromise.then(closeBrowser, () => {});
     logger.warn("failed to launch browser for gadget export", {
       event: "gadget.export.browser.launch.failed",
       error,
@@ -264,69 +446,25 @@ export async function renderGadgetPdf(
     throw error;
   }
 
-  let sessionCloser: RpcStub<any> | undefined;
-  let releasePromise: Promise<void> | undefined;
-  let release = () => {
-    if (!releasePromise) {
-      releasePromise = (async () => {
-        deadline.clear();
-        if (sessionCloser) {
-          sessionCloser[Symbol.dispose]();
-        } else {
-          // RpcSession takes ownership of its local main object. Before it exists, ownership remains
-          // here and setup failures must release the stub directly.
-          gadget[Symbol.dispose]();
-        }
-        await closeBrowser(browser);
-      })();
-    }
-    return releasePromise;
-  };
-  deadline.onExpire(release);
-
   try {
     let source = await deadline.race((async () => {
-      let page = await browser.newPage();
-      await page.setRequestInterception(true);
-      page.on("request", (request) => {
-        let url = request.url();
-        if (url === EXPORT_DOCUMENT_URL && request.isNavigationRequest() &&
-            request.frame() === page.mainFrame()) {
-          void request.respond({
-            status: 200,
-            contentType: "text/html",
-            headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-            body: makeExportHtml(clientCode),
-          });
-        } else if (url === "about:blank" || url.startsWith("data:") || url.startsWith("blob:")) {
-          void request.continue();
-        } else {
-          void request.abort();
-        }
-      });
-      await page.goto(EXPORT_DOCUMENT_URL, { waitUntil: "load" });
-      let transport = new BrowserRpcTransport(page);
-      page.on("close", () => transport.abort(new Error("Browser page closed.")));
-      let rpcSession = new RpcSession(transport, gadget);
-      sessionCloser = rpcSession.getRemoteMain();
-      await waitForDomSettled(page);
-      await page.emulateMediaType("print");
-      await page.evaluate(title => {
+      await opened.page.emulateMediaType("print");
+      await opened.page.evaluate(title => {
         let browser = globalThis as unknown as { document: { title: string } };
         browser.document.title = title;
       }, documentTitle);
-      return page.createPDFStream({
+      return opened.page.createPDFStream({
         preferCSSPageSize: true,
         printBackground: true,
         waitForFonts: true,
       });
     })());
-    return releaseWhenSettled(limitStream(source, MAX_EXPORT_BYTES), release);
+    return releaseWhenSettled(limitStream(source, MAX_EXPORT_BYTES), opened.release);
   } catch (error) {
     // Deliberately omits the caught value: failures here can carry Gadget-authored exception text,
     // which must not reach logs or the external issue Reporter.
     logger.warn("failed to render gadget export", { event: "gadget.export.render.failed" });
-    await release();
+    await opened.release();
     throw error;
   }
 }

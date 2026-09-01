@@ -47,7 +47,12 @@ import {
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
-import { renderGadgetPdf } from "./browser-export";
+import {
+  renderGadgetPdf,
+  verifyGadgetUi,
+  type GadgetBrowserEngine,
+  type GadgetUiVerification,
+} from "./browser-export";
 import { readUiBundle } from "./ui-bundle";
 import {
   CODE_SNAPSHOT_PART_BYTES,
@@ -5449,6 +5454,31 @@ class OverseerImpl implements AgentHooks {
 
   #codeModeResolvers = new Map<string, (trace: TraceItem) => void>();
   #codeModeOutputSubscribers = new Map<string, (delta: string) => void>();
+
+  async verifyGadgetUi(chatId: number, gadgetId: WorkpieceId, selectors: string[],
+                       engine: GadgetBrowserEngine): Promise<{
+    report: Omit<GadgetUiVerification, "screenshot">;
+    screenshot: Uint8Array;
+  }> {
+    let browser = this.env.BROWSER;
+    if (!browser) throw new Error("Browser verification is not configured for this deployment.");
+    let gadgetClient = new GadgetClientImpl(
+        this, gadgetId, this.#ownerUserStub());
+    let bundle = await gadgetClient.getUiBundle(chatId);
+    if (!bundle) throw new Error("This Gadget does not have a client.js UI to verify.");
+    let gadget = await this.getGadgetFacet(gadgetId, chatId);
+    let {screenshot, ...report} = await verifyGadgetUi(
+        browser, bundle.jsCode, gadget, selectors, engine);
+    return {report, screenshot};
+  }
+
+  saveAgentAttachment(chatId: number, attachment: ChatAttachmentRef, data: Uint8Array): void {
+    this.storage.chatAttachmentContent.put({
+      fileId: validateChatAttachmentId(attachment.id),
+      data,
+      state: {type: "committed", chatId},
+    });
+  }
 
   async executeCodeMode(chatId: number, code: string,
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
