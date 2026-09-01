@@ -395,7 +395,8 @@ export async function verifyGadgetUi(
       page.on("pageerror", error => pageErrors.push(error.message));
     }, options, nextPhase => { phase = nextPhase; });
     phase = "collecting browser diagnostics";
-    let observed = await deadline.race(opened.page.evaluate(async requestedSelectors => {
+    let observed = await deadline.race(opened.page.evaluate(async ({requestedSelectors,
+      frameSampleMs}) => {
       let browser = globalThis as unknown as {
         document: {
           title: string;
@@ -408,6 +409,7 @@ export async function verifyGadgetUi(
           createElement(tag: "canvas"): any;
         };
         requestAnimationFrame(callback: () => void): void;
+        setTimeout(callback: () => void, delay: number): void;
       };
       let selectorCounts = requestedSelectors.map(selector => {
         try {
@@ -426,8 +428,7 @@ export async function verifyGadgetUi(
       })));
       let canvasElements = Array.from(browser.document.querySelectorAll("canvas"));
       let before = canvasElements.map(canvas => canvas.toDataURL());
-      await new Promise<void>(resolve =>
-        browser.requestAnimationFrame(() => browser.requestAnimationFrame(() => resolve())));
+      await new Promise<void>(resolve => browser.setTimeout(resolve, frameSampleMs));
       return {
         dom: {
           title: browser.document.title,
@@ -457,7 +458,7 @@ export async function verifyGadgetUi(
             frameChanged: before[index] !== canvas.toDataURL()};
         }),
       };
-    }, selectors));
+    }, {requestedSelectors: selectors, frameSampleMs: DOM_SETTLE_MS}));
     phase = "capturing the screenshot";
     let png = await deadline.race(opened.page.screenshot({type: "png"}));
     if (png.byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
