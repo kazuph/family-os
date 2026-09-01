@@ -7226,6 +7226,12 @@ function ChatInterface({
                               : -1;
                             return (
                           <div className="min-w-0 w-full max-w-[860px] space-y-2">
+                            {msg.attachments && msg.attachments.length > 0 && (
+                              <ChatAttachmentGrid
+                                attachments={msg.attachments}
+                                onDownload={(attachment) => { void downloadChatAttachment(msg.chatId, attachment); }}
+                              />
+                            )}
                             <div className="group/agentMessage relative space-y-1.5">
                               {showReasoning && (
                                 <ThinkingTraceRow reasoning={msg.reasoning!} />

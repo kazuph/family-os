@@ -52,6 +52,7 @@ import {
   verifyGadgetUi,
   type GadgetBrowserEngine,
   type GadgetUiVerification,
+  type GadgetUiVerificationOptions,
 } from "./browser-export";
 import { readUiBundle } from "./ui-bundle";
 import {
@@ -5456,7 +5457,8 @@ class OverseerImpl implements AgentHooks {
   #codeModeOutputSubscribers = new Map<string, (delta: string) => void>();
 
   async verifyGadgetUi(chatId: number, gadgetId: WorkpieceId, selectors: string[],
-                       engine: GadgetBrowserEngine): Promise<{
+                       engine: GadgetBrowserEngine,
+                       options: GadgetUiVerificationOptions): Promise<{
     report: Omit<GadgetUiVerification, "screenshot">;
     screenshot: Uint8Array;
   }> {
@@ -5466,9 +5468,14 @@ class OverseerImpl implements AgentHooks {
         this, gadgetId, this.#ownerUserStub());
     let bundle = await gadgetClient.getUiBundle(chatId);
     if (!bundle) throw new Error("This Gadget does not have a client.js UI to verify.");
+    // Verification owns a separate browser-side RPC session. Start it from a clean facet so an
+    // earlier interrupted bridge cannot be reused by either the verifier or the normal UI.
+    this.ctx.facets.abort(this.gadgetFacetName(gadgetId),
+        new Error("Gadget restarted for browser verification."));
+    this.#runningChatIds.delete(gadgetId);
     let gadget = await this.getGadgetFacet(gadgetId, chatId);
     let {screenshot, ...report} = await verifyGadgetUi(
-        browser, bundle.jsCode, gadget, selectors, engine);
+        browser, bundle.jsCode, gadget, selectors, engine, options);
     return {report, screenshot};
   }
 

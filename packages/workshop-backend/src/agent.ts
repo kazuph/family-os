@@ -24,6 +24,7 @@ import {
 } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import { UI_ASSET_PREFIX } from "./ui-bundle";
+import type { GadgetUiVerificationOptions } from "./browser-export";
 import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
   findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
@@ -285,7 +286,7 @@ export interface AgentHooks {
                    bindings: Record<string, ChatBindingEntry>,
                    onOutputText?: (delta: string) => void): Promise<string>;
   verifyGadgetUi(chatId: number, gadgetId: WorkpieceId, selectors: string[],
-                 engine: "chromium" | "kitesurf"): Promise<{
+                 engine: "chromium" | "kitesurf", options: GadgetUiVerificationOptions): Promise<{
     report: unknown;
     screenshot: Uint8Array;
   }>;
@@ -456,7 +457,9 @@ summary, counts for those selectors, image load totals and failed sources, conso
 errors, uncaught page exceptions, canvas pixel/frame diagnostics, and a PNG screenshot. Inspect the
 screenshot as well as the structured report. A UI verification passes only when console errors and
 page exceptions are both zero, every image loaded, and every expected selector has the required
-elements. Fix failures and run \`browserVerify\` again; do not claim that an unverified UI works.
+elements. For an asynchronously-rendered view, pass waitForSelector for an element that proves the
+view is ready. Pass locationHash when the requested UI lives at a hash route. Fix failures and run
+\`browserVerify\` again; do not claim that an unverified UI works.
 
 Every Gadget UI can be exported to PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. When asked to support or improve PDF export, only add standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the PDF remains readable.
 
@@ -2849,14 +2852,21 @@ export async function runAgent(
           Type.Literal("chromium"),
           Type.Literal("kitesurf"),
         ], {description: "Browser Run engine. Defaults to chromium."})),
+        waitForSelector: Type.Optional(Type.String({
+          description: "Wait for this CSS selector before collecting diagnostics.",
+        })),
+        locationHash: Type.Optional(Type.String({
+          description: "Initial URL hash for a hash-routed Gadget, without changing its state.",
+        })),
       }),
-      execute: async (toolCallId, {gadget, selectors, engine}) => {
+      execute: async (toolCallId, {gadget, selectors, engine, waitForSelector, locationHash}) => {
         try {
           flushCapturedYdocChanges();
           let gadgetId = resolveToolWorkpieceId(gadget);
           if (gadgetId === undefined) throw new Error("There is no Gadget to verify.");
           let {report, screenshot} = await hooks.verifyGadgetUi(
-              chatId, gadgetId, selectors, engine ?? "chromium");
+              chatId, gadgetId, selectors, engine ?? "chromium",
+              {waitForSelector, locationHash});
           let attachment: ChatAttachmentRef = {
             id: crypto.randomUUID(),
             mimeType: "image/png",

@@ -10,8 +10,10 @@ type Harness = {
   browserClosed: () => boolean;
   clientInitialized: () => boolean;
   gadgetDisposed: () => boolean;
+  navigatedUrl: () => string | undefined;
   pdfRequested: () => boolean;
   renderSettled: () => boolean;
+  waitedSelector: () => string | undefined;
 };
 
 function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
@@ -19,8 +21,10 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let clientInitialized = false;
   let documentTitle: string | undefined;
   let gadgetDisposed = false;
+  let navigatedUrl: string | undefined;
   let pdfRequested = false;
   let renderSettled = false;
+  let waitedSelector: string | undefined;
 
   let listeners = new Map<string, ((value: any) => void)[]>();
   let page = {
@@ -28,7 +32,8 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     on: (name: string, listener: (value: any) => void) => {
       listeners.set(name, [...(listeners.get(name) ?? []), listener]);
     },
-    goto: async () => {},
+    goto: async (url: string) => { navigatedUrl = url; },
+    waitForSelector: async (selector: string) => { waitedSelector = selector; },
     mainFrame: () => ({}),
     emulateMediaType: async () => {},
     evaluate: (fn: (...args: never[]) => unknown, ...args: unknown[]) => {
@@ -89,8 +94,10 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     browserClosed: () => browserClosed,
     clientInitialized: () => clientInitialized,
     gadgetDisposed: () => gadgetDisposed,
+    navigatedUrl: () => navigatedUrl,
     pdfRequested: () => pdfRequested,
     renderSettled: () => renderSettled,
+    waitedSelector: () => waitedSelector,
   };
   return { gadget, harness, browser };
 }
@@ -258,6 +265,7 @@ describe("verifyGadgetUi", () => {
     });
     expect(result.screenshot).toEqual(new Uint8Array([137, 80, 78, 71]));
     expect(harness.browserClosed()).toBe(true);
+    expect(harness.gadgetDisposed()).toBe(true);
   });
 
   it("opts Kitesurf sessions in without changing Chromium requests", async () => {
@@ -276,5 +284,21 @@ describe("verifyGadgetUi", () => {
 
     await verifyGadgetUi(binding, "export default {}", gadget as never, [], "kitesurf");
     expect(requestedUrl).toContain("browser=kitesurf");
+  });
+
+  it("navigates to a hash route and waits for an explicit readiness selector", async () => {
+    let {gadget, harness} = makeHarness();
+
+    await verifyGadgetUi(
+      {} as BrowserRun,
+      "export default {}",
+      gadget as never,
+      [],
+      "chromium",
+      {locationHash: "chapter-42", waitForSelector: "canvas"},
+    );
+
+    expect(harness.navigatedUrl()).toBe("https://gadget-export.invalid/#chapter-42");
+    expect(harness.waitedSelector()).toBe("canvas");
   });
 });

@@ -1,5 +1,5 @@
 import { launch, type Page } from "@cloudflare/puppeteer";
-import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
+import { RpcSession, RpcTarget, type RpcStub, type RpcTransport } from "capnweb";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "./chat-attachment-validation";
@@ -11,6 +11,12 @@ type BrowserExportLogFields = {
 
 /** Browser Run engine used to render a Gadget UI. */
 export type GadgetBrowserEngine = "chromium" | "kitesurf";
+
+/** Optional navigation and readiness conditions for a browser verification. */
+export type GadgetUiVerificationOptions = {
+  locationHash?: string;
+  waitForSelector?: string;
+};
 
 /** Browser-observed state returned after rendering a Gadget UI. */
 export type GadgetUiVerification = {
@@ -273,6 +279,7 @@ async function openRenderedGadget(
   engine: GadgetBrowserEngine,
   deadline: ReturnType<typeof createDeadline>,
   observePage?: (page: Page) => void,
+  options: GadgetUiVerificationOptions = {},
 ): Promise<RenderedGadget> {
   let launchPromise = launch(browserEndpoint(browserBinding, engine));
   let browser: Awaited<ReturnType<typeof launch>>;
@@ -289,7 +296,7 @@ async function openRenderedGadget(
   let release = () => releasePromise ??= (async () => {
     deadline.clear();
     if (sessionCloser) sessionCloser[Symbol.dispose]();
-    else gadget[Symbol.dispose]();
+    gadget[Symbol.dispose]();
     await closeBrowser(browser);
   })();
   deadline.onExpire(release);
@@ -314,12 +321,29 @@ async function openRenderedGadget(
         void request.abort();
       }
     });
-    await deadline.race(page.goto(EXPORT_DOCUMENT_URL, {waitUntil: "load"}));
+    let documentUrl = new URL(EXPORT_DOCUMENT_URL);
+    if (options.locationHash) documentUrl.hash = options.locationHash;
+    await deadline.race(page.goto(documentUrl.href, {waitUntil: "load"}));
     let transport = new BrowserRpcTransport(page);
     page.on("close", () => transport.abort(new Error("Browser page closed.")));
-    let rpcSession = new RpcSession(transport, gadget);
+    // Keep the browser session from taking ownership of the live facet stub as its local-main
+    // payload. Forward through a target, matching the normal sandboxed-iframe path in GadgetUI,
+    // and release each transport's capability independently.
+    let forwardingTarget = new Proxy(new RpcTarget() as any, {
+      get(target, property, receiver) {
+        if (typeof property === "symbol" || property in target) {
+          return Reflect.get(target, property, receiver);
+        }
+        return (gadget as any)[property];
+      },
+    });
+    let rpcSession = new RpcSession(transport, forwardingTarget);
     sessionCloser = rpcSession.getRemoteMain();
     await deadline.race(waitForDomSettled(page));
+    if (options.waitForSelector) {
+      await deadline.race(page.waitForSelector(options.waitForSelector));
+      await deadline.race(waitForDomSettled(page));
+    }
     return {page, release};
   } catch (error) {
     await release();
@@ -334,6 +358,7 @@ export async function verifyGadgetUi(
   gadget: RpcStub<any>,
   selectors: string[],
   engine: GadgetBrowserEngine = "chromium",
+  options: GadgetUiVerificationOptions = {},
 ): Promise<GadgetUiVerification> {
   let deadline = createDeadline(MAX_EXPORT_DURATION_MS, "Browser verification timed out.");
   let consoleMessages: GadgetUiVerification["console"] = [];
@@ -348,7 +373,7 @@ export async function verifyGadgetUi(
         }
       });
       page.on("pageerror", error => pageErrors.push(error.message));
-    });
+    }, options);
     let observed = await deadline.race(opened.page.evaluate(async requestedSelectors => {
       let browser = globalThis as unknown as {
         document: {
