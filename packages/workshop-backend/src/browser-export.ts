@@ -321,6 +321,7 @@ async function openRenderedGadget(
         void request.respond({
           status: 200,
           contentType: "text/javascript",
+          headers: {"Access-Control-Allow-Origin": "*"},
           body: EXPORT_CLIENT_PREFIX + clientCode,
         });
       } else if (url === "about:blank" || url.startsWith("data:") || url.startsWith("blob:")) {

@@ -8,6 +8,7 @@ const { BrowserRpcTransport, limitStream, renderGadgetPdf, verifyGadgetUi } =
 
 type Harness = {
   browserClosed: () => boolean;
+  clientResponseHeaders: () => Record<string, string> | undefined;
   clientResponseBody: () => string | undefined;
   clientInitialized: () => boolean;
   documentResponseBody: () => string | undefined;
@@ -20,6 +21,7 @@ type Harness = {
 
 function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let browserClosed = false;
+  let clientResponseHeaders: Record<string, string> | undefined;
   let clientResponseBody: string | undefined;
   let clientInitialized = false;
   let documentResponseBody: string | undefined;
@@ -52,7 +54,10 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
         url: () => "https://gadget-export.invalid/client.js",
         isNavigationRequest: () => false,
         frame: () => mainFrame,
-        respond: ({body}: {body: string}) => { clientResponseBody = body; },
+        respond: ({body, headers}: {body: string; headers?: Record<string, string>}) => {
+          clientResponseBody = body;
+          clientResponseHeaders = headers;
+        },
       });
     },
     waitForSelector: async (selector: string) => { waitedSelector = selector; },
@@ -114,6 +119,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
 
   let harness: Harness = {
     browserClosed: () => browserClosed,
+    clientResponseHeaders: () => clientResponseHeaders,
     clientResponseBody: () => clientResponseBody,
     clientInitialized: () => clientInitialized,
     documentResponseBody: () => documentResponseBody,
@@ -275,6 +281,7 @@ describe("verifyGadgetUi", () => {
     await verifyGadgetUi({} as BrowserRun, source, gadget as never, [], "chromium");
 
     expect(harness.clientResponseBody()).toContain(source);
+    expect(harness.clientResponseHeaders()).toEqual({"Access-Control-Allow-Origin": "*"});
     expect(harness.documentResponseBody()).not.toContain("large-readable-client");
     expect(harness.documentResponseBody()).toContain("https%3A%2F%2Fgadget-export.invalid%2Fclient.js");
   });
