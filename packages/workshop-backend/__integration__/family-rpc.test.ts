@@ -90,6 +90,19 @@ describe("Family OS Access device generation", () => {
     await onboardingApi.completeOnboarding();
     await expect(onboardingApi.isOnboardingCompleted()).resolves.toBe(true);
     await expect(onboardingApi.getPreferredModel()).resolves.toBe("deepseek-v4-flash");
+
+    using bookWorkspace = await onboardingApi.newGadgetFromBlueprint("format.book", {
+      AI: { type: "aiModel", modelId: "glm-5.3-flash" },
+    });
+    let bookMetadata = await bookWorkspace.getMetadata();
+    expect(bookMetadata.defaultGadgetId).toEqual(expect.any(Number));
+    using bookGadget = await bookWorkspace.getGadget(bookMetadata.defaultGadgetId!);
+    let bookBundle = await bookGadget.getUiBundle();
+    expect(bookBundle?.jsCode).toContain("globalThis.__gadgetAssets=");
+    expect(bookBundle?.jsCode).toContain("data:image/webp;base64,");
+    expect(bookBundle?.jsCode).toContain("gadget.getBookFiles");
+    expect(bookBundle?.jsCode).not.toContain("client.js.gz/");
+
     onboardingApi[Symbol.dispose]();
     unwrapFamilyRpcResult(await first.family.setHouseholdPasscode("123456"));
     let child = unwrapFamilyRpcResult(await first.family.createChildProfile("Child")).childProfiles[0];
