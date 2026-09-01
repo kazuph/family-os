@@ -310,7 +310,7 @@ describe("verifyGadgetUi", () => {
     expect(harness.gadgetDisposed()).toBe(true);
   });
 
-  it("opts Kitesurf sessions in without changing Chromium requests", async () => {
+  it("uses Kitesurf for the default verification engine", async () => {
     let requestedUrl = "";
     let binding = {
       fetch(input: RequestInfo | URL) {
@@ -324,7 +324,7 @@ describe("verifyGadgetUi", () => {
       return browser;
     });
 
-    await verifyGadgetUi(binding, "export default {}", gadget as never, [], "kitesurf");
+    await verifyGadgetUi(binding, "export default {}", gadget as never, []);
     expect(requestedUrl).toContain("browser=kitesurf");
   });
 

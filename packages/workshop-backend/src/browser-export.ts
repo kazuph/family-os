@@ -375,7 +375,7 @@ export async function verifyGadgetUi(
   clientCode: string,
   gadget: RpcStub<any>,
   selectors: string[],
-  engine: GadgetBrowserEngine = "chromium",
+  engine: GadgetBrowserEngine = "kitesurf",
   options: GadgetUiVerificationOptions = {},
 ): Promise<GadgetUiVerification> {
   let phase = "starting verification";

@@ -2851,7 +2851,7 @@ export async function runAgent(
         engine: Type.Optional(Type.Union([
           Type.Literal("chromium"),
           Type.Literal("kitesurf"),
-        ], {description: "Browser Run engine. Defaults to chromium."})),
+        ], {description: "Browser Run engine. Defaults to kitesurf."})),
         waitForSelector: Type.Optional(Type.String({
           description: "Wait for this CSS selector before collecting diagnostics.",
         })),
@@ -2865,7 +2865,7 @@ export async function runAgent(
           let gadgetId = resolveToolWorkpieceId(gadget);
           if (gadgetId === undefined) throw new Error("There is no Gadget to verify.");
           let {report, screenshot} = await hooks.verifyGadgetUi(
-              chatId, gadgetId, selectors, engine ?? "chromium",
+              chatId, gadgetId, selectors, engine ?? "kitesurf",
               {waitForSelector, locationHash});
           let attachment: ChatAttachmentRef = {
             id: crypto.randomUUID(),
