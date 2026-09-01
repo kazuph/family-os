@@ -61,9 +61,11 @@ const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
 
-function createDeadline(ms: number, message: string) {
+function createDeadline(ms: number, message: string | (() => string)) {
   let expired = Promise.withResolvers<never>();
-  let timer = setTimeout(() => expired.reject(new Error(message)), ms);
+  let timer = setTimeout(() => expired.reject(new Error(
+    typeof message === "function" ? message() : message,
+  )), ms);
   expired.promise.catch(() => {});
 
   return {
@@ -282,7 +284,9 @@ async function openRenderedGadget(
   deadline: ReturnType<typeof createDeadline>,
   observePage?: (page: Page) => void,
   options: GadgetUiVerificationOptions = {},
+  reportPhase: (phase: string) => void = () => {},
 ): Promise<RenderedGadget> {
+  reportPhase("launching the browser");
   let launchPromise = launch(browserEndpoint(browserBinding, engine));
   let browser: Awaited<ReturnType<typeof launch>>;
   try {
@@ -304,6 +308,7 @@ async function openRenderedGadget(
   deadline.onExpire(release);
 
   try {
+    reportPhase("opening a browser page");
     let page = await deadline.race(browser.newPage());
     observePage?.(page);
     await deadline.race(page.setRequestInterception(true));
@@ -332,6 +337,7 @@ async function openRenderedGadget(
     });
     let documentUrl = new URL(EXPORT_DOCUMENT_URL);
     if (options.locationHash) documentUrl.hash = options.locationHash;
+    reportPhase("loading the verification document");
     await deadline.race(page.goto(documentUrl.href, {waitUntil: "load"}));
     let transport = new BrowserRpcTransport(page);
     page.on("close", () => transport.abort(new Error("Browser page closed.")));
@@ -348,9 +354,12 @@ async function openRenderedGadget(
     });
     let rpcSession = new RpcSession(transport, forwardingTarget);
     sessionCloser = rpcSession.getRemoteMain();
+    reportPhase("loading the Gadget client module");
     await deadline.race(waitForDomSettled(page));
     if (options.waitForSelector) {
+      reportPhase(`waiting for selector ${options.waitForSelector}`);
       await deadline.race(page.waitForSelector(options.waitForSelector));
+      reportPhase("waiting for the rendered DOM to settle");
       await deadline.race(waitForDomSettled(page));
     }
     return {page, release};
@@ -369,7 +378,9 @@ export async function verifyGadgetUi(
   engine: GadgetBrowserEngine = "chromium",
   options: GadgetUiVerificationOptions = {},
 ): Promise<GadgetUiVerification> {
-  let deadline = createDeadline(MAX_EXPORT_DURATION_MS, "Browser verification timed out.");
+  let phase = "starting verification";
+  let deadline = createDeadline(MAX_EXPORT_DURATION_MS,
+      () => `Browser verification timed out while ${phase}.`);
   let consoleMessages: GadgetUiVerification["console"] = [];
   let pageErrors: string[] = [];
   let opened: RenderedGadget | undefined;
@@ -382,7 +393,8 @@ export async function verifyGadgetUi(
         }
       });
       page.on("pageerror", error => pageErrors.push(error.message));
-    }, options);
+    }, options, nextPhase => { phase = nextPhase; });
+    phase = "collecting browser diagnostics";
     let observed = await deadline.race(opened.page.evaluate(async requestedSelectors => {
       let browser = globalThis as unknown as {
         document: {
@@ -442,6 +454,7 @@ export async function verifyGadgetUi(
         }),
       };
     }, selectors));
+    phase = "capturing the screenshot";
     let png = await deadline.race(opened.page.screenshot({type: "png"}));
     if (png.byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
       throw new Error(`Gadget screenshots may not exceed ${MAX_CHAT_ATTACHMENT_BYTES} bytes.`);
