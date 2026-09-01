@@ -401,6 +401,7 @@ export async function verifyGadgetUi(
           title: string;
           images: ArrayLike<{
             complete: boolean; naturalWidth: number; currentSrc: string; src: string; alt: string;
+            loading: string;
             addEventListener(type: string, listener: () => void, options: {once: boolean}): void;
           }>;
           querySelectorAll(selector: string): ArrayLike<any>;
@@ -416,6 +417,9 @@ export async function verifyGadgetUi(
         }
       });
       let images = Array.from(browser.document.images);
+      // A verification page has no user scrolling to trigger lazy images. Request every image now
+      // so the report distinguishes a successful load from a genuinely broken source.
+      for (let image of images) image.loading = "eager";
       await Promise.all(images.map(image => image.complete ? undefined : new Promise<void>(resolve => {
         image.addEventListener("load", resolve, {once: true});
         image.addEventListener("error", resolve, {once: true});
