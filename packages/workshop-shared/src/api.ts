@@ -1346,7 +1346,13 @@ export const WORKERS_AI_OUTPUT_LIMIT = 32768;
  */
 export const SUGGESTED_MODELS: Record<
   AiModelProvider,
-  Record<string, {name: string, contextWindow: number, outputLimit?: number}>
+  Record<string, {
+    name: string;
+    contextWindow: number;
+    outputLimit?: number;
+    /** Input media accepted by this specific model; absent means text-only. */
+    input?: ("text" | "image")[];
+  }>
 > = {
   "opencode-go": {
     "deepseek-v4-flash": {
@@ -1366,11 +1372,13 @@ export const SUGGESTED_MODELS: Record<
     },
     "glm-5.3-flash": {
       name: "GLM-5.3 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 131_072,
+      input: ["text", "image"],
     },
     // OpenCode's public models.dev catalog lists 1,048,576 context and 131,072 output:
     // https://models.dev/api.json
     "kimi-k3": {
       name: "Kimi K3 (OpenCode Go)", contextWindow: 1_048_576, outputLimit: 131_072,
+      input: ["text", "image"],
     },
   },
   "cloudflare": {

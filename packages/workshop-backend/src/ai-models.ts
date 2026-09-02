@@ -360,15 +360,16 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
     if (!isOpenCodeGoModelId(config.model) || !env.OPENCODE_GO_API_TOKEN) {
       throw new Error("This OpenCode Go model is not configured by the deployment.");
     }
+    const suggested = SUGGESTED_MODELS["opencode-go"][config.model];
     return makeHandle({
       model: {
         id: config.model,
-        name: SUGGESTED_MODELS["opencode-go"][config.model].name,
+        name: suggested.name,
         api: "openai-completions",
         provider: "opencode-go",
         baseUrl: OPENCODE_GO_BASE_URL,
         reasoning: true,
-        input: ["text"],
+        input: suggested.input ?? ["text"],
         cost: ZERO_COST,
         ...modelTokenWindow(config, undefined),
         compat: {

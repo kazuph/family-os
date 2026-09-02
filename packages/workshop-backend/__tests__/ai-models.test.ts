@@ -123,6 +123,20 @@ describe("getModel AI Gateway routing", () => {
     );
   });
 
+  it.each([
+    ["glm-5.3-flash", ["text", "image"]],
+    ["kimi-k3", ["text", "image"]],
+    ["glm-5.3", ["text"]],
+    ["deepseek-v4-flash", ["text"]],
+  ] as const)("declares the measured input capability for %s", (model, input) => {
+    const handle = getModel(
+      env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
+      { provider: "opencode-go", model, apiToken: "" },
+      INITIATOR,
+    );
+    expect(handle.model.input).toEqual(input);
+  });
+
   it("routes DeepSeek V4 Pro directly with the deployment secret, same as Flash", async () => {
     const handle = getModel(
       env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),

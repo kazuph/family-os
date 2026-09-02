@@ -61,9 +61,11 @@ describe("OpenCode Go suggested model limits", () => {
     });
     expect(SUGGESTED_MODELS["opencode-go"]["glm-5.3-flash"]).toEqual({
       name: "GLM-5.3 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 131_072,
+      input: ["text", "image"],
     });
     expect(SUGGESTED_MODELS["opencode-go"]["kimi-k3"]).toEqual({
       name: "Kimi K3 (OpenCode Go)", contextWindow: 1_048_576, outputLimit: 131_072,
+      input: ["text", "image"],
     });
   });
 });

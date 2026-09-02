@@ -35,6 +35,11 @@ import {
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import {
+  browserVerifyImageContentForModel,
+  browserVerifyModelInstruction,
+  imageContentForModel,
+} from "./model-image-input";
+import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
   findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
   protectRetainedReverts, shouldCompactChat,
@@ -543,8 +548,8 @@ Make Gadget UIs responsive and usable on both desktop and phones by default.
 After writing or changing client.js, ALWAYS call \`browserVerify\` before reporting completion. Pass
 CSS selectors for the UI elements the task requires. The result contains a concise DOM landmark
 summary, counts for those selectors, image load totals and failed sources, console warnings and
-errors, uncaught page exceptions, canvas pixel/frame diagnostics, and a PNG screenshot. Inspect the
-screenshot as well as the structured report. A UI verification passes only when console errors and
+errors, uncaught page exceptions, canvas pixel/frame diagnostics, and a PNG screenshot. A UI
+verification passes only when console errors and
 page exceptions are both zero, every image loaded, and every expected selector has the required
 elements. For an asynchronously-rendered view, pass waitForSelector for an element that proves the
 view is ready. Pass locationHash when the requested UI lives at a hash route. Fix failures and run
@@ -1719,10 +1724,12 @@ export async function runAgent(
                 let filename = attachment.name ? ` (${attachment.name})` : "";
                 let data = await hooks.getChatAttachmentData(chatId, attachment.id);
                 if (attachment.mimeType.startsWith("image/")) {
-                  return [{
-                    type: "image",
-                    data: data.toBase64(),
-                    mimeType: attachment.mimeType,
+                  let image = imageContentForModel(
+                      handle.model, data.toBase64(), attachment.mimeType);
+                  return image ? [image] : [{
+                    type: "text",
+                    text: `\n\n[Attached image${filename} omitted — ` +
+                        `the current model does not accept image input]`,
                   }];
                 } else if (isTextLikeAttachmentMimeType(attachment.mimeType)) {
                   return [{
@@ -2488,6 +2495,9 @@ export async function runAgent(
   }
 
   let systemPrompt = `${systemPromptSlots[0]}\n\n${systemPromptSlots[1]}`;
+  if (!agentContext.spawnerConfig) {
+    systemPrompt += `\n\n${browserVerifyModelInstruction(handle.model)}`;
+  }
 
   // Some models charge their response to the same window as the prompt, so the reservation is both
   // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
@@ -2585,6 +2595,7 @@ export async function runAgent(
   let generatedAttachments: ChatAttachmentRef[] = [];
   let generatedAttachmentData = new Map<string, Uint8Array>();
   let browserVerificationCount = 0;
+  let browserVerificationModelImageCount = 0;
 
   // Schema fragment for the file tools' workpiece reference. Note that although historical logs
   // allow these tool calls to omit this param, is is required in all new tool calls, hence we do
@@ -3055,15 +3066,18 @@ export async function runAgent(
           };
           generatedAttachments.push(attachment);
           generatedAttachmentData.set(attachment.id, screenshot);
+          let modelImage = browserVerifyImageContentForModel(
+              handle.model, browserVerificationModelImageCount, () => screenshot.toBase64());
+          if (modelImage) browserVerificationModelImageCount++;
           let output = jsonToolResultText({
             ...(report as Record<string, unknown>),
             screenshot: {attachmentId: attachment.id, mimeType: attachment.mimeType,
-              byteLength: screenshot.byteLength},
+              byteLength: screenshot.byteLength, attachedToModel: modelImage !== undefined},
           });
           return {
             content: [
               {type: "text" as const, text: output},
-              {type: "image" as const, data: screenshot.toBase64(), mimeType: "image/png"},
+              ...(modelImage ? [modelImage] : []),
             ],
             details: {output} as Partial<AiToolCall>,
           };
