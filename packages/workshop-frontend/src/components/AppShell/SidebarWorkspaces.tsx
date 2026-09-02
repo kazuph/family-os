@@ -327,10 +327,12 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Lists (Favorites / Recent chats / Workspaces). Lives in the rail's scrolling middle
-// region. In collapsed mode shows a compact avatar stack.
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Lists (Favorites / Recent chats / Workspaces). Lives in the rail's scrolling middle
+ * region. In collapsed mode shows a compact avatar stack.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: boolean }) {
   const {
     search,

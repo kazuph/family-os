@@ -378,30 +378,38 @@ export interface AgentHooks {
   /** Returns the bytes of a committed attachment owned by this chat for inclusion in model input. */
   getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array>;
 
-  // Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
-  // to Workers AI. Exposed as a narrow interface (rather than handing over the whole `env`)
-  // so the dependency surface stays explicit. Throws if the workspace's sensitive-data lockdown
-  // currently prohibits sending agent-composed content to public web sites (see
-  // assertOutboundFetchAllowed).
+  /**
+   * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
+   * to Workers AI. Exposed as a narrow interface (rather than handing over the whole `env`)
+   * so the dependency surface stays explicit. Throws if the workspace's sensitive-data lockdown
+   * currently prohibits sending agent-composed content to public web sites (see
+   * assertOutboundFetchAllowed).
+   */
   getWebFetchEnv(): WebFetchEnv;
 
-  // Throws if the workspace's sensitive-data lockdown currently prohibits sending agent-composed
-  // content to public web sites. Called directly by `webSearch` (whose query, like webFetch's
-  // URL, is agent-composed and may reflect workspace content); `webFetch` gets the same check for
-  // free through getWebFetchEnv().
+  /**
+   * Throws if the workspace's sensitive-data lockdown currently prohibits sending agent-composed
+   * content to public web sites. Called directly by `webSearch` (whose query, like webFetch's
+   * URL, is agent-composed and may reflect workspace content); `webFetch` gets the same check for
+   * free through getWebFetchEnv().
+   */
   assertOutboundFetchAllowed(): void;
 
-  // Ask DeepSeek V4 Pro -- the stronger reasoning model on this deployment's OpenCode Go
-  // subscription -- the question/context an agent's `consultPro` tool call explicitly supplied.
-  // This is a single one-shot completion, not a nested agent turn: Pro is given no tools, so it
-  // cannot itself call `consultPro` (see runAgent's `consultPro` tool gating below, and
-  // pro-advisor.ts for why this makes recursive consultation structurally impossible). Throws if
-  // OpenCode Go isn't configured for this deployment.
+  /**
+   * Ask DeepSeek V4 Pro -- the stronger reasoning model on this deployment's OpenCode Go
+   * subscription -- the question/context an agent's `consultPro` tool call explicitly supplied.
+   * This is a single one-shot completion, not a nested agent turn: Pro is given no tools, so it
+   * cannot itself call `consultPro` (see runAgent's `consultPro` tool gating below, and
+   * pro-advisor.ts for why this makes recursive consultation structurally impossible). Throws if
+   * OpenCode Go isn't configured for this deployment.
+   */
   consultProAdvisor(initiator: AiChatAuthorInfo, input: ProAdvisorInput, signal?: AbortSignal)
       : Promise<string>;
 
-  // Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
-  // "" when none are set. Read on each turn so admin edits take effect promptly.
+  /**
+   * Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
+   * "" when none are set. Read on each turn so admin edits take effect promptly.
+   */
   getInstanceInstructions(): Promise<string>;
 
   /**
@@ -468,9 +476,11 @@ export interface AgentHooks {
   fetchBlueprint(blueprintId: string)
       : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}>;
 
-  // Rename the given chat. The agent's `setChatTitle` tool is a capability on the *current*
-  // thread only (it takes no chat id) and calls this with that thread's id. Returns the
-  // normalized title. Throws if the chat is gone or the title is empty after normalization.
+  /**
+   * Rename the given chat. The agent's `setChatTitle` tool is a capability on the *current*
+   * thread only (it takes no chat id) and calls this with that thread's id. Returns the
+   * normalized title. Throws if the chat is gone or the title is empty after normalization.
+   */
   setChatTitle(chatId: number, title: string): string;
 }
 
@@ -702,11 +712,13 @@ export default async function(self, env, ctx) {
 The call to \`env.MY_GADGET[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
 `.trim();
 
-// Length guidance already used by `generateThreadTitle`; not a new numeric cap.
+/** Length guidance already used by `generateThreadTitle`; not a new numeric cap. */
 export const CHAT_TITLE_LENGTH_GUIDANCE = "2-8 words";
 
-// Primary-agent instructions for the `setChatTitle` tool. Spawned agents use SPAWNER_SYSTEM_PROMPT
-// and never see this (they also do not receive the tool; see `allowedSpawnedAgentTools`).
+/**
+ * Primary-agent instructions for the `setChatTitle` tool. Spawned agents use SPAWNER_SYSTEM_PROMPT
+ * and never see this (they also do not receive the tool; see `allowedSpawnedAgentTools`).
+ */
 export const CHAT_TITLE_AGENT_INSTRUCTIONS = `
 # Chat titles
 

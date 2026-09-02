@@ -14,9 +14,9 @@ import { completeText } from "./ai-invoke.js";
 import { OPENCODE_GO_PRO_MODEL_ID } from "./opencode-go.js";
 
 export type ProAdvisorInput = {
-  // The specific question to ask Pro.
+  /** The specific question to ask Pro. */
   question: string;
-  // Relevant background Pro needs to answer well. Pro sees only this and `question`.
+  /** Relevant background Pro needs to answer well. Pro sees only this and `question`. */
   context?: string;
 };
 

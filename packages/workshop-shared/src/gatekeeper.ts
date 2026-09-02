@@ -425,15 +425,17 @@ export type GatekeeperUiFrame = {
  */
 export type ResourceConfiguratorFrame = GatekeeperUiFrame;
 
-// The root interface of an Adapter, as provided to the Gadget Workshop.
-//
-// An installation of the Gadget Workshop is provided with a set of Adapters to allow it to
-// interface with other services.
-// Options for GatekeeperVendor.connectAccount(). `scopes` selects the access tier (see that
-// method). `resourceUrlPatterns`, if given, limits the connection to the authorization needed for
-// those grantable resource types; if omitted, authorization for all the vendor's resource types
-// is requested. An empty array requests no resource authorization, which is how billing-only
-// connections avoid asking for unrelated data access.
+/**
+ * The root interface of an Adapter, as provided to the Gadget Workshop.
+ *
+ * An installation of the Gadget Workshop is provided with a set of Adapters to allow it to
+ * interface with other services.
+ * Options for GatekeeperVendor.connectAccount(). `scopes` selects the access tier (see that
+ * method). `resourceUrlPatterns`, if given, limits the connection to the authorization needed for
+ * those grantable resource types; if omitted, authorization for all the vendor's resource types
+ * is requested. An empty array requests no resource authorization, which is how billing-only
+ * connections avoid asking for unrelated data access.
+ */
 export type GatekeeperConnectOptions = {
   scopes?: "auth" | "full";
   resourceUrlPatterns?: string[];
@@ -443,32 +445,34 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
   /** Get display info for the service, suitable for display to a user. */
   describe(): Promise<VendorDescription>;
 
-  // Start the auth flow to connect to the user's remote account. Returns the URL which the user
-  // should open in their browser in order to complete the flow. This URL will be opened in a new
-  // tab; when it completes, it should close itself using window.close().
-  //
-  // When the flow completes, `callback.complete()` should be called to add the connection to the
-  // user's list of authorizations. (`callback` can be stored.)
-  //
-  // A typical implementation creates a UserAccount Durable Object to manage the authorization
-  // flow, storing the callback in its storage, then directing the user to a URL that references
-  // the DO. Once the user completes the flow, the DO invokes the callback. The DO should set an
-  // alarm to delete itself after some timeout if the user fails to complete the flow.
-  //
-  // SECURITY: The returned URL must include a cryptographic nonce (in addition to the DO ID) to
-  // prevent replay attacks. The nonce should be stored in the DO and verified when the user visits
-  // the URL. See gatekeeper-google for a reference implementation.
-  //
-  // `options.scopes` selects how much access to request (default "full"):
-  //   - "full": the gatekeeper's full capability scopes (repos, docs, etc.). The resulting
-  //     connection is persisted as a usable connected account.
-  //   - "auth": only the minimal scopes needed to verify the user's email for sign-in. The grant is
-  //     transient — after `complete()` lets the caller read getAuthenticatedEmail(), the gatekeeper
-  //     discards it. Vendors without `providesAuth` ignore this and always use their full scopes.
-  //
-  // `options.resourceUrlPatterns`, if given, limits the connection to the authorization needed for
-  // those grantable resource types. If omitted, authorization for all of the vendor's resource
-  // types is requested. An empty array must be treated as "none", not as "all".
+  /**
+   * Start the auth flow to connect to the user's remote account. Returns the URL which the user
+   * should open in their browser in order to complete the flow. This URL will be opened in a new
+   * tab; when it completes, it should close itself using window.close().
+   *
+   * When the flow completes, `callback.complete()` should be called to add the connection to the
+   * user's list of authorizations. (`callback` can be stored.)
+   *
+   * A typical implementation creates a UserAccount Durable Object to manage the authorization
+   * flow, storing the callback in its storage, then directing the user to a URL that references
+   * the DO. Once the user completes the flow, the DO invokes the callback. The DO should set an
+   * alarm to delete itself after some timeout if the user fails to complete the flow.
+   *
+   * SECURITY: The returned URL must include a cryptographic nonce (in addition to the DO ID) to
+   * prevent replay attacks. The nonce should be stored in the DO and verified when the user visits
+   * the URL. See gatekeeper-google for a reference implementation.
+   *
+   * `options.scopes` selects how much access to request (default "full"):
+   *   - "full": the gatekeeper's full capability scopes (repos, docs, etc.). The resulting
+   *     connection is persisted as a usable connected account.
+   *   - "auth": only the minimal scopes needed to verify the user's email for sign-in. The grant is
+   *     transient — after `complete()` lets the caller read getAuthenticatedEmail(), the gatekeeper
+   *     discards it. Vendors without `providesAuth` ignore this and always use their full scopes.
+   *
+   * `options.resourceUrlPatterns`, if given, limits the connection to the authorization needed for
+   * those grantable resource types. If omitted, authorization for all of the vendor's resource
+   * types is requested. An empty array must be treated as "none", not as "all".
+   */
   connectAccount(callback: Fetcher<GatekeeperConnectCallback>,
                  options?: GatekeeperConnectOptions): Promise<{url: string}>;
 

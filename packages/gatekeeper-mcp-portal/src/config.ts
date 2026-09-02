@@ -59,9 +59,11 @@ export function requirePortalServerVisible(env: Env, serverId: string): void {
   );
 }
 
-// Reads the deployment's portal configuration, or null when it is not configured. A missing or
-// unusable `MCP_PORTAL_URL` returns null rather than throwing, so the connector advertises no
-// resources and the Workshop hides it.
+/**
+ * Reads the deployment's portal configuration, or null when it is not configured. A missing or
+ * unusable `MCP_PORTAL_URL` returns null rather than throwing, so the connector advertises no
+ * resources and the Workshop hides it.
+ */
 export function readPortalConfig(env: Env): PortalConfig | null {
   const raw = env.MCP_PORTAL_URL?.trim();
   if (!raw) return null;

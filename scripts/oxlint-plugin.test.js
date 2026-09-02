@@ -1,11 +1,9 @@
 import { describe, it } from "node:test";
-import { createRequire } from "node:module";
 import { preferJsdoc } from "./oxlint-plugin.mjs";
 
-const require = createRequire(import.meta.url);
-const vitePlusRequire = createRequire(require.resolve("vite-plus/package.json"));
-// Test against Vite+'s pinned oxlint without adding a second direct dependency that can drift.
-const { RuleTester } = await import(vitePlusRequire.resolve("oxlint/plugins-dev"));
+// Test against the same directly-pinned oxlint used by `pnpm lint`; this fork deliberately keeps
+// its pnpm-based build pipeline instead of adopting Vite+.
+const { RuleTester } = await import("oxlint/plugins-dev");
 
 RuleTester.describe = describe;
 RuleTester.it = it;

@@ -23,16 +23,18 @@ import {
 import SidebarUtilityStrip from './SidebarUtilityStrip'
 import { familyLabel, familyUi } from '../../familyUi'
 
-// The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
-// the user can always reach Search, primary nav, and the bottom utility strip no matter how many
-// workspaces they have.
-//
-// Layout (top → bottom):
-//   • brand row                            pinned
-//   • primary nav (Home, Workspaces, …)    pinned
-//   • workspace tools (⌘K search)          pinned
-//   • Favorites / Recent chats / Workspaces SCROLLS
-//   • utility strip (plug, avatar)         pinned
+/**
+ * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
+ * the user can always reach Search, primary nav, and the bottom utility strip no matter how many
+ * workspaces they have.
+ *
+ * Layout (top → bottom):
+ *   • brand row                            pinned
+ *   • primary nav (Home, Workspaces, …)    pinned
+ *   • workspace tools (⌘K search)          pinned
+ *   • Favorites / Recent chats / Workspaces SCROLLS
+ *   • utility strip (plug, avatar)         pinned
+ */
 export default function Sidebar({
   collapsed,
   onToggleCollapsed,

@@ -49,8 +49,10 @@ export interface PublicApi extends RpcTarget {
   /** Confirms that the RPC connection can round-trip without performing application work. */
   ping(): Promise<void>;
 
-  // Returns deployment-level configuration the client needs at boot (auth mode, available sign-in
-  // vendors, whether the Cloudflare limits flow is enabled). Contains no secrets.
+  /**
+   * Returns deployment-level configuration the client needs at boot (auth mode, available sign-in
+   * vendors, whether the Cloudflare limits flow is enabled). Contains no secrets.
+   */
   getServerConfig(): Promise<ServerConfig>;
 
   /**
@@ -67,10 +69,12 @@ export interface PublicApi extends RpcTarget {
   /** Authenticates the user using an auth token (typically stored in localStorage). */
   authenticate(token: string): Promise<AuthenticatedApi>;
 
-  // Like authenticate() but the server is expected to be sitting behind Cloudflare Access, and the
-  // client is expected to have already authenticated with Access (before they could load the
-  // application in their browser at all). The credentials from the Cloudflare Access session will
-  // be used to authenticate the adult and return a Family OS entry capability for that browser.
+  /**
+   * Like authenticate() but the server is expected to be sitting behind Cloudflare Access, and the
+   * client is expected to have already authenticated with Access (before they could load the
+   * application in their browser at all). The credentials from the Cloudflare Access session will
+   * be used to authenticate the adult and return a Family OS entry capability for that browser.
+   */
   authenticateFromCfAccess(): Promise<RpcStub<FamilyEntry>>;
 
   /**
@@ -238,9 +242,11 @@ export function normalizeChatTitle(title: string): string {
   return normalized;
 }
 
-// Why a previously-configured observer binding failed verification on this open attempt. Attached to
-// the ObserverBindingNeed the overseer re-prompts with, so the client can explain what went wrong
-// instead of dead-ending the open.
+/**
+ * Why a previously-configured observer binding failed verification on this open attempt. Attached to
+ * the ObserverBindingNeed the overseer re-prompts with, so the client can explain what went wrong
+ * instead of dead-ending the open.
+ */
 export type ObserverBindingFailure = {
   /**
    * The account that was tried and rejected (a ConnectedAccountRecord id in the opening user's own
@@ -488,7 +494,7 @@ export interface FamilyEntry extends RpcTarget {
   switchToAdultProfile(passcode: string): Promise<FamilyRpcResult<void>>;
 }
 
-// Top-level API exposed to the user after they have authenticated.
+/** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
@@ -517,17 +523,21 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listModels(): Promise<AiChatAuthorInfo[]>;
 
-  // Adds a new model to the user's configured set. The ID must be unique among the user's
-  // configured models. Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` instead of
-  // mutating — model setup stays adult-only while list/get reads remain available for AI use.
+  /**
+   * Adds a new model to the user's configured set. The ID must be unique among the user's
+   * configured models. Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` instead of
+   * mutating — model setup stays adult-only while list/get reads remain available for AI use.
+   */
   addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<FamilyRpcResult<void>>;
 
-  // Deletes a configured model. Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+  /** Deletes a configured model. Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`. */
   deleteModel(id: string): Promise<FamilyRpcResult<void>>;
 
-  // Set the model to use for simple quick tasks, like generating chat titles. Set null to
-  // disable quick model use (e.g. chats will be titled "New Chat").
-  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+  /**
+   * Set the model to use for simple quick tasks, like generating chat titles. Set null to
+   * disable quick model use (e.g. chats will be titled "New Chat").
+   * Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+   */
   setQuickModel(id: string | null): Promise<FamilyRpcResult<void>>;
 
   /** Get the quick model setting. */
@@ -548,8 +558,10 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getPreferredModel(): Promise<string | null>;
 
-  // Set the user's preferred model. Pass null to indicate "No agent".
-  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+  /**
+   * Set the user's preferred model. Pass null to indicate "No agent".
+   * Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED`.
+   */
   setPreferredModel(id: string | null): Promise<FamilyRpcResult<void>>;
 
   /** Returns true if the user has completed the onboarding wizard. */
@@ -639,12 +651,14 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getInternalWorkspaceId(): Promise<string | null>;
 
-  // List metadata about all the user's Gadgets. Used to display the front-page listing.
-  //
-  // Provisional gadgets are hidden. The per-profile internal home workspace is also omitted;
-  // open it with `getOrCreateInternalWorkspace()` or `openGadget(id)` instead.
-  //
-  // TODO: Pagination, sort options.
+  /**
+   * List metadata about all the user's Gadgets. Used to display the front-page listing.
+   *
+   * Provisional gadgets are hidden. The per-profile internal home workspace is also omitted;
+   * open it with `getOrCreateInternalWorkspace()` or `openGadget(id)` instead.
+   *
+   * TODO: Pagination, sort options.
+   */
   listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;
 
   /**
@@ -671,16 +685,18 @@ export interface AuthenticatedApi extends RpcTarget {
   /** List all third-party services that this account can connect to. */
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
 
-  // Connect this account to a specific account on a third-party service. Returns the URL which
-  // should be opened in a new tab in the user's browser to complete the authorization. When the
-  // authorization flow completes, the account will be added to the list, which can be observed
-  // through subscribeConnectedAccounts().
-  //
-  // `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
-  // grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
-  // authorization for all of the vendor's resource types is requested.
-  // An empty array requests no resource authorization, which is useful for billing-only accounts.
-  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (connector setup is adult-only).
+  /**
+   * Connect this account to a specific account on a third-party service. Returns the URL which
+   * should be opened in a new tab in the user's browser to complete the authorization. When the
+   * authorization flow completes, the account will be added to the list, which can be observed
+   * through subscribeConnectedAccounts().
+   *
+   * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
+   * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
+   * authorization for all of the vendor's resource types is requested.
+   * An empty array requests no resource authorization, which is useful for billing-only accounts.
+   * Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (connector setup is adult-only).
+   */
   connectAccount(vendorId: string, resourceUrlPatterns?: string[])
       : Promise<FamilyRpcResult<{url: string}>>;
 
@@ -977,8 +993,10 @@ export const MAX_INSTANCE_INSTRUCTIONS_LENGTH = 8000;
 /** Maximum length (characters) of the admin-authored site name shown next to the top-bar logo. */
 export const MAX_SITE_NAME_LENGTH = 40;
 
-// What this deployment calls itself when the admin has not set a custom `siteName`. Also the
-// product's own name, so it appears in prose the server and UI address to the user.
+/**
+ * What this deployment calls itself when the admin has not set a custom `siteName`. Also the
+ * product's own name, so it appears in prose the server and UI address to the user.
+ */
 export const DEFAULT_SITE_NAME = "Family OS";
 
 /**
@@ -1278,7 +1296,7 @@ export type CloudflareAccountOption = {
   accountName: string;
 };
 
-// Supported AI providers.
+/** Supported AI providers. */
 export type AiModelProvider =
   "opencode-go" | "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
 
@@ -2084,8 +2102,10 @@ export interface Overseer extends RpcTarget {
   /** Delete an uploaded attachment that the user explicitly removed before sending the message. */
   deleteChatAttachment(id: string): Promise<void>;
 
-  // Update the title of a chat. The coding agent also has a `setChatTitle` tool, a capability on
-  // the current thread only, so it can replace `DEFAULT_CHAT_TITLE` from the conversation itself.
+  /**
+   * Update the title of a chat. The coding agent also has a `setChatTitle` tool, a capability on
+   * the current thread only, so it can replace `DEFAULT_CHAT_TITLE` from the conversation itself.
+   */
   setChatTitle(chatId: number, title: string): Promise<void>;
 
   /**
@@ -2236,12 +2256,14 @@ export interface Overseer extends RpcTarget {
   // A share *link* may back several keys: `createShareLink` mints the first and `newShareLinkKey`
   // mints more on demand. Renaming, revoking, and grants apply to the link.
 
-  // Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
-  // hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
-  // caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
-  // access level granted to anyone who redeems the link; the caller may not grant a role higher
-  // than their own effective role.
-  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (sharing is adult-only).
+  /**
+   * Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
+   * hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
+   * caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
+   * access level granted to anyone who redeems the link; the caller may not grant a role higher
+   * than their own effective role.
+   * Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (sharing is adult-only).
+   */
   createShareLink(role: CollaboratorRole, note?: string)
       : Promise<FamilyRpcResult<{ key: string; linkId: string }>>;
 
@@ -2558,8 +2580,10 @@ export type AiChatMessageBody = {
   message: string;
   /** Text received before a failed stream ended; displayed to the user but never sent to the LLM. */
   partialResponse?: string;
-  // Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
-  // the "connect Cloudflare / add credits" modal instead of a generic error + retry).
+  /**
+   * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
+   * the "connect Cloudflare / add credits" modal instead of a generic error + retry).
+   */
   code?: string;
 } | {
   /**
@@ -2837,7 +2861,7 @@ export type AiToolCall = {
     engine?: "chromium" | "kitesurf";
   };
 
-  // JSON report without screenshot bytes. The live result also includes the PNG as image content.
+  /** JSON report without screenshot bytes. The live result also includes the PNG as image content. */
   output?: string;
 } | {
   toolName: "giveUp";
@@ -2859,31 +2883,39 @@ export type AiToolCall = {
    */
   output?: string;
 } | {
-  // Keyword web search via DuckDuckGo (see web-search.ts). `webFetch` reads a specific URL;
-  // this discovers one by keywords.
+  /**
+   * Keyword web search via DuckDuckGo (see web-search.ts). `webFetch` reads a specific URL;
+   * this discovers one by keywords.
+   */
   toolName: "webSearch";
   input: {
     query: string;
   };
 
-  // Output, if the search actually completed. (Otherwise, `error` should be present.) This is
-  // stored so that the agent's chat history can be replayed without re-issuing the search.
-  // Formatted result list (see formatWebSearchResults).
+  /**
+   * Output, if the search actually completed. (Otherwise, `error` should be present.) This is
+   * stored so that the agent's chat history can be replayed without re-issuing the search.
+   * Formatted result list (see formatWebSearchResults).
+   */
   output?: string;
 } | {
-  // Ask DeepSeek V4 Pro for advice on a difficult problem (see pro-advisor.ts). Available only
-  // on Flash-run turns; Pro itself never receives this tool.
+  /**
+   * Ask DeepSeek V4 Pro for advice on a difficult problem (see pro-advisor.ts). Available only
+   * on Flash-run turns; Pro itself never receives this tool.
+   */
   toolName: "consultPro";
   input: {
     question: string;
     context?: string;
   };
 
-  // Pro's reply, if the consult actually completed. (Otherwise, `error` should be present.) This
-  // is stored so that the agent's chat history can be replayed without re-consulting Pro.
+  /**
+   * Pro's reply, if the consult actually completed. (Otherwise, `error` should be present.) This
+   * is stored so that the agent's chat history can be replayed without re-consulting Pro.
+   */
   output?: string;
 } | {
-  // This actually shouldn't ever appear in logs unless the agent misunderstands the tool.
+  /** This actually shouldn't ever appear in logs unless the agent misunderstands the tool. */
   toolName: "observeUserChanges";
   input: {};
 } | {
@@ -2926,11 +2958,13 @@ export type AiToolCall = {
   };
   output?: string;
 } | {
-  // Rename the current chat. The tool takes no chat id: it is a capability on this thread only.
-  // Recorded so replay does not re-apply the rename.
+  /**
+   * Rename the current chat. The tool takes no chat id: it is a capability on this thread only.
+   * Recorded so replay does not re-apply the rename.
+   */
   toolName: "setChatTitle";
   input: {
-    // Human-readable title for this chat. Required, non-empty after `normalizeChatTitle()`.
+    /** Human-readable title for this chat. Required, non-empty after `normalizeChatTitle()`. */
     title: string;
   };
   output?: {title: string};
@@ -3715,15 +3749,17 @@ export interface GadgetClient extends WorkpieceClient {
   /** Set the blueprint annotation for the named binding. */
   setBlueprintAnnotation(name: string, annotation: BlueprintBindingAnnotation): Promise<void>;
 
-  // Create a new blueprint from this gadget's current committed code.
-  // `title` defaults to the gadget's title if omitted.
-  //
-  // The blueprint is always owned by the workspace owner, regardless of who calls this method.
-  //
-  // Steps: generate ID, snapshot code, collect binding metadata, store locally, propagate
-  // to User DO + KV + R2. Maintenance of existing blueprints stays on Overseer (see
-  // Overseer.updateBlueprint() etc.).
-  // Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (publishing is adult-only).
+  /**
+   * Create a new blueprint from this gadget's current committed code.
+   * `title` defaults to the gadget's title if omitted.
+   *
+   * The blueprint is always owned by the workspace owner, regardless of who calls this method.
+   *
+   * Steps: generate ID, snapshot code, collect binding metadata, store locally, propagate
+   * to User DO + KV + R2. Maintenance of existing blueprints stays on Overseer (see
+   * Overseer.updateBlueprint() etc.).
+   * Family child profiles return `FAMILY_ADULT_PROFILE_REQUIRED` (publishing is adult-only).
+   */
   createBlueprint(title?: string, description?: string, screenshot?: BlueprintScreenshotUpload)
       : Promise<FamilyRpcResult<BlueprintGadgetSummary>>;
 }
@@ -3749,16 +3785,18 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
   // TODO: Get/set permissions.
 }
 
-// The level of access a collaborator (or share key) grants.
-//
-// - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
-//   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
-// - "use": may only render, interact with, and export the gadget's deployed UI (getUiBundle(),
-//   connectToGadget(), getExportFormats(), and export()), plus read basic metadata.
-//
-// Roles are ordered build > use. A collaborator's effective role is the maximum role reachable
-// from the owner through their valid permission edges, where each edge grants
-// min(edge role, sharer's effective role). The owner is the implicit root at "build".
+/**
+ * The level of access a collaborator (or share key) grants.
+ *
+ * - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
+ *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
+ * - "use": may only render, interact with, and export the gadget's deployed UI (getUiBundle(),
+ *   connectToGadget(), getExportFormats(), and export()), plus read basic metadata.
+ *
+ * Roles are ordered build > use. A collaborator's effective role is the maximum role reachable
+ * from the owner through their valid permission edges, where each edge grants
+ * min(edge role, sharer's effective role). The owner is the implicit root at "build".
+ */
 export type CollaboratorRole = "build" | "use";
 
 /** One person currently connected to a gadget. */

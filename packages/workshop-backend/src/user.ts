@@ -120,10 +120,12 @@ function isListedWorkspace(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
   return g.internal !== true && isFullyCreated(g);
 }
 
-// One output of a workspace, as pushed into a user's output index by the Overseer that owns it
-// (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
-// activity time and ownership are joined in from the `gadgets` collection on read, so they can't
-// go stale here.
+/**
+ * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
+ * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
+ * activity time and ownership are joined in from the `gadgets` collection on read, so they can't
+ * go stale here.
+ */
 export type WorkspaceOutputEntry = {
   workpieceId: WorkpieceId;
   title: string;
@@ -353,8 +355,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return false;
   }
 
-  // Initializes the durable object owned by a Family OS child profile. This method is called only
-  // by the deployment's FamilyDurableObject before the child capability is ever issued.
+  /**
+   * Initializes the durable object owned by a Family OS child profile. This method is called only
+   * by the deployment's FamilyDurableObject before the child capability is ever issued.
+   */
   async initializeFamilyChild(id: string, name: string): Promise<void> {
     if (this.storage.created.get()) {
       throw new Error("Family child profile is already initialized.");

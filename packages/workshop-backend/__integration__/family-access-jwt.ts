@@ -5,7 +5,7 @@ import { importJWK, SignJWT, type JWK } from "jose";
  * test files that sign JWTs against them. */
 export const FAMILY_ACCESS_ISSUER = "https://access.integration.test";
 export const FAMILY_ACCESS_AUDIENCE = "family-integration-audience";
-// local-access-emulator.js hardcodes this identity for every login-<iat> cookie value.
+/** local-access-emulator.js hardcodes this identity for every login-<iat> cookie value. */
 export const FAMILY_ACCESS_ADULT = { sub: "family-integration-adult", email: "adult@integration.test" };
 
 const FAMILY_ACCESS_PRIVATE_JWK: JWK = {

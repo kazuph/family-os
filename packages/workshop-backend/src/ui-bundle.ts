@@ -32,9 +32,11 @@ function withUiAssets(source: string, files: Y.Map<Y.Text>): string {
   return `globalThis.__gadgetAssets=${JSON.stringify(assets)};\n${source}`;
 }
 
-// A Gadget normally keeps its UI in a plain `client.js`. Older book archives compressed and split
-// that source across `client.js.gz/0000`, `client.js.gz/0001`, ... to work around the former
-// single-row snapshot storage. Every caller uses this helper while those archives still exist.
+/**
+ * A Gadget normally keeps its UI in a plain `client.js`. Older book archives compressed and split
+ * that source across `client.js.gz/0000`, `client.js.gz/0001`, ... to work around the former
+ * single-row snapshot storage. Every caller uses this helper while those archives still exist.
+ */
 export async function readUiBundle(files: Y.Map<Y.Text>): Promise<UiBundle | null> {
   let file = files.get("client.js");
   if (file) return { jsCode: withUiAssets(file.toString(), files) };
