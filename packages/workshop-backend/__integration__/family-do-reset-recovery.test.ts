@@ -87,6 +87,7 @@ describe("Family OS device-session Durable Object reset recovery", () => {
     //    server-side log line count. (Measured: exactly 1 -- a single real DO reset does not
     //    make capnweb's onRpcBroken fire more than once on the client.)
     let closeEvent = await first.closed;
+    await scheduler.wait(0);
     console.log("DO_RESET_CLOSE_EVENT:", JSON.stringify(closeEvent));
     console.log("DO_RESET_CLIENT_BROKEN_COUNT:", first.brokenCount());
     expect(first.brokenCount()).toBeGreaterThanOrEqual(1);
@@ -108,5 +109,75 @@ describe("Family OS device-session Durable Object reset recovery", () => {
     second.api[Symbol.dispose]();
     second.family[Symbol.dispose]();
     recoveredAdultApi[Symbol.dispose]();
+  });
+
+  it("closes a hibernated Cap'n Web session with 1012, reconnects, and keeps the generation guard", async () => {
+    let first = await connect(300, 10);
+    unwrapFamilyRpcResult(await first.family.selectAdultProfile());
+    let adultApi = unwrapFamilyRpcResult(await first.family.getAuthenticatedApi());
+    adultApi.onRpcBroken(() => {});
+    await adultApi.setOwnDisplayName("Hibernation Guardian");
+    unwrapFamilyRpcResult(await first.family.setHouseholdPasscode("654321"));
+    let child = unwrapFamilyRpcResult(await first.family.createChildProfile("Hibernate Child")).childProfiles[0];
+    if (!child) throw new Error("Expected a child profile.");
+
+    using workspace = await adultApi.newGadget();
+    workspace.onRpcBroken(() => {});
+    let workspaceId = (await workspace.getMetadata()).id;
+    using gadget = await workspace.createGadget("Hibernate recovery probe");
+    gadget.onRpcBroken(() => {});
+    let gadgetId = await gadget.getId();
+    let chatId = await workspace.newChat("Persist across hibernation reset", null);
+    expect(await workspace.listChats()).toEqual([
+      expect.objectContaining({id: chatId}),
+    ]);
+
+    let deviceId = first.cookie.split("=", 2)[1];
+    if (!deviceId) throw new Error("Expected a device id cookie from the first connection.");
+    let deviceSession = workerExports.FamilyDeviceSessionDurableObject.get(
+        workerExports.FamilyDeviceSessionDurableObject.idFromName(deviceId));
+    await runInDurableObject(deviceSession, async (instance: FamilyDeviceSessionDurableObject) => {
+      let ctx = (instance as unknown as {ctx: DurableObjectState}).ctx;
+      expect(ctx.getWebSocketAutoResponse()).toMatchObject({request: "ping", response: "pong"});
+      let sockets = ctx.getWebSockets();
+      expect(sockets).toHaveLength(1);
+      let socket = sockets[0]!;
+      let attachment = socket.deserializeAttachment() as Record<string, unknown>;
+      // Hibernation re-runs the constructor and therefore changes the in-memory instance id while
+      // preserving the socket attachment. Reproduce that exact persistent-state relationship in
+      // workerd, whose local runtime delivers hibernatable events but intentionally never evicts.
+      socket.serializeAttachment({...attachment, instanceId: crypto.randomUUID()});
+    });
+
+    await expect(first.api.ping()).rejects.toThrow();
+    await expect(first.closed).resolves.toEqual({code: 1012, reason: "session reset"});
+
+    let recovered = await connect(300, 11, first.cookie);
+    expect((await recovered.family.getState()).activeProfile.kind).toBe("adult");
+    let recoveredAdult = unwrapFamilyRpcResult(await recovered.family.getAuthenticatedApi());
+    recoveredAdult.onRpcBroken(() => {});
+    expect((await recoveredAdult.listModels()).map(model => model.id)).toContain("glm-5.3-flash");
+    using recoveredWorkspace = recoveredAdult.openGadget(workspaceId);
+    recoveredWorkspace.onRpcBroken(() => {});
+    await expect(recoveredWorkspace.listChats()).resolves.toEqual([
+      expect.objectContaining({id: chatId}),
+    ]);
+    using recoveredGadget = await recoveredWorkspace.getGadget(gadgetId);
+    recoveredGadget.onRpcBroken(() => {});
+    await expect(recoveredGadget.getTitle()).resolves.toBe("Hibernate recovery probe");
+
+    let replacement = await connect(300, 12, first.cookie);
+    unwrapFamilyRpcResult(await replacement.family.selectChildProfile(child.id));
+    await recovered.closed;
+    await expect(recoveredAdult.whoami()).rejects.toThrow();
+
+    first.api[Symbol.dispose]();
+    first.family[Symbol.dispose]();
+    adultApi[Symbol.dispose]();
+    recovered.api[Symbol.dispose]();
+    recovered.family[Symbol.dispose]();
+    recoveredAdult[Symbol.dispose]();
+    replacement.api[Symbol.dispose]();
+    replacement.family[Symbol.dispose]();
   });
 });
