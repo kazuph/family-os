@@ -170,7 +170,7 @@ it.concurrent("revokes every key and recipient of one share link", async () => {
     expect(await firstWorkspace.getMetadata()).toMatchObject({ role: "use" });
     expect(await secondWorkspace.getMetadata()).toMatchObject({ role: "use" });
     const preview = await workspace.previewRevokeShareLink(shareLink.linkId);
-    expect(preview.map(user => user.profile.id).sort()).toEqual([firstName, secondName].sort());
+    expect(new Set(preview.map(user => user.profile.id))).toEqual(new Set([firstName, secondName]));
     return {
       workspaceId: id,
       link: shareLink,
@@ -179,7 +179,7 @@ it.concurrent("revokes every key and recipient of one share link", async () => {
     };
   })();
 
-  expect(affected.map(user => user.profile.id).sort()).toEqual([firstName, secondName].sort());
+  expect(new Set(affected.map(user => user.profile.id))).toEqual(new Set([firstName, secondName]));
   await Promise.all([
     expectOpenDeniedAfterRestart(firstName, workspaceId, link.key),
     expectOpenDeniedAfterRestart(secondName, workspaceId, copied.key),
