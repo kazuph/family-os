@@ -57,7 +57,7 @@ async function runAsync(command, argv, options = {}) {
 }
 
 async function mapConcurrent(items, concurrency, fn) {
-  const results = new Array(items.length);
+  const results = Array.from({ length: items.length });
   let next = 0;
   async function worker() {
     for (;;) {
