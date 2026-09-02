@@ -31,6 +31,7 @@ import {
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { BrowserVerifier } from "./browser-export";
+import { BrowserVerificationLimiterDurableObject } from "./browser-verification-limiter";
 import {
   BOOK_BLUEPRINT_ID, DEFAULT_BOOK_TUTOR_MODEL, handleBookMcpRequest, type BookMcpStore,
 } from "./book-mcp";
@@ -80,6 +81,7 @@ export { ExternalMessageGateway };
 
 // Re-export the isolated Browser Run verifier so Durable Objects can invoke it through ctx.exports.
 export { BrowserVerifier };
+export { BrowserVerificationLimiterDurableObject };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {

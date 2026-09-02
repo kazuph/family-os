@@ -17,6 +17,8 @@ export type WorkshopObservabilityFields = {
   gadgetId: string;
   gatekeeperId: number | string;
   logBytes: number;
+  limit: number;
+  limitScope: "workspace" | "deployment" | "user-day" | "agent-response";
   modelId: string;
   observerId: string;
   operation: string;
@@ -25,9 +27,13 @@ export type WorkshopObservabilityFields = {
   resourceTitle: string;
   sequence: number;
   size: number;
+  used: number;
+  browserEngine: "chromium" | "kitesurf";
   status: number;
   statusCode: number;
   statusText: string;
+  storageBytes: number;
+  projectedStorageBytes: number;
   toolCallId: string;
   toolName: string;
   vendorId: string;

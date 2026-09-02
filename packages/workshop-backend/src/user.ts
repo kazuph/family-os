@@ -228,6 +228,9 @@ function makeUserStorage(storage: DurableObjectStorage) {
       // count. Folds the former standalone RateLimitDO into the user object.
       dailyLlmCount: <{ day: string; count: number } | null>null,
 
+      // Browser Run verification quota. A stale UTC day implicitly resets the count.
+      dailyBrowserVerificationCount: <{ day: string; count: number } | null>null,
+
       // `passwordHash` value as passed to `login()`, but with an extra round of SHA-256 applied.
       //
       // null = password disabled (e.g. because some other auth mechanism is used)
@@ -746,6 +749,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.dailyLlmCount.put({ day, count: newUsed });
     return { withinLimits: true, remaining: Math.max(0, limit - newUsed), limit, used: newUsed,
              resetAt: nextUtcMidnightIso() };
+  }
+
+  /** Atomically consume one Browser Run verification from this user's UTC-day allowance. */
+  async consumeDailyBrowserVerification(limit: number): Promise<DailyQuotaResult> {
+    let day = utcDayKey();
+    let record = this.storage.dailyBrowserVerificationCount.get();
+    let used = record && record.day === day ? record.count : 0;
+    if (used >= limit) {
+      return {withinLimits: false, remaining: 0, limit, used, resetAt: nextUtcMidnightIso()};
+    }
+    let newUsed = used + 1;
+    this.storage.dailyBrowserVerificationCount.put({day, count: newUsed});
+    return {withinLimits: true, remaining: Math.max(0, limit - newUsed), limit, used: newUsed,
+      resetAt: nextUtcMidnightIso()};
   }
 
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets

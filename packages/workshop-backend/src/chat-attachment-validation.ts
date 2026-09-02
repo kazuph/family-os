@@ -6,6 +6,12 @@ import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 /** Maximum bytes stored for one chat attachment, including generated verification screenshots. */
 export const MAX_CHAT_ATTACHMENT_BYTES = 1024 * 1024;
 
+/** Maximum attachments stored on one chat message, whether uploaded or agent-generated. */
+export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
+
+/** Maximum total attachment bytes stored on one chat message. */
+export const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
+
 const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ["image/jpeg", [0xFF, 0xD8, 0xFF]],
   ["image/png", [0x89, 0x50, 0x4E, 0x47]],

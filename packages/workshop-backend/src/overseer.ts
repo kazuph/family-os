@@ -48,8 +48,13 @@ import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
+  MAX_CHAT_ATTACHMENTS_PER_MESSAGE,
+  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
+import {
+  MAX_BROWSER_VERIFY_PER_USER_PER_DAY,
+} from "./browser-verify-limits";
 import {
   renderGadgetInBrowser,
   type GadgetBrowserEngine,
@@ -65,6 +70,10 @@ import {
   splitCodeSnapshot,
   type CodeSnapshotPart,
 } from "./code-snapshot-parts";
+import {
+  BROWSER_VERIFY_SCREENSHOT_TTL_MS,
+  checkWorkspaceStorageWrite,
+} from "./workspace-storage-quota";
 import {
   defaultExportFormats,
   exportServerFormat,
@@ -496,8 +505,6 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
   return screenshot;
 }
 
-const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 // Staged attachments (not associated with chat) older than this may be deleted when the gadget next stages an attachment.
 const MAX_STAGED_CHAT_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1000;
 const CHAT_ATTACHMENT_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -520,6 +527,7 @@ type ChatAttachmentContentRecord = {
     | {
         type: "committed";
         chatId: number;
+        expiresAt?: number;
       };
 };
 
@@ -1086,6 +1094,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           stagedByUploadedAt(record: ChatAttachmentContentRecord) {
             return record.state.type === "staged" ? record.state.uploadedAt : null;
           },
+          expiringByExpiresAt(record: ChatAttachmentContentRecord) {
+            return record.state.type === "committed" ? record.state.expiresAt ?? null : null;
+          },
         },
       }),
 
@@ -1218,6 +1229,10 @@ class OverseerImpl implements AgentHooks {
   // Set of chatIds that currently have a running agent turn. Used to manage the DO alarm (held
   // while any agent runs) and to let `alarm()` wait for all agents to finish.
   #runningAgents = new Set<number>();
+
+  // Browser Run is intentionally single-flight per workspace. Deployment-wide and daily limits
+  // are enforced by separate durable counters below.
+  #browserVerificationRunning = false;
 
   // If `alarm()` is currently waiting for all agents to finish, this resolves its wait. Invoked
   // when the running-agent count drops to zero.
@@ -2207,6 +2222,35 @@ class OverseerImpl implements AgentHooks {
     return [...this.storage.code.list({reverse: true, limit: 1})][0]?.version ?? 0;
   }
 
+  assertWorkspaceWriteCapacity(incomingBytes: number): void {
+    let quota = checkWorkspaceStorageWrite(this.ctx.storage.sql.databaseSize, incomingBytes);
+    if (quota.warning) {
+      this.logger.warn("workspace storage is approaching its quota", {
+        event: "workspace.storage.quota.warning", storageBytes: quota.usedBytes,
+        projectedStorageBytes: quota.projectedBytes,
+      });
+    }
+  }
+
+  #compactCodeHistory(snapshotVersion: number): void {
+    // A dirty blueprint may need its original code version for a retry. Defer compaction until all
+    // published snapshots are durable outside this DO.
+    if ([...this.storage.blueprints.list()].some(record => record.dirty)) return;
+    this.ctx.storage.transactionSync(() => {
+      for (let update of Array.from(this.storage.code.list({end: snapshotVersion}))) {
+        this.storage.code.delete(update.version);
+      }
+      for (let snapshot of Array.from(this.storage.snapshots.list())) {
+        this.storage.snapshots.delete(snapshot.version);
+      }
+      for (let part of Array.from(this.storage.snapshotParts.list({
+        end: codeSnapshotPartKey(snapshotVersion, 0),
+      }))) {
+        this.storage.snapshotParts.delete(part.key);
+      }
+    });
+  }
+
   // Construct a `Y.Doc` for the current code version.
   buildYDoc(version: number | "current"): {ydoc: Y.Doc, version: number} {
     // TODO: Use snapshots.
@@ -2219,9 +2263,13 @@ class OverseerImpl implements AgentHooks {
 
   // Apply a Yjs-encoded (V2) update to the code, incrementing the code version.
   updateCode(update: Uint8Array): number {
-    let version = this.bumpVersion();
+    let version = 0;
     let timestamp = new Date();
-    this.storage.code.put({version, timestamp, update});
+    this.ctx.storage.transactionSync(() => {
+      this.assertWorkspaceWriteCapacity(update.byteLength);
+      version = this.bumpVersion();
+      this.storage.code.put({version, timestamp, update});
+    });
 
     if (this.#snapshotMetrics) {
       this.#snapshotMetrics.logSize += update.length;
@@ -2232,9 +2280,13 @@ class OverseerImpl implements AgentHooks {
         traced("code.snapshot.rebuild", (span) => {
           let {ydoc} = this.buildYDoc("current");
           let snapshotUpdate = Y.encodeStateAsUpdateV2(ydoc);
-          for (let part of splitCodeSnapshot({version, timestamp, update: snapshotUpdate})) {
-            this.storage.snapshotParts.put(part);
-          }
+          this.ctx.storage.transactionSync(() => {
+            this.assertWorkspaceWriteCapacity(snapshotUpdate.byteLength);
+            for (let part of splitCodeSnapshot({version, timestamp, update: snapshotUpdate})) {
+              this.storage.snapshotParts.put(part);
+            }
+          });
+          this.#compactCodeHistory(version);
           span.setAttribute("gadgetId", this.ctx.id.toString());
           span.setAttribute("size", snapshotUpdate.length);
           span.setAttribute("logBytes", logBytes);
@@ -3083,6 +3135,16 @@ class OverseerImpl implements AgentHooks {
     let cutoff = Date.now() - MAX_STAGED_CHAT_ATTACHMENT_AGE_MS;
     this.ctx.storage.transactionSync(() => {
       for (let content of Array.from(this.storage.chatAttachmentContent.stagedByUploadedAt.list({end: cutoff}))) {
+        this.storage.chatAttachmentContent.delete(content.fileId);
+      }
+    });
+  }
+
+  sweepExpiredGeneratedAttachments(): void {
+    this.ctx.storage.transactionSync(() => {
+      for (let content of Array.from(
+        this.storage.chatAttachmentContent.expiringByExpiresAt.list({end: Date.now()}),
+      )) {
         this.storage.chatAttachmentContent.delete(content.fileId);
       }
     });
@@ -5739,26 +5801,85 @@ class OverseerImpl implements AgentHooks {
     if (!this.env.BROWSER) {
       throw new Error("Browser verification is not configured for this deployment.");
     }
-    let gadgetClient = new GadgetClientImpl(
-        this, gadgetId, this.#ownerUserStub().id.toString());
-    let bundle = await gadgetClient.getUiBundle(chatId);
-    if (!bundle) throw new Error("This Gadget does not have a client.js UI to verify.");
-    // Verification owns a separate browser-side RPC session. Start it from a clean facet so an
-    // earlier interrupted bridge cannot be reused by either the verifier or the normal UI.
-    this.ctx.facets.abort(this.gadgetFacetName(gadgetId),
-        new Error("Gadget restarted for browser verification."));
-    this.#runningChatIds.delete(gadgetId);
-    let gadget = await this.getGadgetFacet(gadgetId, chatId);
-    let {screenshot, ...report} = await this.ctx.exports.BrowserVerifier({}).verify(
-        bundle.jsCode, gadget, selectors, engine, options);
-    return {report, screenshot};
+    if (this.#browserVerificationRunning) {
+      this.logger.info("browser verification rejected", {
+        event: "browser.verify.limit.rejected", limitScope: "workspace", limit: 1,
+      });
+      throw new Error("Only one browserVerify call may run in a workspace at a time.");
+    }
+    this.#browserVerificationRunning = true;
+    let leaseId = crypto.randomUUID();
+    let limiter = this.ctx.exports.BrowserVerificationLimiterDurableObject.getByName("global");
+    let leaseAcquired = false;
+    let startedAt = Date.now();
+    try {
+      let global = await limiter.acquire(leaseId);
+      if (!global.granted) {
+        this.logger.info("browser verification rejected", {
+          event: "browser.verify.limit.rejected", limitScope: "deployment",
+          limit: global.limit, used: global.active,
+        });
+        throw new Error(
+          `Browser verification is busy (${global.active}/${global.limit} deployment slots in use). ` +
+          "Try again after another verification finishes.",
+        );
+      }
+      leaseAcquired = true;
+      let daily = await this.#ownerUserStub()
+          .consumeDailyBrowserVerification(MAX_BROWSER_VERIFY_PER_USER_PER_DAY);
+      if (!daily.withinLimits) {
+        this.logger.info("browser verification rejected", {
+          event: "browser.verify.limit.rejected", limitScope: "user-day",
+          limit: daily.limit, used: daily.used,
+        });
+        throw new Error(
+          `Daily browserVerify limit reached (${daily.used}/${daily.limit}). ` +
+          `The allowance resets at ${daily.resetAt}.`,
+        );
+      }
+      this.logger.info("browser verification started", {
+        event: "browser.verify.started", used: daily.used, limit: daily.limit,
+        browserEngine: engine,
+      });
+      let gadgetClient = new GadgetClientImpl(
+          this, gadgetId, this.#ownerUserStub().id.toString());
+      let bundle = await gadgetClient.getUiBundle(chatId);
+      if (!bundle) throw new Error("This Gadget does not have a client.js UI to verify.");
+      // Verification owns a separate browser-side RPC session. Start it from a clean facet so an
+      // earlier interrupted bridge cannot be reused by either the verifier or the normal UI.
+      this.ctx.facets.abort(this.gadgetFacetName(gadgetId),
+          new Error("Gadget restarted for browser verification."));
+      this.#runningChatIds.delete(gadgetId);
+      let gadget = await this.getGadgetFacet(gadgetId, chatId);
+      let {screenshot, ...report} = await this.ctx.exports.BrowserVerifier({}).verify(
+          bundle.jsCode, gadget, selectors, engine, options);
+      this.logger.info("browser verification completed", {
+        event: "browser.verify.completed", durationMs: Date.now() - startedAt,
+        size: screenshot.byteLength, browserEngine: engine,
+      });
+      return {report, screenshot};
+    } finally {
+      this.#browserVerificationRunning = false;
+      if (leaseAcquired) await limiter.release(leaseId);
+    }
   }
 
   saveAgentAttachment(chatId: number, attachment: ChatAttachmentRef, data: Uint8Array): void {
-    this.storage.chatAttachmentContent.put({
-      fileId: validateChatAttachmentId(attachment.id),
-      data,
-      state: {type: "committed", chatId},
+    let validated = validateChatAttachmentUpload({
+      name: attachment.name, mimeType: attachment.mimeType, content: data,
+    });
+    if (validated.mimeType !== attachment.mimeType || data.byteLength !== attachment.size) {
+      throw new Error("Agent attachment metadata does not match its content.");
+    }
+    this.sweepExpiredGeneratedAttachments();
+    this.ctx.storage.transactionSync(() => {
+      this.assertWorkspaceWriteCapacity(data.byteLength);
+      this.storage.chatAttachmentContent.put({
+        fileId: validateChatAttachmentId(attachment.id),
+        data,
+        state: {type: "committed", chatId,
+          expiresAt: Date.now() + BROWSER_VERIFY_SCREENSHOT_TTL_MS},
+      });
     });
   }
 
@@ -8561,17 +8682,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     );
 
     this.impl.sweepStagedChatAttachments();
+    this.impl.sweepExpiredGeneratedAttachments();
 
     let id = crypto.randomUUID();
-    this.impl.storage.chatAttachmentContent.put({
-      fileId: id,
-      data: new Uint8Array(attachment.content),
-      state: {
-        type: "staged",
-        uploadedAt: Date.now(),
-        mimeType: attachment.mimeType,
-        name: attachment.name,
-      },
+    this.impl.ctx.storage.transactionSync(() => {
+      this.impl.assertWorkspaceWriteCapacity(attachment.content.byteLength);
+      this.impl.storage.chatAttachmentContent.put({
+        fileId: id,
+        data: new Uint8Array(attachment.content),
+        state: {
+          type: "staged",
+          uploadedAt: Date.now(),
+          mimeType: attachment.mimeType,
+          name: attachment.name,
+        },
+      });
     });
     return {id};
   }

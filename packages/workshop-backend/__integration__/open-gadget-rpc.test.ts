@@ -12,6 +12,8 @@ import {
   unwrapFamilyRpcResult,
 } from "@gadgets/workshop-shared/api";
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
+import { makeOverseerStorage } from "../src/overseer.js";
 import { FAMILY_ACCESS_ADULT as adult, signFamilyAccessJwt } from "./family-access-jwt.js";
 
 type CodedError = Error & { code?: unknown };
@@ -267,5 +269,53 @@ describe("paged action-log reads", () => {
     // The pending filter is a distinct union member; this proves the regenerated validator
     // accepts it end to end.
     expect(await workspace.listActions({ filter: "pending" })).toEqual({ entries: [] });
+  });
+});
+
+describe("workspace storage compaction", () => {
+  it("truncates pre-snapshot Yjs history without changing the rendered files", async () => {
+    const connection = await connectAdult(900);
+    using _publicApi = connection.publicApi;
+    using _family = connection.family;
+    using authenticated = connection.authenticated;
+    using workspace = await authenticated.newGadget();
+    using gadget = await workspace.createGadget("storage compaction", undefined, "STORAGE_TEST");
+    let gadgetId = await gadget.getId();
+
+    // Prime snapshot metrics against the empty committed document, then exceed the existing 64KiB
+    // snapshot threshold with incompressible-enough Yjs text content.
+    expect(await gadget.getUiBundle()).toBeNull();
+    let ydoc = new Y.Doc();
+    let files = ydoc.getMap<Y.Text>(String(gadgetId));
+    files.set("client.js", new Y.Text("x".repeat(70_000)));
+    await workspace.updateCode(Y.encodeStateAsUpdateV2(ydoc));
+
+    let expected = `export const tail = ${JSON.stringify("y".repeat(80_000))};`;
+    let updates: Uint8Array[] = [];
+    ydoc.on("updateV2", update => updates.push(update));
+    files.get("client.js")!.delete(0, files.get("client.js")!.length);
+    files.get("client.js")!.insert(0, expected);
+    await workspace.updateCode(Y.mergeUpdatesV2(updates));
+
+    let metadata = await workspace.getMetadata();
+    let native = exports.OverseerDurableObject.get(
+      exports.OverseerDurableObject.idFromString(metadata.id),
+    );
+    let counts = await runInDurableObject(native, (instance) => {
+      let storage = makeOverseerStorage(
+        (instance as unknown as {ctx: DurableObjectState}).ctx.storage,
+      );
+      return {
+        codeVersions: Array.from(storage.code.list(), item => item.version),
+        snapshotVersions: Array.from(
+          new Set(Array.from(storage.snapshotParts.list(), item => item.version)),
+        ),
+        legacySnapshots: Array.from(storage.snapshots.list()).length,
+      };
+    });
+    expect(counts.snapshotVersions).toHaveLength(1);
+    expect(counts.legacySnapshots).toBe(0);
+    expect(Math.min(...counts.codeVersions)).toBeGreaterThanOrEqual(counts.snapshotVersions[0]);
+    expect((await gadget.getUiBundle())?.jsCode).toBe(expected);
   });
 });

@@ -1089,6 +1089,10 @@
           "storage": "sqlite",
           "type": "durable-object"
         },
+        "BrowserVerificationLimiterDurableObject": {
+          "storage": "sqlite",
+          "type": "durable-object"
+        },
         "FamilyDeviceSessionDurableObject": {
           "storage": "sqlite",
           "type": "durable-object"

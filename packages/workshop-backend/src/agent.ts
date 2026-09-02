@@ -26,6 +26,15 @@ import type { ModelHandle } from "./ai-models";
 import { UI_ASSET_PREFIX } from "./ui-bundle";
 import type { GadgetUiVerificationOptions } from "./browser-export";
 import {
+  assertBrowserVerifyResponseLimit,
+  MAX_BROWSER_VERIFY_PER_AGENT_RESPONSE,
+} from "./browser-verify-limits";
+import {
+  MAX_CHAT_ATTACHMENTS_PER_MESSAGE,
+  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
+  validateChatAttachmentUpload,
+} from "./chat-attachment-validation";
+import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
   findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
   protectRetainedReverts, shouldCompactChat,
@@ -2575,6 +2584,7 @@ export async function runAgent(
   });
   let generatedAttachments: ChatAttachmentRef[] = [];
   let generatedAttachmentData = new Map<string, Uint8Array>();
+  let browserVerificationCount = 0;
 
   // Schema fragment for the file tools' workpiece reference. Note that although historical logs
   // allow these tool calls to omit this param, is is required in all new tool calls, hence we do
@@ -3013,12 +3023,30 @@ export async function runAgent(
       }),
       execute: async (toolCallId, {gadget, selectors, engine, waitForSelector, locationHash}) => {
         try {
+          try {
+            assertBrowserVerifyResponseLimit(browserVerificationCount);
+          } catch (error) {
+            logger.info("browser verification rejected", {
+              event: "browser.verify.limit.rejected", limitScope: "agent-response",
+              used: browserVerificationCount, limit: MAX_BROWSER_VERIFY_PER_AGENT_RESPONSE,
+            });
+            throw error;
+          }
+          browserVerificationCount++;
           flushCapturedYdocChanges();
           let gadgetId = resolveToolWorkpieceId(gadget);
           if (gadgetId === undefined) throw new Error("There is no Gadget to verify.");
           let {report, screenshot} = await hooks.verifyGadgetUi(
               chatId, gadgetId, selectors, engine ?? "kitesurf",
               {waitForSelector, locationHash});
+          validateChatAttachmentUpload({mimeType: "image/png", content: screenshot});
+          if (generatedAttachments.length >= MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
+            throw new Error(`A chat message may contain at most ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments.`);
+          }
+          let generatedBytes = generatedAttachments.reduce((total, item) => total + item.size, 0);
+          if (generatedBytes + screenshot.byteLength > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+            throw new Error("Agent-generated attachments exceed the per-message byte limit.");
+          }
           let attachment: ChatAttachmentRef = {
             id: crypto.randomUUID(),
             mimeType: "image/png",
