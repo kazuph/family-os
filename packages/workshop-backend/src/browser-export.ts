@@ -58,8 +58,6 @@ const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const MAX_PENDING_RPC_SENDS = 1024;
 /** Maximum total string length across all pending Worker-to-browser RPC messages. */
 const MAX_PENDING_RPC_SEND_CHARS = 32 * 1024 * 1024;
-/** Quiet period indicating that the client has finished its initial DOM updates. */
-const DOM_SETTLE_MS = 250;
 /** Largest full-page screenshot capture, before image compression. */
 const MAX_SCREENSHOT_PIXELS = 25_000_000;
 /** CSP ignores `sandbox` in a meta tag, so serve the document through interception with a header. */

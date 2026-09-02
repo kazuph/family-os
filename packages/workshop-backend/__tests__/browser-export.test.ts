@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const launch = vi.hoisted(() => vi.fn());
 vi.mock("@cloudflare/puppeteer", () => ({ launch }));
 
-const { BrowserRpcTransport, limitStream, renderGadgetInBrowser, verifyGadgetUi } =
+const { BrowserRpcTransport, renderGadgetInBrowser, verifyGadgetUi } =
     await import("../src/browser-export.js");
 const { createExportDeadline, limitExportStream } =
     await import("../src/export-limits.js");
