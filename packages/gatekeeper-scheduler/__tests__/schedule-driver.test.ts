@@ -318,12 +318,10 @@ describe("ScheduleDriver", () => {
     expect(
       (await testEnv.TEST_HOOKS.read()).events.filter((event) => event.startsWith("callback:")),
     ).toHaveLength(2);
-    await vi.waitFor(async () => {
-      expect(await testEnv.TEST_HOOKS.read()).toMatchObject({
-        disposedApprovalQueues: 2,
-        disposedCallbacks: 2,
-      });
-    }, { timeout: 5_000 });
+    expect(await testEnv.TEST_HOOKS.read()).toMatchObject({
+      disposedApprovalQueues: 2,
+      disposedCallbacks: 2,
+    });
 
     await driver.disable("workspace-a", "schedule-a");
     const keys = await runInDurableObject(driver, (_instance, state) =>
@@ -540,12 +538,10 @@ describe("ScheduleDriver", () => {
       "authorize",
       `callback:${runId}`,
     ]);
-    await vi.waitFor(async () => {
-      expect(await testEnv.TEST_HOOKS.read()).toMatchObject({
-        disposedApprovalQueues: 2,
-        disposedCallbacks: 2,
-      });
-    }, { timeout: 5_000 });
+    expect(await testEnv.TEST_HOOKS.read()).toMatchObject({
+      disposedApprovalQueues: 2,
+      disposedCallbacks: 2,
+    });
     expect(reportIssue).not.toHaveBeenCalled();
   });
 

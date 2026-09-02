@@ -448,6 +448,8 @@ export class ScheduleDriver extends DurableObject {
       this.#completePending(prepared, Date.now());
       return false;
     } finally {
+      disposeStub(hookResult?.approvalQueue);
+      disposeStub(hookResult?.callback);
       disposeStub(capabilities.initiator);
     }
   }
