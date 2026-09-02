@@ -57,7 +57,11 @@ function deferredPublicApi(): {
   }
 }
 
-type Controls = { login: (token: string) => void; logout: () => void }
+type Controls = {
+  login: (token: string) => void
+  logout: () => void
+  setFamilyAuthenticatedApi: ReturnType<typeof useAuth>['setFamilyAuthenticatedApi']
+}
 
 describe('useAuth error reporting identity', () => {
   const roots: Root[] = []
@@ -80,8 +84,8 @@ describe('useAuth error reporting identity', () => {
   ): Promise<{ controls: Controls; root: Root }> {
     const captured: { controls?: Controls } = {}
     function Consumer() {
-      const { login, logout } = hook(publicApi)
-      captured.controls = { login, logout }
+      const { login, logout, setFamilyAuthenticatedApi } = hook(publicApi)
+      captured.controls = { login, logout, setFamilyAuthenticatedApi }
       return null
     }
 
@@ -113,16 +117,12 @@ describe('useAuth error reporting identity', () => {
   })
 
   it('names the user when CF Access authenticates without a token', async () => {
-    vi.stubEnv('VITE_CF_ACCESS_MODE', 'true')
-    vi.resetModules()
-    // Both imports must come from the reset registry, or the assertion would watch a mock instance
-    // that the freshly imported hook never calls.
-    const { setReportedUserId: setId } = await import('./errorReporting')
-    const { useAuth: cfAccessUseAuth } = await import('./useAuth')
+    const { controls } = await mount(stubPublicApi(person))
+    const authenticatedApi = stubPublicApi(person).authenticate('family-profile')
 
-    await mount(stubPublicApi(person), cfAccessUseAuth)
+    await act(async () => controls.setFamilyAuthenticatedApi(authenticatedApi))
 
-    expect(setId).toHaveBeenCalledExactlyOnceWith('person@example.com')
+    expect(setReportedUserId).toHaveBeenCalledExactlyOnceWith('person@example.com')
   })
 
   it('keeps the identity when one instance unmounts while another stays mounted', async () => {

@@ -191,27 +191,7 @@ function browserEndpoint(binding: BrowserRun, engine: GadgetBrowserEngine): Brow
   } as BrowserRun;
 }
 
-/** Limits the size of the exported file streamed back to the client. */
-export function limitStream(
-  source: ReadableStream<Uint8Array>,
-  maxBytes: number,
-): ReadableStream<Uint8Array> {
-  let total = 0;
-  let limiter = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      total += chunk.byteLength;
-      if (total > maxBytes) {
-        controller.error(new Error(`Gadget exports may not exceed ${maxBytes} bytes.`));
-        return;
-      }
-      controller.enqueue(chunk);
-    },
-  });
-  void source.pipeTo(limiter.writable).catch(() => {});
-  return limiter.readable;
-}
-
-async function waitForDomSettled(page: Page): Promise<void> {
+async function waitForVerificationDomSettled(page: Page): Promise<void> {
   await page.evaluate(async (quietMs: number) => {
     const browser = globalThis as unknown as {
       __workshopExportModulePromise: Promise<Record<string, unknown>>;
@@ -329,12 +309,12 @@ async function openRenderedGadget(
     let rpcSession = new RpcSession(transport, forwardingTarget);
     sessionCloser = rpcSession.getRemoteMain();
     reportPhase("loading the Gadget client module");
-    await deadline.race(waitForDomSettled(page));
+    await deadline.race(waitForVerificationDomSettled(page));
     if (options.waitForSelector) {
       reportPhase(`waiting for selector ${options.waitForSelector}`);
       await deadline.race(page.waitForSelector(options.waitForSelector));
       reportPhase("waiting for the rendered DOM to settle");
-      await deadline.race(waitForDomSettled(page));
+      await deadline.race(waitForVerificationDomSettled(page));
     }
     return {page, release};
   } catch (error) {
