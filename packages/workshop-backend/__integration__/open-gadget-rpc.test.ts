@@ -257,9 +257,10 @@ describe("workspace session across a user-DO-only reset", () => {
 // Runs after the reset tests so this session's DOs aren't torn down by abortAllDurableObjects().
 describe("paged action-log reads", () => {
   it("answers listActions on a fresh workspace", async () => {
-    using publicApi = await connect();
-    const account = await createAccount(publicApi, "actionlog");
-    using authenticated = await publicApi.authenticate(account.token);
+    const connection = await connectAdult(800);
+    using _publicApi = connection.publicApi;
+    using _family = connection.family;
+    using authenticated = connection.authenticated;
     using workspace = await authenticated.newGadget();
 
     expect(await workspace.listActions({ filter: "action" })).toEqual({ entries: [] });
