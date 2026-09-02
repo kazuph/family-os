@@ -10,14 +10,14 @@
 //   <out>/modules/<sha256>                 worker module blobs, content-addressed
 //   <out>/assets/<cfHash>                  static asset blobs, content-addressed
 //
-// Usage: node scripts/release/build-release.mjs --out <dir> [--release-id <id>]
+// Usage: node scripts/release/build-release.mjs --out <dir> [--release-id <id>] [--concurrency <n>]
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import {
   collectAssets, collectModules, stableStringify,
 } from "./hash-lib.mjs";
@@ -30,14 +30,44 @@ const PACKAGES_DIR = join(ROOT, "packages");
 const FRONTEND_DIR = join(PACKAGES_DIR, "workshop-frontend");
 
 function parseArgs(argv) {
-  const args = { out: undefined, releaseId: undefined };
+  const args = { out: undefined, releaseId: undefined, concurrency: availableParallelism() };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") args.out = resolve(argv[++i]);
     else if (argv[i] === "--release-id") args.releaseId = argv[++i];
+    else if (argv[i] === "--concurrency") {
+      args.concurrency = Number(argv[++i]);
+      if (!Number.isInteger(args.concurrency) || args.concurrency < 1) {
+        throw new Error(`--concurrency must be a positive integer, got: ${argv[i]}`);
+      }
+    }
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
   if (!args.out) throw new Error("--out <dir> is required");
   return args;
+}
+
+async function runAsync(command, argv, options = {}) {
+  console.log(`running: ${command} ${argv.join(" ")} ${options.cwd ? `(in ${options.cwd})` : ""}`);
+  await new Promise((resolveRun, rejectRun) => {
+    execFile(command, argv, { stdio: "inherit", cwd: ROOT, ...options }, error => {
+      if (error) rejectRun(error);
+      else resolveRun();
+    });
+  });
+}
+
+async function mapConcurrent(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
 }
 
 function run(command, argv, options = {}) {
@@ -78,7 +108,7 @@ function buildFrontend() {
   return collectAssets(join(FRONTEND_DIR, "dist"));
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   const commit = gitCommit();
   const releaseId = args.releaseId ?? defaultReleaseId(commit);
@@ -103,23 +133,23 @@ function main() {
   // 2. Bundle every deployable package the way `wrangler deploy` would, without uploading.
   //    Run from each package dir so custom build commands (capnweb-validate) resolve their bins.
   const bundleDir = mkdtempSync(join(tmpdir(), "gadgets-release-"));
-  const workers = [];
-  for (const pkg of findDeployablePackages(PACKAGES_DIR)) {
+  const packages = findDeployablePackages(PACKAGES_DIR);
+  const workers = await mapConcurrent(packages, args.concurrency, async pkg => {
     const outDir = join(bundleDir, pkg.name);
-    run("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", outDir],
+    await runAsync("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", outDir],
         { cwd: pkg.dir });
     const { mainModule, modules } = collectModules(outDir);
     for (const mod of modules) {
       writeFileSync(join(args.out, "modules", mod.sha256), mod.bytes);
     }
-    workers.push({
+    return {
       pkgName: pkg.name,
       config: readWranglerConfig(pkg.dir),
       mainModule,
       modules,
       deployInputs: readDeployInputs(pkg.dir),
-    });
-  }
+    };
+  });
 
   // 3. The manifest ties it together. Written last locally too, mirroring the R2 upload order
   //    (manifest presence == release complete).
@@ -139,4 +169,4 @@ function main() {
       `${Object.keys(manifest.assets).length} unique asset blobs -> ${args.out}`);
 }
 
-main();
+await main();
