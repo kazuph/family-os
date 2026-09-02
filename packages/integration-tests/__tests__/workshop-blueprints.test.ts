@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { unwrapFamilyRpcResult } from "@gadgets/workshop-shared/api";
 import { type Harness, startHarness } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { connect, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
@@ -46,7 +47,9 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
   if (sourceGadgetId === undefined) throw new Error("Source workspace has no default Gadget");
   using sourceGadget = await sourceWorkspace.getGadget(sourceGadgetId);
 
-  const blueprint = await sourceGadget.createBlueprint("Starter", "Deterministic starter");
+  const blueprint = unwrapFamilyRpcResult(
+    await sourceGadget.createBlueprint("Starter", "Deterministic starter"),
+  );
   expect(await sourceWorkspace.listBlueprints()).toContainEqual(expect.objectContaining({
     id: blueprint.id,
     title: "Starter",

@@ -1,7 +1,8 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type Overseer,
+  getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, unwrapFamilyRpcResult,
+  type AuthenticatedApi, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import { type Harness, startHarness } from "../src/harness.js";
 import { mockChatCompletion } from "../src/mock-model.js";
@@ -154,7 +155,9 @@ it.concurrent("revokes every key and recipient of one share link", async () => {
     using workspace = await owner.newGadget();
     const id = await activate(workspace);
 
-    const shareLink = await workspace.createShareLink("use", "review link");
+    const shareLink = unwrapFamilyRpcResult(
+      await workspace.createShareLink("use", "review link"),
+    );
     const copiedKey = await workspace.newShareLinkKey(shareLink.linkId);
     expect(await workspace.listShareLinks()).toContainEqual(expect.objectContaining({
       linkId: shareLink.linkId,
