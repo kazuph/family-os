@@ -1,21 +1,32 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { after, before, describe, it } from "node:test";
 import ts from "typescript";
 
+const { JSDOM } = createRequire(import.meta.url)("jsdom");
+
 const execFileAsync = promisify(execFile);
 const builder = resolve("scripts/build-gatekeeper-configurator.mjs");
 const configuratorSource =
   'import { h } from "@gadgets/configurator-ui";\n' +
   'export default { render() { throw new Error("mapped configurator failure"); return <div />; } };\n';
+const checkboxConfiguratorSource =
+  'import { CheckboxList, h } from "@gadgets/configurator-ui";\n' +
+  'const options = Array.from({ length: 12 }, (_, index) => ({ value: `tool-${index}`, title: `Tool ${index}` }));\n' +
+  'export default { initial: { tools: null }, render({ values, setValues }) {\n' +
+  '  return <CheckboxList name="tools" value={values.tools} loadOptions={async () => options}\n' +
+  '    onChange={tools => setValues({ tools })} />;\n' +
+  '} };\n';
 let fixtureDir;
 let disabledFixtureDir;
+let checkboxFixtureDir;
 
-async function createFixture(prefix, reportingEnabled) {
+async function createFixture(prefix, reportingEnabled, source = configuratorSource) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   await mkdir(join(directory, "src", "configurator"), { recursive: true });
   await mkdir(join(directory, "node_modules", "capnweb", "dist"), { recursive: true });
@@ -28,9 +39,36 @@ async function createFixture(prefix, reportingEnabled) {
   }
   await writeFile(join(directory, "node_modules", "capnweb", "dist", "index.js"),
     "export class RpcTarget {}\nexport function newMessagePortRpcSession() {}\n");
-  await writeFile(join(directory, "src", "configurator", "test-ui.tsx"), configuratorSource);
+  await writeFile(join(directory, "src", "configurator", "test-ui.tsx"), source);
   await execFileAsync(process.execPath, [builder, directory]);
   return directory;
+}
+
+async function runConfiguratorRuntime(directory) {
+  const dom = new JSDOM('<!DOCTYPE html><div id="root"></div>', {
+    pretendToBeVisual: true,
+    runScripts: "outside-only",
+  });
+  const runtime = (await readRuntime(directory)).replace(/^import .*;\n/gm, "");
+  Object.defineProperty(dom.window, "postMessage", { value: () => {} });
+  dom.window.eval(`
+    class MessageChannel { constructor() { this.port1 = {}; this.port2 = {}; } }
+    class ResizeObserver { observe() {} disconnect() {} }
+    class RpcTarget {}
+    const CSS = { escape: value => String(value) };
+    function newMessagePortRpcSession() {
+      return { gatekeeper: {}, getInitialResource: async () => null,
+        setSelectionReady() {}, resize() {}, forwardScroll() {} };
+    }
+    ${runtime}
+  `);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (dom.window.document.querySelector(".checkbox-rows")) return dom;
+    await new Promise(done => setTimeout(done, 0));
+  }
+  const error = dom.window.document.getElementById("root")?.textContent;
+  dom.window.close();
+  throw new Error(`Configurator did not render its checkbox list: ${error}`);
 }
 
 async function readRuntime(directory) {
@@ -77,11 +115,14 @@ function originalPositionFor(sourceMap, line, column) {
 before(async () => {
   fixtureDir = await createFixture("configurator-reporting-", true);
   disabledFixtureDir = await createFixture("configurator-no-reporting-", false);
+  checkboxFixtureDir = await createFixture(
+    "configurator-checkbox-", false, checkboxConfiguratorSource);
 });
 
 after(async () => {
   await rm(fixtureDir, { recursive: true, force: true });
   await rm(disabledFixtureDir, { recursive: true, force: true });
+  await rm(checkboxFixtureDir, { recursive: true, force: true });
 });
 
 describe("generated configurator error reporting", () => {
@@ -221,5 +262,35 @@ describe("generated configurator option sanitizing", () => {
     };
     pruneCheckboxEntries(entries, new Set(["tools:new"]));
     assert.deepEqual(entries, { "tools:new": { status: "ready", disabled: false } });
+  });
+});
+
+describe("generated configurator checkbox behavior", () => {
+  it("keeps the tool list in place on selection and resets it when filtering", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const root = dom.window.document.getElementById("root");
+      const rows = root.querySelector(".checkbox-rows");
+      const checkbox = root.querySelectorAll('input[type="checkbox"]')[8];
+      assert.ok(rows);
+      assert.ok(checkbox);
+      rows.scrollTop = 176;
+
+      checkbox.click();
+
+      const rowsAfterSelection = root.querySelector(".checkbox-rows");
+      assert.notEqual(rowsAfterSelection, rows);
+      assert.equal(rowsAfterSelection?.scrollTop, 176);
+      assert.match(root.textContent, /1 of 12 selected/);
+
+      const filter = root.querySelector('input[type="search"]');
+      assert.ok(filter);
+      rowsAfterSelection.scrollTop = 176;
+      filter.value = "tool";
+      filter.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      assert.equal(root.querySelector(".checkbox-rows")?.scrollTop, 0);
+    } finally {
+      dom.window.close();
+    }
   });
 });

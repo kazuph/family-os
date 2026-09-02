@@ -81,11 +81,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.18.8
@@ -112,11 +112,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       node-html-parser:
         specifier: ^7.1.0
         version: 7.1.0
@@ -146,11 +146,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       isomorphic-git:
         specifier: ^1.40.0
         version: 1.40.0
@@ -267,11 +267,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       postal-mime:
         specifier: ^2.7.5
         version: 2.7.5
@@ -295,11 +295,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -323,11 +323,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       mimetext:
         specifier: ^3.0.28
         version: 3.0.28
@@ -351,11 +351,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -376,11 +376,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -404,11 +404,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -435,11 +435,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -460,11 +460,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -488,11 +488,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       temporal-polyfill:
         specifier: 1.0.2
         version: 1.0.2
@@ -567,11 +567,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -589,11 +589,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -614,11 +614,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -636,11 +636,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -655,8 +655,8 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -756,11 +756,11 @@ importers:
         specifier: workspace:*
         version: link:../workshop-shared
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       capnweb-validate:
-        specifier: 0.2.1
-        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+        specifier: 0.3.0
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       diff:
         specifier: ^8.0.4
         version: 8.0.4
@@ -817,8 +817,8 @@ importers:
         specifier: ^1.170.18
         version: 1.170.18(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
       hash-wasm:
         specifier: ^4.12.0
         version: 4.12.0
@@ -884,8 +884,8 @@ importers:
         specifier: ^5.20260722.1
         version: 5.20260804.1
       capnweb:
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.12.0
+        version: 0.12.0
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -2550,18 +2550,17 @@ packages:
   caniuse-lite@1.0.30001806:
     resolution: {integrity: sha512-72Cuvd95zbSYPKq6Fhg8eDJRlzgWDf7/mtoZv6Qe/DYNCEBdNxoA3+rZAU2ZhGCpZlns3EssFavaZomckT5Uuw==}
 
-  capnweb-validate@0.2.1:
-    resolution: {integrity: sha512-u9IG7JPYFemnyC5NwOwHi428wIlY3Pqbb0nrjjTNfdWRlZOKuQrmZJ9cel11O73b+MPdYWN6+FWR5IWzO7uEjw==}
+  capnweb-validate@0.3.0:
+    resolution: {integrity: sha512-YjYu37+WE/cQWNM39Hv9sjov9fDgHIT/142ZD5pdt4iXk0YQqXg3FGgn5I3bg2ytQMJMsQQsnfooEKwnqc2E3A==}
     hasBin: true
     peerDependencies:
       capnweb: '>=0.7.0'
-      typescript: '>=5.7.0'
     peerDependenciesMeta:
       capnweb:
         optional: true
 
-  capnweb@0.8.0:
-    resolution: {integrity: sha512-BK/TuXUiyfLSKsmjojn70yN7oYG/JJzoURZ3tckjg5Zj2KcygPm0A5jyOlswK7SYB4f0Gh9tt+RZ132b80iLfA==}
+  capnweb@0.12.0:
+    resolution: {integrity: sha512-jgZ/LMtMVTi+RVlooIslH78Gg23XbDTdvcLghWx3oz17D6u5GuJARt+uhZk/wcTo+f81eeabfnow4d3zLBj+JQ==}
 
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
@@ -5955,12 +5954,12 @@ snapshots:
 
   caniuse-lite@1.0.30001806: {}
 
-  capnweb-validate@0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)):
+  capnweb-validate@0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)):
     dependencies:
       typescript: 5.9.3
       unplugin: 3.3.0(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     optionalDependencies:
-      capnweb: 0.8.0
+      capnweb: 0.12.0
     transitivePeerDependencies:
       - '@farmfe/core'
       - '@rspack/core'
@@ -5972,7 +5971,7 @@ snapshots:
       - vite
       - webpack
 
-  capnweb@0.8.0: {}
+  capnweb@0.12.0: {}
 
   ccount@2.0.1: {}
 
