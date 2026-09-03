@@ -32,9 +32,6 @@ import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentS
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { BrowserVerifier } from "./browser-export";
 import { BrowserVerificationLimiterDurableObject } from "./browser-verification-limiter";
-import {
-  BOOK_BLUEPRINT_ID, DEFAULT_BOOK_TUTOR_MODEL, handleBookMcpRequest, type BookMcpStore,
-} from "./book-mcp";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -1076,71 +1073,6 @@ function accessFetch(env: Env): CfAccessFetch {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
-
-    if (url.pathname === "/mcp") {
-      let accessPayload = env.CF_ACCESS_AUD
-        ? await verifyCfAccessJwt(req, env, undefined, accessFetch(env))
-        : null;
-      let users = ctx.exports.UserDurableObject;
-      let overseers = ctx.exports.OverseerDurableObject;
-      let owner = (email: string) => users.getByName(email);
-      let workspace = (id: string) => overseers.get(overseers.idFromString(id));
-      let ownedWorkspace = async (email: string, workspaceId: string) => {
-        let ownerStub = owner(email);
-        if (!(await ownerStub.listGadgets()).some(({ id }) => id === workspaceId)) {
-          throw new Error("The account does not own this workspace.");
-        }
-        return { ownerId: ownerStub.id.toString(), workspace: workspace(workspaceId) };
-      };
-      let store: BookMcpStore = {
-        async createBook(ownerEmail, title, modelId) {
-          // Creating a workspace from a blueprint reads KV and R2, mints an Overseer, and wires up
-          // the blueprint's bindings. That is exactly what the browser does, so go through the same
-          // AuthenticatedApi rather than reimplementing it. Nothing here can abort a session -- this
-          // is one HTTP request, not a Cap'n Web session -- so the abort hook has nothing to do.
-          // Creating from a blueprint opens a workspace session, which is built for a browser tab
-          // that stays connected. This is one HTTP request, so the session is closed here rather
-          // than left for the response to outlive -- its teardown talks back to the workspace, and
-          // a context that has already returned cannot answer.
-          let api = new AuthenticatedApiImpl(ctx, env, owner(ownerEmail).id, () => {});
-          let workspaceId: string;
-          {
-            using overseer = await api.newGadgetFromBlueprint(BOOK_BLUEPRINT_ID, {
-              AI: { type: "aiModel", modelId: modelId ?? DEFAULT_BOOK_TUTOR_MODEL },
-            });
-            if (title !== undefined) await overseer.setTitle(title);
-            workspaceId = (await overseer.getMetadata()).id;
-          }
-
-          // Read the workspace back through the same path book.list uses. It settles the session
-          // teardown before the response goes out, and it proves the new book is actually listed
-          // as one rather than trusting that creation implied it.
-          let book = await workspace(workspaceId).getBookMcpWorkspace(owner(ownerEmail).id.toString());
-          if (!book) throw new Error("The new workspace was not registered as a book.");
-          return book;
-        },
-        async listBooks(ownerEmail) {
-          let ownerStub = owner(ownerEmail);
-          let ownerId = ownerStub.id.toString();
-          let books = await Promise.all((await ownerStub.listGadgets()).map(({ id }) =>
-            workspace(id).getBookMcpWorkspace(ownerId)));
-          return books.filter(book => book !== null);
-        },
-        async readFiles(ownerEmail, workspaceId, paths) {
-          let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.readBookMcpFiles(owned.ownerId, paths);
-        },
-        async putFiles(ownerEmail, workspaceId, files) {
-          let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.putBookMcpFiles(owned.ownerId, files);
-        },
-        async readProgress(ownerEmail, workspaceId) {
-          let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.readBookMcpProgress(owned.ownerId);
-        },
-      };
-      return handleBookMcpRequest(req, accessPayload, store);
-    }
 
     if (url.pathname === SITE_LOGO_PATH) {
       return serveSiteLogo(req, env.BLUEPRINT_CONTENT);

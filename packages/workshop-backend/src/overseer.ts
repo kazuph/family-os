@@ -43,7 +43,6 @@ import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { assertAdultFamilyProfile } from "./family.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
-import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
@@ -7224,54 +7223,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
       await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
     }
-  }
-
-  private getOwnedBook(ownerId: string): GadgetRecord {
-    if (this.impl.ownerId !== ownerId) throw new Error("The account does not own this workspace.");
-    let gadget = this.impl.getGadgetRecord(this.impl.resolveGadgetId(undefined));
-    if (gadget.output?.id !== "book") throw new Error("The workspace is not a book.");
-    return gadget;
-  }
-
-  async getBookMcpWorkspace(ownerId: string): Promise<BookMcpWorkspace | null> {
-    if (this.impl.ownerId !== ownerId || this.impl.defaultGadgetId === undefined) return null;
-    let gadget = this.impl.getGadgetRecord(this.impl.defaultGadgetId);
-    if (gadget.output?.id !== "book") return null;
-    return { workspaceId: this.ctx.id.toString(), title: this.impl.storage.title.get(), gadgetId: gadget.id };
-  }
-
-  async readBookMcpFiles(ownerId: string, paths?: string[]): Promise<BookMcpFile[]> {
-    let gadget = this.getOwnedBook(ownerId);
-    let requested = paths ? new Set(paths) : undefined;
-    for (let path of requested ?? []) validateBookFilePath(path);
-    let facet: any = await this.impl.getGadgetFacet(gadget.id);
-    let stored = await facet.getBookFiles() as Record<string, string>;
-    let files: BookMcpFile[] = [];
-    for (let [path, content] of Object.entries(stored)) {
-      try {
-        validateBookFilePath(path);
-      } catch {
-        continue;
-      }
-      if (!requested || requested.has(path)) files.push({ path, content });
-    }
-    files.sort((a, b) => a.path.localeCompare(b.path));
-    return files;
-  }
-
-  async putBookMcpFiles(ownerId: string, files: BookMcpFile[]): Promise<BookMcpFile[]> {
-    let gadget = this.getOwnedBook(ownerId);
-    for (let file of files) validateBookFilePath(file.path);
-    let facet: any = await this.impl.getGadgetFacet(gadget.id);
-    await facet.putBookFiles(files);
-    return files.map(({ path, content }) => ({ path, content }));
-  }
-
-  async readBookMcpProgress(ownerId: string): Promise<unknown> {
-    let gadget = this.getOwnedBook(ownerId);
-    let facet: any = await this.impl.getGadgetFacet(gadget.id);
-    let state = await facet.getState() as { progress?: unknown };
-    return state?.progress ?? {};
   }
 
   async startGatekeeperSession(
