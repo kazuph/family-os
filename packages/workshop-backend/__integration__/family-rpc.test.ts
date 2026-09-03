@@ -98,8 +98,6 @@ describe("Family OS Access device generation", () => {
     expect(bookMetadata.defaultGadgetId).toEqual(expect.any(Number));
     using bookGadget = await bookWorkspace.getGadget(bookMetadata.defaultGadgetId!);
     let bookBundle = await bookGadget.getUiBundle();
-    expect(bookBundle?.jsCode).toContain("globalThis.__gadgetAssets=");
-    expect(bookBundle?.jsCode).toContain("data:image/webp;base64,");
     expect(bookBundle?.jsCode).toContain("gadget.getBookFiles");
     expect(bookBundle?.jsCode).not.toContain("client.js.gz/");
 

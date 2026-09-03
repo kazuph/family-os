@@ -3,6 +3,12 @@
 Family OS exposes a stateless Streamable HTTP MCP endpoint at `/mcp` so a local authoring agent can
 read and update the table of contents and Markdown chapters of a Workspace Book instance.
 
+The bundled `format.book` blueprint is only a generic starter for creating new books. Creating a
+book copies that blueprint into a new workspace; the workspace then owns its executable snapshot
+and its `book_files` SQLite rows. Updating the bundled blueprint therefore changes future books but
+does not rewrite an existing book. Deployment-specific manuscripts, illustrations, and reader
+customizations belong in their workspace, not in the bundled format blueprint.
+
 ## Who may call it
 
 Two kinds of caller reach `/mcp`, and they differ in whose books they may name. The Worker validates
