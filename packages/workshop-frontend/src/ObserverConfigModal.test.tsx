@@ -183,7 +183,7 @@ describe('ObserverConfigModal account selection', () => {
   it('keeps the account dropdown when multiple accounts match', async () => {
     const rendered = await render([
       account(1, 'dan@cloudflare.com'),
-      account(2, 'dan.personal@example.com'),
+      account(2, 'dan.personal@gmail.com'),
     ])
 
     expect(rendered.querySelectorAll('[data-testid="account-select"]')).toHaveLength(1)

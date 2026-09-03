@@ -1,0 +1,17 @@
+{
+  "blueprintId": "format.book",
+  "title": "Workspace Book",
+  "description": "家族がAIチューターと一緒に読む、本文・図・アニメーションを備えた技術書です。",
+  "output": {
+    "id": "book",
+    "noun": "本",
+    "plural": "本",
+    "icon": "fileText"
+  },
+  "author": {
+    "type": "user",
+    "name": "kazuph",
+    "id": "kazuph"
+  },
+  "revision": 11
+}

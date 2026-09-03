@@ -22,3 +22,12 @@ export async function signFamilyAccessJwt(appIat: number): Promise<string> {
     .setIssuer(FAMILY_ACCESS_ISSUER).setAudience(FAMILY_ACCESS_AUDIENCE)
     .setIssuedAt(appIat).setExpirationTime("1h").sign(key);
 }
+
+/** Signs an Access service-token assertion for non-interactive MCP integration tests. */
+export async function signFamilyServiceJwt(appIat: number): Promise<string> {
+  let key = await importJWK(FAMILY_ACCESS_PRIVATE_JWK, "RS256");
+  return new SignJWT({ sub: "family-integration-service", common_name: "family-mcp.integration" })
+    .setProtectedHeader({ alg: "RS256", kid: "family-integration-key" })
+    .setIssuer(FAMILY_ACCESS_ISSUER).setAudience(FAMILY_ACCESS_AUDIENCE)
+    .setIssuedAt(appIat).setExpirationTime("1h").sign(key);
+}
