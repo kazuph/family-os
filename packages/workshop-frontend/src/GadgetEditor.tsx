@@ -915,6 +915,10 @@ export default function GadgetEditor() {
       app.chatId !== undefined && app.chatId === effectiveSelectedChatId)
     if (!target) return
 
+    // On phones, keep the active conversation visible while the agent builds. The new app remains
+    // available from Preview, but opening it automatically would replace the entire chat pane.
+    if (window.matchMedia('(max-width: 767px)').matches) return
+
     setActiveTab('app')
     setWorkspaceVisibility('open', target.id)
     navigate({
