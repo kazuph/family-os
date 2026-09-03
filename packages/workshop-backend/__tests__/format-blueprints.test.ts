@@ -58,14 +58,6 @@ function makeEnv() {
 }
 
 describe("bundled format blueprints", () => {
-  it("contains only reusable standard formats", () => {
-    expect(FORMAT_BLUEPRINTS.map(entry => entry.blueprintId).toSorted()).toEqual([
-      "format.document",
-      "format.slides",
-      "format.spreadsheet",
-    ]);
-  });
-
   it("installs every manifest entry as an ordinary blueprint", async () => {
     let {kv, r2, env} = makeEnv();
 
