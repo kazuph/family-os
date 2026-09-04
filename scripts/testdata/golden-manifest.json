@@ -1093,6 +1093,10 @@
           "storage": "sqlite",
           "type": "durable-object"
         },
+        "FamilyDeviceSessionDurableObject": {
+          "state": "deleted",
+          "type": "durable-object"
+        },
         "FamilyDurableObject": {
           "storage": "sqlite",
           "type": "durable-object"

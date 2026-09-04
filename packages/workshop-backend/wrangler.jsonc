@@ -42,9 +42,9 @@
   // added by run-dev-server.js (for dev) and generate-wrangler-prod.js (for
   // production).
 
-  // Declarative Durable Object exports (replaces the legacy imperative `migrations` array);
-  // each class below has a live SQLite-backed namespace. `exports` and `migrations` are
-  // mutually exclusive at the Wrangler config layer, so only one may be present.
+  // Declarative Durable Object exports (replaces the legacy imperative `migrations` array).
+  // `exports` and `migrations` are mutually exclusive at the Wrangler config layer, so only
+  // one may be present. Deleted tombstones retire provisioned namespaces permanently.
   "exports": {
     "UserDurableObject": { "type": "durable-object", "storage": "sqlite" },
     "OverseerDurableObject": { "type": "durable-object", "storage": "sqlite" },
@@ -52,7 +52,8 @@
     "PendingLogin": { "type": "durable-object", "storage": "sqlite" },
     "LanguageModelGatekeeper": { "type": "durable-object", "storage": "sqlite" },
     "FamilyDurableObject": { "type": "durable-object", "storage": "sqlite" },
-    "BrowserVerificationLimiterDurableObject": { "type": "durable-object", "storage": "sqlite" }
+    "BrowserVerificationLimiterDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "FamilyDeviceSessionDurableObject": { "type": "durable-object", "state": "deleted" }
   },
 
   // All DO classes (UserDurableObject, OverseerDurableObject, AdminSettings, PendingLogin,
