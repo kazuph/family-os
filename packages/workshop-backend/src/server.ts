@@ -871,6 +871,7 @@ class FamilyEntryImpl extends RpcTarget implements FamilyEntry {
 @validateRpc()
 class PublicApiImpl extends RpcTarget implements PublicApi {
   users: DurableObjectNamespace<UserDurableObject>;
+  private familyDeviceSessionDisposed = false;
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
@@ -881,6 +882,16 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async ping(): Promise<void> {}
+
+  [Symbol.dispose](): void {
+    if (this.familyDeviceSessionDisposed || !this.familyDeviceId || !this.deviceSessionId) return;
+    this.familyDeviceSessionDisposed = true;
+    let family = this.ctx.exports.FamilyDurableObject.get(
+        this.ctx.exports.FamilyDurableObject.idFromName(""));
+    this.ctx.waitUntil(
+        Promise.resolve(family.unregisterDeviceSessionAbort(this.familyDeviceId, this.deviceSessionId))
+          .catch(() => {}));
+  }
 
   async getServerConfig(): Promise<ServerConfig> {
     return getServerConfig(this.env);
@@ -1231,6 +1242,8 @@ export default {
       if (isWebSocket) {
         let pair = new WebSocketPair();
         let serverSocket = pair[0];
+        serverSocket.addEventListener("close", () => api[Symbol.dispose](), { once: true });
+        serverSocket.addEventListener("error", () => api[Symbol.dispose](), { once: true });
         serverSocket.accept();
         rpcSession = newWebSocketRpcSession(serverSocket, api);
         resp = new Response(null, { status: 101, webSocket: pair[1] });

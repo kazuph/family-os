@@ -286,8 +286,18 @@ export class FamilyDurableObject extends DurableObject<Cloudflare.Env> {
 
   registerDeviceSessionAbort(deviceId: string, sessionId: string, abort: NativeRpcStub<() => void>): void {
     let handlers = this.deviceSessionAborts.get(deviceId) ?? new Map();
+    handlers.get(sessionId)?.[Symbol.dispose]();
     handlers.set(sessionId, abort.dup());
     this.deviceSessionAborts.set(deviceId, handlers);
+  }
+
+  unregisterDeviceSessionAbort(deviceId: string, sessionId: string): void {
+    let handlers = this.deviceSessionAborts.get(deviceId);
+    let abort = handlers?.get(sessionId);
+    if (!handlers || !abort) return;
+    handlers.delete(sessionId);
+    abort[Symbol.dispose]();
+    if (handlers.size === 0) this.deviceSessionAborts.delete(deviceId);
   }
 
   async revokeDeviceSessionSiblings(deviceId: string, keepSessionId: string): Promise<void> {
@@ -304,8 +314,13 @@ export class FamilyDurableObject extends DurableObject<Cloudflare.Env> {
     let entries = Array.from(handlers.entries());
     for (let [sessionId, abort] of entries) {
       if (sessionId === keepSessionId) continue;
-      void abort().catch(() => {});
       handlers.delete(sessionId);
+      try {
+        void abort().catch(() => {});
+      } catch {
+        // A browser may have disconnected before its unregister RPC reached this object.
+      }
+      abort[Symbol.dispose]();
     }
     if (handlers.size === 0) this.deviceSessionAborts.delete(deviceId);
   }
