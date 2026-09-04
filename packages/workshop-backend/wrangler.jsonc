@@ -52,7 +52,6 @@
     "PendingLogin": { "type": "durable-object", "storage": "sqlite" },
     "LanguageModelGatekeeper": { "type": "durable-object", "storage": "sqlite" },
     "FamilyDurableObject": { "type": "durable-object", "storage": "sqlite" },
-    "FamilyDeviceSessionDurableObject": { "type": "durable-object", "storage": "sqlite" },
     "BrowserVerificationLimiterDurableObject": { "type": "durable-object", "storage": "sqlite" }
   },
 

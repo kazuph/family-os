@@ -50,12 +50,19 @@ async function connect(loginIat: number, appIat: number, deviceCookie?: string):
 }
 
 describe("Family OS Access device generation", () => {
-  it("rejects a stale browser client before opening a device session", async () => {
+  it("rejects a stale browser client before opening a Worker session", async () => {
     let response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
       headers: { Upgrade: "websocket", Origin: "https://workshop.invalid" },
     }));
     expect(response.status).toBe(426);
     await expect(response.text()).resolves.toBe("Reload Family OS to update the client.");
+  });
+
+  it("serves an Access WebSocket from the Worker-owned session", async () => {
+    let connection = await connect(50, 1);
+    await expect(connection.api.ping()).resolves.toBeUndefined();
+    connection.family[Symbol.dispose]();
+    connection.api[Symbol.dispose]();
   });
 
   it("closes same-device stale capabilities and accepts only a newer identity login", async () => {

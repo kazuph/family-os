@@ -22,12 +22,6 @@ import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { BlueprintKvRecord, buildBlueprintArchiveStream, sanitizeBlueprintOutput, listFeaturedBlueprintsFromKv, parseBlueprintArchive, randomBlueprintId, readBlueprintContent, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { FamilyDurableObject, assertAdultFamilyProfile } from "./family.js";
-import {
-  FAMILY_ADULT_EMAIL_HEADER,
-  FAMILY_ADULT_SUB_HEADER,
-  FAMILY_LOGIN_IAT_HEADER,
-  registerFamilyAccessApiFactory,
-} from "./family-device-session.js";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { BrowserVerifier } from "./browser-export";
@@ -69,7 +63,6 @@ export { UserDurableObject, GatekeeperConnectCallbackImpl };
 
 // Re-export the deployment-scoped Family OS state object for wrangler's Durable Object binding.
 export { FamilyDurableObject } from "./family.js";
-export { FamilyDeviceSessionDurableObject } from "./family-device-session.js";
 
 // Re-export entrypoint types from overseer.ts.
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
@@ -1235,15 +1228,7 @@ export default {
       let deviceSessionId = env.CF_ACCESS_AUD && deviceId ? crypto.randomUUID() : undefined;
       let api = new PublicApiImpl(ctx, env, abortSession, accessPayload, deviceId, accessLoginIat, deviceSessionId);
       let resp: Response;
-      if (isWebSocket && env.CF_ACCESS_AUD && deviceId && accessPayload && accessLoginIat !== undefined) {
-        let deviceSession = ctx.exports.FamilyDeviceSessionDurableObject.get(
-            ctx.exports.FamilyDeviceSessionDurableObject.idFromName(deviceId));
-        let headers = new Headers(req.headers);
-        headers.set(FAMILY_LOGIN_IAT_HEADER, String(accessLoginIat));
-        headers.set(FAMILY_ADULT_EMAIL_HEADER, accessPayload.email as string);
-        headers.set(FAMILY_ADULT_SUB_HEADER, accessPayload.sub as string);
-        resp = await deviceSession.fetch(new Request(req.url, { headers }));
-      } else if (isWebSocket) {
+      if (isWebSocket) {
         let pair = new WebSocketPair();
         let serverSocket = pair[0];
         serverSocket.accept();
@@ -1268,6 +1253,3 @@ export default {
     return new Response("Not Found", {status: 404});
   }
 } satisfies ExportedHandler<Env>;
-
-registerFamilyAccessApiFactory((ctx, env, abortSession, accessPayload, deviceId, loginIat, deviceSessionId) =>
-    new PublicApiImpl(ctx as unknown as ExecutionContext, env, abortSession, accessPayload, deviceId, loginIat, deviceSessionId));

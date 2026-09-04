@@ -15,8 +15,8 @@
 // which essentially allows natural JavaScript / TypeScript interfaces to be exposed over the
 // network.
 //
-// The RPC interface operates over a WebSocket, which the client starts while the page is visible.
-// It disconnects while hidden and reconnects when visible again.
+// The RPC interface operates over a WebSocket, which the client starts immediately at startup and
+// keeps open for the entire lifetime of the session, reconnecting if needed.
 //
 // Gadgets run inside a sandboxed iframe which has no ability to talk to the outside world at all,
 // except postMessage() to the parent frame. Through postMessage() exchanges, the Gadget can speak
@@ -27,8 +27,8 @@ import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
-/** Identifies clients that suspend their RPC WebSocket while the page is hidden. */
-export const WORKSHOP_WEBSOCKET_CLIENT_VERSION = "suspend-when-hidden-v1";
+/** Identifies clients whose RPC WebSocket is terminated by the stateless Workshop Worker. */
+export const WORKSHOP_WEBSOCKET_CLIENT_VERSION = "worker-owned-websocket-v2";
 
 export const SERVICE_SALT = new Uint8Array([
   0xd9, 0x4e, 0x54, 0x1d, 0x29, 0xc1, 0x03, 0x74, 0x73, 0x7e, 0xb3, 0xe3, 0x34, 0x6d, 0x8f, 0x21
