@@ -18,7 +18,7 @@ import {
   signFamilyAccessJwt as token,
 } from "./family-access-jwt.js";
 
-type Connection = { api: RpcStub<PublicApi>; family: RpcStub<FamilyEntry>; cookie: string; closed: Promise<void> };
+type Connection = { api: RpcStub<PublicApi>; family: RpcStub<FamilyEntry>; cookie: string };
 
 async function reject(value: PromiseLike<unknown>): Promise<unknown> {
   try { await value; } catch (error) { return error; }
@@ -40,13 +40,12 @@ async function connect(loginIat: number, appIat: number, deviceCookie?: string):
   if (response.status !== 101) throw new Error(`Access handshake failed: ${response.status} ${await response.text()}`);
   if (!response.webSocket) throw new TypeError("Expected a WebSocket response.");
   response.webSocket.addEventListener("error", () => {});
-  let closed = new Promise<void>(resolve => response.webSocket!.addEventListener("close", () => resolve(), { once: true }));
   response.webSocket.accept();
   let api = newWebSocketRpcSession<PublicApi>(response.webSocket);
   api.onRpcBroken(() => {});
   let family = await api.authenticateFromCfAccess();
   family.onRpcBroken(() => {});
-  return { api, family, closed, cookie: response.headers.get("Set-Cookie")?.split(";", 1)[0] ?? deviceCookie! };
+  return { api, family, cookie: response.headers.get("Set-Cookie")?.split(";", 1)[0] ?? deviceCookie! };
 }
 
 describe("Family OS Access device generation", () => {
@@ -65,7 +64,7 @@ describe("Family OS Access device generation", () => {
     connection.api[Symbol.dispose]();
   });
 
-  it("closes same-device stale capabilities and accepts only a newer identity login", async () => {
+  it("rejects same-device stale capabilities and accepts only a newer identity login", async () => {
     let directIdentity = await env.ACCESS_IDENTITY.fetch(
       new Request(`${issuer}/cdn-cgi/access/get-identity`, {
         headers: { Cookie: "CF_Authorization=login-100", Accept: "application/json" },
@@ -136,19 +135,24 @@ describe("Family OS Access device generation", () => {
     let otherDeviceApi = unwrapFamilyRpcResult(await otherDevice.family.getAuthenticatedApi());
     otherDeviceApi.onRpcBroken(() => {});
     unwrapFamilyRpcResult(await first.family.selectChildProfile(child.id));
-    await second.closed;
     expectFamilyRpcError(
       await sameSessionWorkspace.createShareLink("build"),
       FAMILY_ERROR_CODES.profileCapabilityRevoked,
     );
     sameSessionAdult[Symbol.dispose]();
     await expect(otherDeviceApi.whoami()).resolves.toMatchObject({ type: 'user' });
+    await expect(reject(staleAdult.whoami())).resolves.toBeTruthy();
+    expectFamilyRpcError(
+      await staleDerived.createShareLink("build"),
+      FAMILY_ERROR_CODES.profileCapabilityRevoked,
+    );
+    staleDerived[Symbol.dispose]();
+    staleAdult[Symbol.dispose]();
+    second.family[Symbol.dispose]();
     second.api[Symbol.dispose]();
     otherDeviceApi[Symbol.dispose]();
     otherDevice.family[Symbol.dispose]();
     otherDevice.api[Symbol.dispose]();
-    await expect(reject(staleAdult.whoami())).resolves.toBeTruthy();
-    await expect(reject(staleDerived.getMetadata())).resolves.toBeTruthy();
 
     let childSession = await connect(100, 3, first.cookie);
     let childApi = unwrapFamilyRpcResult(await childSession.family.getAuthenticatedApi());
@@ -194,14 +198,18 @@ describe("Family OS Access device generation", () => {
     expectFamilyRpcError(await childSession.family.switchToAdultProfile("000000"), FAMILY_ERROR_CODES.passcodeInvalid);
     expectFamilyRpcError(await childSession.family.switchToAdultProfile("000000"), FAMILY_ERROR_CODES.passcodeInvalid);
     let thirdResult = await childSession.family.switchToAdultProfile("000000");
-    await Promise.all([childSession.closed, lockObserver.closed]);
     expectFamilyRpcError(thirdResult, FAMILY_ERROR_CODES.passcodeReauthenticationRequired);
+    await expect(reject(staleChild.whoami())).resolves.toBeTruthy();
+    expectFamilyRpcError(
+      await staleChildDerived.createShareLink("build"),
+      FAMILY_ERROR_CODES.profileCapabilityRevoked,
+    );
+    staleChildDerived[Symbol.dispose]();
+    staleChild[Symbol.dispose]();
     childSession.family[Symbol.dispose]();
     childSession.api[Symbol.dispose]();
     lockObserver.family[Symbol.dispose]();
     lockObserver.api[Symbol.dispose]();
-    await expect(reject(staleChild.whoami())).resolves.toBeTruthy();
-    await expect(reject(staleChildDerived.getMetadata())).resolves.toBeTruthy();
 
     let refreshedApplicationJwt = await connect(100, 999, first.cookie);
     await expect(refreshedApplicationJwt.family.getState()).resolves.toMatchObject({ requiresAccessReauthentication: true });

@@ -2,15 +2,11 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 
-const EXPECTED_OPEN_ERROR_CODES = new Set([
+const EXPECTED_RPC_ERROR_CODES = new Set([
   "WORKSPACE_NOT_FOUND",
   "WORKSPACE_ACCESS_DENIED",
+  "FAMILY_PROFILE_CAPABILITY_REVOKED",
 ]);
-
-function isExpectedFamilySocketClose(error: unknown): boolean {
-  return error instanceof Error
-    && error.message.includes("Peer closed WebSocket: 1008 family profile capability revoked");
-}
 
 export default defineConfig({
   esbuild: {
@@ -53,19 +49,18 @@ export default defineConfig({
     // The tests assert these exact rejections; all unrelated unhandled errors remain fatal.
     onUnhandledError(error) {
       const code = "code" in error ? error.code : undefined;
-      if (typeof code === "string" && EXPECTED_OPEN_ERROR_CODES.has(code)) return true;
-      if (isExpectedFamilySocketClose(error)) return true;
-      if (error instanceof Error
-          && error.message.includes("execution context which hosts this callback is no longer running")) {
-        return true;
+      const message = "message" in error && typeof error.message === "string" ? error.message : "";
+      if (typeof code === "string" && EXPECTED_RPC_ERROR_CODES.has(code)) return false;
+      if (message.includes("execution context which hosts this callback is no longer running")) {
+        return false;
       }
       // The reset-recovery tests abort every Durable Object mid-session; capabilities that were
       // held across the abort (e.g. the fire-and-forget AdminSettings install kicked off by the
       // fetch handler) reject on their own schedule, independent of any awaited call.
-      if (error.message?.includes("abortAllDurableObjects")) return true;
+      if (message.includes("abortAllDurableObjects")) return false;
       // Same, for the test that aborts only the user DO (state.abort with this reason).
-      if (error.message?.includes("user-DO flag probe reset")) return true;
-      if (error.message?.includes("user-DO reset injected by test")) return true;
+      if (message.includes("user-DO flag probe reset")) return false;
+      if (message.includes("user-DO reset injected by test")) return false;
     },
   },
 });

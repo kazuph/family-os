@@ -8,6 +8,7 @@ import { useRpcStub, useConnectionLost } from '../RpcContext'
 import { useAuth, CF_ACCESS_MODE } from '../useAuth'
 import { AuthProvider } from '../AuthContext'
 import { applyFamilyRpcResult, handleFamilyRpcFailure, requireFamilyRpcResult } from '../familyRpc'
+import { announceFamilyProfileChanged } from '../familyProfileEvents'
 import { familyUi, isFamilyMode } from '../familyUi'
 import { FeatureFlagsProvider } from '../FeatureFlagsContext'
 import Header from '../components/Header'
@@ -195,6 +196,7 @@ function FamilyProfileChooser({ familyEntry, onAuthenticated }: {
         handleFamilyRpcFailure(selection.error, setError)
         return
       }
+      announceFamilyProfileChanged()
       let apiResult = await familyEntry.getAuthenticatedApi()
       onAuthenticated(requireFamilyRpcResult(apiResult))
     } catch (cause) {

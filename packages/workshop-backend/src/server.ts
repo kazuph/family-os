@@ -768,11 +768,10 @@ class LoginAttemptImpl extends RpcTarget implements LoginAttempt {
 class FamilyEntryImpl extends RpcTarget implements FamilyEntry {
   private users: DurableObjectNamespace<UserDurableObject>;
   private family: DurableObjectStub<FamilyDurableObject>;
-  private deviceSessionRegistered = false;
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private adultUserId: string, private deviceId: string, private loginIat: number,
-      private abortSession: (reason: Error) => void, private deviceSessionId: string) {
+      private abortSession: (reason: Error) => void) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
     this.family = this.ctx.exports.FamilyDurableObject.get(
@@ -786,7 +785,6 @@ class FamilyEntryImpl extends RpcTarget implements FamilyEntry {
   async getAuthenticatedApi(): Promise<FamilyRpcResult<RpcStub<AuthenticatedApi>>> {
     let resolved = await this.family.resolveActiveUser(this.deviceId, this.loginIat, this.adultUserId);
     if (!resolved.ok) return resolved;
-    await this.#registerDeviceSession();
     let { userId, generation } = resolved.value;
     let user = this.users.get(this.users.idFromString(userId));
     // Pre-existing child DOs may still have onboardingCompleted=false from before children skipped
@@ -818,80 +816,31 @@ class FamilyEntryImpl extends RpcTarget implements FamilyEntry {
   }
 
   selectAdultProfile(passcode?: string): Promise<FamilyRpcResult<void>> {
-    return this.#withDeviceRevocation(this.family.selectAdult(this.deviceId, this.loginIat, passcode));
+    return this.family.selectAdult(this.deviceId, this.loginIat, passcode);
   }
 
   selectChildProfile(profileId: string): Promise<FamilyRpcResult<void>> {
-    return this.#withDeviceRevocation(this.family.selectChild(this.deviceId, this.loginIat, profileId));
+    return this.family.selectChild(this.deviceId, this.loginIat, profileId);
   }
 
   switchToAdultProfile(passcode: string): Promise<FamilyRpcResult<void>> {
-    return this.#withDeviceRevocation(this.family.switchToAdult(this.deviceId, this.loginIat, passcode),
-        (result) => !result.ok && result.error === FAMILY_ERROR_CODES.passcodeReauthenticationRequired);
-  }
-
-  async #withDeviceRevocation(
-      operation: Promise<FamilyRpcResult<void>>,
-      shouldRevokeOnError: (result: FamilyRpcResult<void>) => boolean = () => false,
-  ): Promise<FamilyRpcResult<void>> {
-    let result = await operation;
-    if (result.ok) {
-      // Await sibling/all revocation before returning so the transition result and socket
-      // invalidation share one completion boundary. Sibling revoke keeps this session alive
-      // so Cap'n Web can still deliver `result` on the calling WebSocket.
-      if (this.deviceSessionRegistered) {
-        await this.family.revokeDeviceSessionSiblings(this.deviceId, this.deviceSessionId);
-      } else {
-        await this.family.revokeAllDeviceSessionAborts(this.deviceId);
-      }
-    } else if (shouldRevokeOnError(result)) {
-      // Close same-device siblings immediately; defer aborting *this* session with waitUntil so
-      // the lock result is delivered before the calling socket is torn down (no fixed delay).
-      await this.family.revokeDeviceSessionSiblings(this.deviceId, this.deviceSessionId);
-      this.ctx.waitUntil(
-          Promise.resolve(this.family.revokeAllDeviceSessionAborts(this.deviceId)).catch(() => {}));
-    }
-    return result;
-  }
-
-  async #registerDeviceSession(): Promise<void> {
-    if (this.deviceSessionRegistered) return;
-    await this.family.registerDeviceSessionAbort(this.deviceId, this.deviceSessionId,
-        new NativeRpcStub<() => void>(() => {
-          try {
-            this.abortSession(new Error("family profile capability revoked"));
-          } catch {
-            // A sibling connection may already have ended its request context.
-          }
-        }));
-    this.deviceSessionRegistered = true;
+    return this.family.switchToAdult(this.deviceId, this.loginIat, passcode);
   }
 }
 
 @validateRpc()
 class PublicApiImpl extends RpcTarget implements PublicApi {
   users: DurableObjectNamespace<UserDurableObject>;
-  private familyDeviceSessionDisposed = false;
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
       private accessPayload?: JWTPayload, private familyDeviceId?: string,
-      private accessLoginIat?: number, private deviceSessionId?: string) {
+      private accessLoginIat?: number) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
 
   async ping(): Promise<void> {}
-
-  [Symbol.dispose](): void {
-    if (this.familyDeviceSessionDisposed || !this.familyDeviceId || !this.deviceSessionId) return;
-    this.familyDeviceSessionDisposed = true;
-    let family = this.ctx.exports.FamilyDurableObject.get(
-        this.ctx.exports.FamilyDurableObject.idFromName(""));
-    this.ctx.waitUntil(
-        Promise.resolve(family.unregisterDeviceSessionAbort(this.familyDeviceId, this.deviceSessionId))
-          .catch(() => {}));
-  }
 
   async getServerConfig(): Promise<ServerConfig> {
     return getServerConfig(this.env);
@@ -953,7 +902,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     }
 
     let email = this.accessPayload.email as string;
-    if (!this.familyDeviceId || !this.accessLoginIat || !this.deviceSessionId) {
+    if (!this.familyDeviceId || !this.accessLoginIat) {
       throw createAuthError(AUTH_ERROR_CODES.notAuthenticatedWithAccess);
     }
     let userId = this.users.idFromName(email);
@@ -975,7 +924,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     });
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible.
     return new FamilyEntryImpl(this.ctx, this.env, userId.toString(), this.familyDeviceId,
-        this.accessLoginIat, this.abortSession, this.deviceSessionId);
+        this.accessLoginIat, this.abortSession);
   }
 
   async login(username: string, passwordHash: Uint8Array): Promise<string | null> {
@@ -1236,14 +1185,11 @@ export default {
         rpcSession[Symbol.dispose]();
       };
 
-      let deviceSessionId = env.CF_ACCESS_AUD && deviceId ? crypto.randomUUID() : undefined;
-      let api = new PublicApiImpl(ctx, env, abortSession, accessPayload, deviceId, accessLoginIat, deviceSessionId);
+      let api = new PublicApiImpl(ctx, env, abortSession, accessPayload, deviceId, accessLoginIat);
       let resp: Response;
       if (isWebSocket) {
         let pair = new WebSocketPair();
         let serverSocket = pair[0];
-        serverSocket.addEventListener("close", () => api[Symbol.dispose](), { once: true });
-        serverSocket.addEventListener("error", () => api[Symbol.dispose](), { once: true });
         serverSocket.accept();
         rpcSession = newWebSocketRpcSession(serverSocket, api);
         resp = new Response(null, { status: 101, webSocket: pair[1] });

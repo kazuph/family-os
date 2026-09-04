@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi, FamilyEntry } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
+import { isFamilyProfileChangedEvent } from './familyProfileEvents'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
@@ -30,6 +31,15 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   authenticatedApiRef.current = authState.authenticatedApi
   const familyEntryRef = useRef<RpcStub<FamilyEntry> | null>(null)
   familyEntryRef.current = authState.familyEntry
+
+  useEffect(() => {
+    if (!CF_ACCESS_MODE) return
+    const onStorage = (event: StorageEvent) => {
+      if (isFamilyProfileChangedEvent(event)) window.location.reload()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   /**
    * Names the signed-in user on error reports, for as long as this stub is the current one.

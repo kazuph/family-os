@@ -8,6 +8,7 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../AuthContext'
 import { applyFamilyRpcResult, handleFamilyRpcFailure } from '../familyRpc'
+import { announceFamilyProfileChanged } from '../familyProfileEvents'
 import { familyLabel, familyUi, isFamilyMode } from '../familyUi'
 import FamilyMonsterPicker from './FamilyMonsterPicker'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './menuStyles'
@@ -146,7 +147,10 @@ export default function UserMenu() {
                     onClick={() => {
                       void familyEntry.selectChildProfile(profile.id).then((result) => {
                         if (!result.ok) handleFamilyRpcFailure(result.error, handleFamilyError)
-                        else window.location.reload()
+                        else {
+                          announceFamilyProfileChanged()
+                          window.location.reload()
+                        }
                       })
                     }}
                     className={MENU_ITEM}>
@@ -167,7 +171,10 @@ export default function UserMenu() {
                 <button type="button" onClick={() => {
                   void familyEntry.switchToAdultProfile(passcode).then((result) => {
                     if (!result.ok) handleFamilyRpcFailure(result.error, handleFamilyError)
-                    else window.location.reload()
+                    else {
+                      announceFamilyProfileChanged()
+                      window.location.reload()
+                    }
                   })
                 }} className="text-xs text-kumo-brand">
                   {familyUi.switchToAdult}

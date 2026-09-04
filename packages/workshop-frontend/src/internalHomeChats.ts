@@ -23,7 +23,6 @@ export function useInternalHomeChats() {
 
   useEffect(() => {
     let cancelled = false
-    let overseer: ReturnType<typeof authenticatedApi.openGadget> | undefined
     setWorkspaceId(null)
     setChats([])
     setLoading(true)
@@ -34,7 +33,7 @@ export function useInternalHomeChats() {
           setLoading(false)
           return
         }
-        overseer = authenticatedApi.openGadget(id)
+        using overseer = authenticatedApi.openGadget(id)
         const list = await overseer.listChats()
         if (cancelled) return
         setWorkspaceId(id)
@@ -47,7 +46,6 @@ export function useInternalHomeChats() {
       })
     return () => {
       cancelled = true
-      overseer?.[Symbol.dispose]()
     }
   }, [authenticatedApi])
 

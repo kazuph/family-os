@@ -1,4 +1,4 @@
-import { DurableObject, RpcStub as NativeRpcStub } from "cloudflare:workers";
+import { DurableObject } from "cloudflare:workers";
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
   createFamilyError,
@@ -131,7 +131,6 @@ function publicChildProfile(child: FamilyChildProfile): Extract<FamilyProfile, {
 /** The single deployment-scoped household state for Family OS. */
 export class FamilyDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: FamilyStorage;
-  private deviceSessionAborts = new Map<string, Map<string, NativeRpcStub<() => void>>>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -284,47 +283,6 @@ export class FamilyDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  registerDeviceSessionAbort(deviceId: string, sessionId: string, abort: NativeRpcStub<() => void>): void {
-    let handlers = this.deviceSessionAborts.get(deviceId) ?? new Map();
-    handlers.get(sessionId)?.[Symbol.dispose]();
-    handlers.set(sessionId, abort.dup());
-    this.deviceSessionAborts.set(deviceId, handlers);
-  }
-
-  unregisterDeviceSessionAbort(deviceId: string, sessionId: string): void {
-    let handlers = this.deviceSessionAborts.get(deviceId);
-    let abort = handlers?.get(sessionId);
-    if (!handlers || !abort) return;
-    handlers.delete(sessionId);
-    abort[Symbol.dispose]();
-    if (handlers.size === 0) this.deviceSessionAborts.delete(deviceId);
-  }
-
-  async revokeDeviceSessionSiblings(deviceId: string, keepSessionId: string): Promise<void> {
-    await this.#revokeDeviceSessionAborts(deviceId, keepSessionId);
-  }
-
-  async revokeAllDeviceSessionAborts(deviceId: string): Promise<void> {
-    await this.#revokeDeviceSessionAborts(deviceId, undefined);
-  }
-
-  async #revokeDeviceSessionAborts(deviceId: string, keepSessionId: string | undefined): Promise<void> {
-    let handlers = this.deviceSessionAborts.get(deviceId);
-    if (!handlers) return;
-    let entries = Array.from(handlers.entries());
-    for (let [sessionId, abort] of entries) {
-      if (sessionId === keepSessionId) continue;
-      handlers.delete(sessionId);
-      try {
-        void abort().catch(() => {});
-      } catch {
-        // A browser may have disconnected before its unregister RPC reached this object.
-      }
-      abort[Symbol.dispose]();
-    }
-    if (handlers.size === 0) this.deviceSessionAborts.delete(deviceId);
-  }
-
   async #session(deviceId: string, loginIat: number): Promise<FamilyDeviceSession> {
     let existing = this.storage.deviceSessions.get(deviceId);
     let session = existing ?? createFamilyDeviceSession(deviceId);
@@ -334,7 +292,6 @@ export class FamilyDurableObject extends DurableObject<Cloudflare.Env> {
       let baseline = this.storage.lastAcceptedAccessLoginIat.get();
       if (baseline === null || loginIat > baseline) this.storage.lastAcceptedAccessLoginIat.put(loginIat);
       await this.#transition(session, "adult");
-      void this.revokeAllDeviceSessionAborts(session.deviceId);
     } else if (!existing) {
       this.storage.deviceSessions.put(session);
     }
