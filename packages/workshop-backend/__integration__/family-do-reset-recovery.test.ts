@@ -8,7 +8,11 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { describe, expect, it } from "vitest";
 import type { FamilyDeviceSessionDurableObject } from "../src/family-device-session.js";
-import { FAMILY_ACCESS_ADULT as adult, signFamilyAccessJwt as token } from "./family-access-jwt.js";
+import {
+  FAMILY_ACCESS_ADULT as adult,
+  FAMILY_ACCESS_API_URL,
+  signFamilyAccessJwt as token,
+} from "./family-access-jwt.js";
 
 // Reproduces the production incident directly against real workerd: a genuine Durable Object
 // reset (`ctx.abort()`, the same primitive the runtime uses when it evicts/resets an object --
@@ -30,7 +34,7 @@ type Connection = {
 // client against a real WebSocket, so the test can assert on ground truth instead of assuming it.
 async function connect(loginIat: number, appIat: number, deviceCookie?: string): Promise<Connection> {
   let cookie = [deviceCookie, `CF_Authorization=login-${loginIat}`].filter(Boolean).join("; ");
-  let response = await workerExports.default.fetch(new Request("https://workshop.invalid/api", {
+  let response = await workerExports.default.fetch(new Request(FAMILY_ACCESS_API_URL, {
     headers: { Upgrade: "websocket", Origin: "https://workshop.invalid", Cookie: cookie,
       "cf-access-jwt-assertion": await token(appIat) },
   }));

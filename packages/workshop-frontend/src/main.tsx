@@ -2,7 +2,7 @@ import { StrictMode, useState, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
 import { RpcPromise, RpcStub, newWebSocketRpcSession } from 'capnweb'
-import { PublicApi, ServerConfig } from '@gadgets/workshop-shared/api'
+import { PublicApi, ServerConfig, WORKSHOP_WEBSOCKET_CLIENT_VERSION } from '@gadgets/workshop-shared/api'
 import { RpcContext } from './RpcContext'
 import { ServerConfigContext, ServerConfigErrorContext } from './ServerConfigContext'
 import { ThemeProvider } from './ThemeContext'
@@ -13,6 +13,7 @@ import './styles.css'
 import FrontendErrorBoundary from './FrontendErrorBoundary'
 import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
+import { ConnectionVisibility } from './ConnectionVisibility'
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
@@ -68,9 +69,10 @@ const WAKE_PROBE_MIN_IDLE_MS = 15000;
 // Callbacks to call whenever `currentStub` or connection state is updated.
 const subscribers = new Set<() => void>();
 const notifySubscribers = () => subscribers.forEach(cb => cb());
-let isConnectionLost = false;
+let isConnectionLost = document.visibilityState === 'hidden';
 let probing = false;
 let lastProvenAt = Date.now();
+let currentStub: RpcStub<PublicApi>;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -96,8 +98,9 @@ function getBackendHost(): string {
 function startConnection(): RpcStub<PublicApi> {
   lastConnectTime = Date.now();
   const apiHost = getBackendHost();
-  const wsUrl = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api';
-  const stub = newWebSocketRpcSession<PublicApi>(wsUrl);
+  const wsUrl = new URL((window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api');
+  wsUrl.searchParams.set('client-version', WORKSHOP_WEBSOCKET_CLIENT_VERSION);
+  const stub = newWebSocketRpcSession<PublicApi>(wsUrl.href);
   stub.onRpcBroken(handleBroken);
   return stub;
 }
@@ -114,6 +117,7 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
   let skipSleep = Date.now() - lastConnectTime >= INITIAL_BACKOFF_MS;
   let backoff = INITIAL_BACKOFF_MS;
   for (;;) {
+    await connectionVisibility.waitUntilVisible();
     if (!skipSleep) {
       await sleep(backoff * (0.85 + 0.3 * Math.random()));  // jittered against stampedes
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
@@ -125,6 +129,11 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
       await withTimeout(candidate.ping(), RECONNECT_PROBE_TIMEOUT_MS);
     } catch (probeError) {
       console.debug('Reconnect attempt failed:', probeError);
+      disposeQuietly(candidate);
+      continue;
+    }
+
+    if (connectionVisibility.isHidden) {
       disposeQuietly(candidate);
       continue;
     }
@@ -175,14 +184,17 @@ async function probeOnWake() {
   }
 }
 
+const connectionVisibility = new ConnectionVisibility(document, () => {
+  if (!isConnectionLost) disposeQuietly(currentStub);
+});
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') void probeOnWake();
+  if (!connectionVisibility.isHidden) void probeOnWake();
 });
 window.addEventListener('online', () => void probeOnWake());
 
 // Current stub. handleBroken() will replace this on disconnect.
 installWorkshopErrorReporting()
-let currentStub = startConnection();
+currentStub = connectionVisibility.isHidden ? new RpcPromise<PublicApi>(reconnect()) : startConnection();
 
 const router = createRouter()
 applyStoredThemeMode()

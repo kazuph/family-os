@@ -1,10 +1,14 @@
 import { importJWK, SignJWT, type JWK } from "jose";
+import { WORKSHOP_WEBSOCKET_CLIENT_VERSION } from "@gadgets/workshop-shared/api";
 
 /** Shared Access-emulator identity for Family OS integration tests. Kept in one place so the
  * `local-access-emulator.js` / `scripts/sign-family-dev-jwt.mjs` keys don't drift across the
  * test files that sign JWTs against them. */
 export const FAMILY_ACCESS_ISSUER = "https://access.integration.test";
 export const FAMILY_ACCESS_AUDIENCE = "family-integration-audience";
+/** Access-mode RPC endpoint used by current Workshop clients. */
+export const FAMILY_ACCESS_API_URL =
+  `https://workshop.invalid/api?client-version=${WORKSHOP_WEBSOCKET_CLIENT_VERSION}`;
 /** local-access-emulator.js hardcodes this identity for every login-<iat> cookie value. */
 export const FAMILY_ACCESS_ADULT = { sub: "family-integration-adult", email: "adult@integration.test" };
 

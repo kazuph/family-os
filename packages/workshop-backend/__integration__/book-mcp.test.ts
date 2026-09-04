@@ -5,6 +5,7 @@ import { unwrapFamilyRpcResult } from "@gadgets/workshop-shared/api";
 import { describe, expect, it } from "vitest";
 import {
   FAMILY_ACCESS_ADULT,
+  FAMILY_ACCESS_API_URL,
   signFamilyAccessJwt,
   signFamilyServiceJwt,
 } from "./family-access-jwt.js";
@@ -12,7 +13,7 @@ import {
 async function authenticatedApi(): Promise<{
   api: RpcStub<AuthenticatedApi>; family: RpcStub<FamilyEntry>; root: RpcStub<PublicApi>;
 }> {
-  let response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  let response = await exports.default.fetch(new Request(FAMILY_ACCESS_API_URL, {
     headers: {
       Upgrade: "websocket", Origin: "https://workshop.invalid",
       Cookie: "CF_Authorization=login-100",

@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { readCfAccessLoginIdentity } from "../src/access.js";
 import {
   FAMILY_ACCESS_ADULT as adult,
+  FAMILY_ACCESS_API_URL,
   FAMILY_ACCESS_AUDIENCE as audience,
   FAMILY_ACCESS_ISSUER as issuer,
   signFamilyAccessJwt as token,
@@ -32,7 +33,7 @@ function expectFamilyRpcError<T>(result: FamilyRpcResult<T>,
 
 async function connect(loginIat: number, appIat: number, deviceCookie?: string): Promise<Connection> {
   let cookie = [deviceCookie, `CF_Authorization=login-${loginIat}`].filter(Boolean).join("; ");
-  let response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  let response = await exports.default.fetch(new Request(FAMILY_ACCESS_API_URL, {
     headers: { Upgrade: "websocket", Origin: "https://workshop.invalid", Cookie: cookie,
       "cf-access-jwt-assertion": await token(appIat) },
   }));
@@ -49,6 +50,14 @@ async function connect(loginIat: number, appIat: number, deviceCookie?: string):
 }
 
 describe("Family OS Access device generation", () => {
+  it("rejects a stale browser client before opening a device session", async () => {
+    let response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+      headers: { Upgrade: "websocket", Origin: "https://workshop.invalid" },
+    }));
+    expect(response.status).toBe(426);
+    await expect(response.text()).resolves.toBe("Reload Family OS to update the client.");
+  });
+
   it("closes same-device stale capabilities and accepts only a newer identity login", async () => {
     let directIdentity = await env.ACCESS_IDENTITY.fetch(
       new Request(`${issuer}/cdn-cgi/access/get-identity`, {

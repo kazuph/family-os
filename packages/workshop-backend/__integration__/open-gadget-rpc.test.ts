@@ -14,7 +14,11 @@ import {
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import { makeOverseerStorage } from "../src/overseer.js";
-import { FAMILY_ACCESS_ADULT as adult, signFamilyAccessJwt } from "./family-access-jwt.js";
+import {
+  FAMILY_ACCESS_ADULT as adult,
+  FAMILY_ACCESS_API_URL,
+  signFamilyAccessJwt,
+} from "./family-access-jwt.js";
 
 type CodedError = Error & { code?: unknown };
 
@@ -51,7 +55,7 @@ function expectRpcCode(error: CodedError, code: OpenGadgetErrorCode): void {
 }
 
 async function connect(): Promise<RpcStub<PublicApi>> {
-  const response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  const response = await exports.default.fetch(new Request(FAMILY_ACCESS_API_URL, {
     headers: { Upgrade: "websocket" },
   }));
 
@@ -68,7 +72,7 @@ async function connectAdult(loginIat: number): Promise<{
   family: RpcStub<FamilyEntry>;
   authenticated: RpcStub<AuthenticatedApi>;
 }> {
-  const response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  const response = await exports.default.fetch(new Request(FAMILY_ACCESS_API_URL, {
     headers: {
       Upgrade: "websocket",
       Origin: "https://workshop.invalid",

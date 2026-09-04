@@ -9,7 +9,7 @@ import {
   unwrapFamilyRpcResult,
 } from "@gadgets/workshop-shared/api";
 import { describe, expect, it } from "vitest";
-import { signFamilyAccessJwt as token } from "./family-access-jwt.js";
+import { FAMILY_ACCESS_API_URL, signFamilyAccessJwt as token } from "./family-access-jwt.js";
 
 type Connection = {
   api: RpcStub<PublicApi>;
@@ -19,7 +19,7 @@ type Connection = {
 
 async function connect(loginIat: number, appIat: number, deviceCookie?: string): Promise<Connection> {
   let cookie = [deviceCookie, `CF_Authorization=login-${loginIat}`].filter(Boolean).join("; ");
-  let response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  let response = await exports.default.fetch(new Request(FAMILY_ACCESS_API_URL, {
     headers: { Upgrade: "websocket", Origin: "https://workshop.invalid", Cookie: cookie,
       "cf-access-jwt-assertion": await token(appIat) },
   }));
