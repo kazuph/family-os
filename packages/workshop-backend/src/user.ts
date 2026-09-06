@@ -568,7 +568,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let result: AiChatAuthorInfo[] = [];
     let managedModelIds = new Set<string>();
 
-    for (const profile of listOpenCodeGoModels(this.env)) {
+    for (const profile of await listOpenCodeGoModels(this.env)) {
       result.push(profile);
       managedModelIds.add(profile.id);
     }
@@ -613,7 +613,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async deleteModel(id: string): Promise<void> {
-    if (isOpenCodeGoModelId(id) && this.env.OPENCODE_GO_API_TOKEN) {
+    if (this.env.OPENCODE_GO_API_TOKEN && await isOpenCodeGoModelId(id)) {
       throw new Error("Cannot delete the deployment-managed OpenCode Go model.");
     }
     // In AI Gateway mode, don't allow deleting built-in suggested models.
@@ -774,9 +774,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      if (isOpenCodeGoModelId(modelId)) {
-        result.aiModel = getOpenCodeGoModel(this.env, modelId);
-      }
+      result.aiModel = await getOpenCodeGoModel(this.env, modelId);
       // In AI Gateway mode, resolve gateway models first.
       if (!result.aiModel && gwConfig) {
         result.aiModel = gwConfig.resolveModel(modelId);

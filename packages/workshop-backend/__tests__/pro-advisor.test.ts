@@ -1,11 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { consultProAdvisor } from "../src/pro-advisor.js";
 
-// Drives the real pi-ai stack (no module mocks), same technique as ai-models.test.ts: a stubbed
-// fetch captures the outgoing request and returns a non-retryable 400, so pi reports an
-// error-stop assistant message and completeText() throws -- letting us assert on exactly what was
-// sent without needing to fabricate a full successful provider response.
+// Observe real outgoing requests. The intentionally invalid credential makes the live provider
+// reject inference; discovery still reaches the real catalogs and no response is fabricated.
+const nativeFetch = globalThis.fetch;
 
 const INITIATOR: AiChatAuthorInfo = { type: "user", id: "user-123", name: "User" };
 
@@ -20,10 +19,14 @@ beforeEach(() => {
   capturedRequests.length = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input as RequestInfo, init);
-    capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
-    return Response.json({ error: { message: "stubbed" } }, { status: 400 });
+    if (request.method === "POST") {
+      capturedRequests.push({ url: request.url, headers: request.headers, body: await request.clone().text() });
+    }
+    return nativeFetch(request);
   }) as unknown as typeof fetch;
 });
+
+afterEach(() => { globalThis.fetch = nativeFetch; });
 
 describe("consultProAdvisor", () => {
   it("asks DeepSeek V4 Pro directly (not Flash), with the question and context on the wire", async () => {

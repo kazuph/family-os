@@ -46,7 +46,7 @@ export async function consultProAdvisor(
   input: ProAdvisorInput,
   signal?: AbortSignal,
 ): Promise<string> {
-  const handle = getModel(
+  const handle = await getModel(
     env,
     { provider: "opencode-go", model: OPENCODE_GO_PRO_MODEL_ID, apiToken: "" },
     initiator,

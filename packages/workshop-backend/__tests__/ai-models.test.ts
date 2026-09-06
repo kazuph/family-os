@@ -94,13 +94,13 @@ async function captureRequest(handle: ModelHandle, context: Context = {
   return capturedRequests[0];
 }
 
-describe("getModel AI Gateway routing", () => {
+describe("getModel AI Gateway routing", async () => {
   beforeEach(() => {
     capturedRequests.length = 0;
   });
 
   it("always routes OpenCode Go directly with the deployment secret", async () => {
-    const handle = getModel(
+    const handle = await getModel(
       env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
       OPENCODE_GO_CONFIG,
       INITIATOR,
@@ -117,8 +117,8 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("cf-aig-authorization")).toBeNull();
   }, 15000);
 
-  it("rejects OpenCode Go when the deployment secret is missing", () => {
-    expect(() => getModel(env(), OPENCODE_GO_CONFIG, INITIATOR)).toThrow(
+  it("rejects OpenCode Go when the deployment secret is missing", async () => {
+    await expect(getModel(env(), OPENCODE_GO_CONFIG, INITIATOR)).rejects.toThrow(
       "This OpenCode Go model is not configured by the deployment.",
     );
   });
@@ -128,8 +128,8 @@ describe("getModel AI Gateway routing", () => {
     ["kimi-k3", ["text", "image"]],
     ["glm-5.3", ["text"]],
     ["deepseek-v4-flash", ["text"]],
-  ] as const)("declares the measured input capability for %s", (model, input) => {
-    const handle = getModel(
+  ] as const)("declares the measured input capability for %s", async (model, input) => {
+    const handle = await getModel(
       env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
       { provider: "opencode-go", model, apiToken: "" },
       INITIATOR,
@@ -138,7 +138,7 @@ describe("getModel AI Gateway routing", () => {
   });
 
   it("routes DeepSeek V4 Pro directly with the deployment secret, same as Flash", async () => {
-    const handle = getModel(
+    const handle = await getModel(
       env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
       OPENCODE_GO_PRO_CONFIG,
       INITIATOR,
@@ -158,7 +158,7 @@ describe("getModel AI Gateway routing", () => {
   it.each(OPENCODE_GO_INTERLEAVED_CONFIGS)(
       "replays reasoning_content without a family-specific thinking control for $model",
       async (config) => {
-        const handle = getModel(
+        const handle = await getModel(
             env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }), config, INITIATOR);
         const request = await captureRequest(handle, {
           messages: [{
@@ -184,7 +184,7 @@ describe("getModel AI Gateway routing", () => {
   );
 
   it("sends the same provider-default thinking shape when thinking is explicitly off", async () => {
-    const handle = getModel(
+    const handle = await getModel(
         env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
         { provider: "opencode-go", model: "glm-5.3-flash", apiToken: "" }, INITIATOR);
     const request = await captureRequest(handle, undefined, {thinking: false});
@@ -194,7 +194,7 @@ describe("getModel AI Gateway routing", () => {
   }, 15000);
 
   it("retains text when an OpenCode-compatible stream omits its terminal finish reason", async () => {
-    const handle = getModel(
+    const handle = await getModel(
         env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }),
         { provider: "opencode-go", model: "glm-5.3-flash", apiToken: "" }, INITIATOR);
     const incompleteStreamFetch = (async () => new Response(
@@ -214,14 +214,14 @@ describe("getModel AI Gateway routing", () => {
     expect(message.content).toEqual([{ type: "text", text: "partial answer" }]);
   }, 15000);
 
-  it("rejects an OpenCode Go model id the deployment doesn't serve, even with the secret set", () => {
-    expect(() => getModel(
+  it("rejects an OpenCode Go model id the deployment doesn't serve, even with the secret set", async () => {
+    await expect(getModel(
       env({ OPENCODE_GO_API_TOKEN: "opencode-go-token" }), OPENCODE_GO_UNKNOWN_CONFIG, INITIATOR,
-    )).toThrow("This OpenCode Go model is not configured by the deployment.");
+    )).rejects.toThrow("This OpenCode Go model is not configured by the deployment.");
   });
 
   it("routes non-Workers providers through the platform gateway", async () => {
-    const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
+    const handle = await getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
       metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
     });
 
@@ -252,12 +252,12 @@ describe("getModel AI Gateway routing", () => {
     });
   }, 15000);
 
-  it("routes Google through the gateway's google-ai-studio passthrough", () => {
+  it("routes Google through the gateway's google-ai-studio passthrough", async () => {
     // The @google/genai SDK sends its API key as `x-goog-api-key`, which AI Gateway forwards to
     // the provider verbatim (taking precedence over the gateway's stored keys), so the documented
     // stored-key flow passes the gateway token as the SDK API key. The adapter rejects injected
     // fetch, so only the descriptor is asserted here; the header behavior is the SDK's.
-    const handle = getModel(env(), {
+    const handle = await getModel(env(), {
       provider: "google",
       model: "gemini-2.5-flash",
       apiToken: "ignored-in-gateway-mode",
@@ -275,7 +275,7 @@ describe("getModel AI Gateway routing", () => {
   });
 
   it("preserves gadget automation metadata", async () => {
-    const handle = getModel(env(), ANTHROPIC_CONFIG, GADGET_INITIATOR, {
+    const handle = await getModel(env(), ANTHROPIC_CONFIG, GADGET_INITIATOR, {
       metadata: { source: "thread-title", gadgetId: "gadget-456", chatId: 8 },
     });
 
@@ -292,22 +292,22 @@ describe("getModel AI Gateway routing", () => {
   it.each([
     { CF_AI_GATEWAY_ACCOUNT_ID: undefined },
     { CF_AI_GATEWAY_API_TOKEN: undefined },
-  ])("requires gateway credentials whenever gateway mode is enabled", (overrides) => {
-    expect(() => getModel(env(overrides), ANTHROPIC_CONFIG, INITIATOR)).toThrow(
+  ])("requires gateway credentials whenever gateway mode is enabled", async (overrides) => {
+    await expect(getModel(env(overrides), ANTHROPIC_CONFIG, INITIATOR)).rejects.toThrow(
         "CF_AI_GATEWAY_ACCOUNT_ID and CF_AI_GATEWAY_API_TOKEN (a Run + Read token) are required " +
         "when CF_AI_GATEWAY is set.");
   });
 
-  it("rejects conflicting Workers AI routing configuration", () => {
-    expect(() => getModel(env({
+  it("rejects conflicting Workers AI routing configuration", async () => {
+    await expect(getModel(env({
       CF_AI_GATEWAY_WAI: "workers-ai-gateway",
       CF_AI_GATEWAY_WAI_DIRECT: "true",
-    }), WORKERS_AI_CONFIG, INITIATOR)).toThrow(
+    }), WORKERS_AI_CONFIG, INITIATOR)).rejects.toThrow(
         "CF_AI_GATEWAY_WAI and CF_AI_GATEWAY_WAI_DIRECT cannot be configured together.");
   });
 
   it("prioritizes a connected user's Gateway over platform routing", async () => {
-    const handle = getModel(env(), WORKERS_AI_CONFIG, INITIATOR, {
+    const handle = await getModel(env(), WORKERS_AI_CONFIG, INITIATOR, {
       userGateway: { accountId: "user-account-id", apiKey: "user-token" },
       metadata: { source: "chat", gadgetId: "gadget-789", chatId: 9 },
     });
@@ -339,7 +339,7 @@ describe("getModel AI Gateway routing", () => {
   }, 15000);
 
   it("speaks the provider's native API on a connected user's Gateway", async () => {
-    const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
+    const handle = await getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
       userGateway: { accountId: "user-account-id", apiKey: "user-token" },
     });
 
@@ -361,7 +361,7 @@ describe("getModel AI Gateway routing", () => {
   }, 15000);
 
   it("routes Workers AI to its REST endpoint when explicitly configured direct", async () => {
-    const handle = getModel(
+    const handle = await getModel(
         env({ CF_AI_GATEWAY_WAI_DIRECT: "true" }),
         WORKERS_AI_CONFIG,
         INITIATOR,
@@ -383,8 +383,8 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("x-session-affinity")).toBe("session-a");
   }, 15000);
 
-  it("routes same-account Workers AI through the platform gateway by default", () => {
-    const handle = getModel(env(), WORKERS_AI_CONFIG, INITIATOR);
+  it("routes same-account Workers AI through the platform gateway by default", async () => {
+    const handle = await getModel(env(), WORKERS_AI_CONFIG, INITIATOR);
 
     expect(handle.model.api).toBe("openai-completions");
     expect(handle.model.id).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
@@ -397,8 +397,8 @@ describe("getModel AI Gateway routing", () => {
     });
   });
 
-  it("uses an explicit Workers AI gateway override", () => {
-    const handle = getModel(
+  it("uses an explicit Workers AI gateway override", async () => {
+    const handle = await getModel(
         env({ CF_AI_GATEWAY_WAI: "workers-ai-gateway" }), WORKERS_AI_CONFIG, INITIATOR);
 
     expect(handle.model.baseUrl).toBe(
@@ -411,13 +411,13 @@ describe("getModel AI Gateway routing", () => {
   });
 });
 
-describe("getModel direct routing (no gateway)", () => {
+describe("getModel direct routing (no gateway)", async () => {
   beforeEach(() => {
     capturedRequests.length = 0;
   });
 
   it("uses the provider defaults and the config's own credentials", async () => {
-    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+    const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
       apiToken: "direct-api-token",
@@ -436,7 +436,7 @@ describe("getModel direct routing (no gateway)", () => {
   it("uses the config's own account and token for direct Workers AI", async () => {
     // Outside gateway mode, Workers AI is BYOK like any other provider: credentials come from
     // the model config (never from env, which only configures gateway mode).
-    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+    const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
       ...WORKERS_AI_CONFIG,
       accountId: "user-account-id",
       apiToken: "user-token",
@@ -456,15 +456,15 @@ describe("getModel direct routing (no gateway)", () => {
   it.each([
     { accountId: undefined, apiToken: "user-token" },
     { accountId: "user-account-id", apiToken: "" },
-  ])("requires config credentials for direct Workers AI", (overrides) => {
+  ])("requires config credentials for direct Workers AI", async (overrides) => {
     // Pre-BYOK configs (saved when Workers AI needed no credentials) fail with a clear message.
-    expect(() => getModel(env({ CF_AI_GATEWAY: undefined }),
+    await expect(getModel(env({ CF_AI_GATEWAY: undefined }),
         { ...WORKERS_AI_CONFIG, ...overrides }, INITIATOR))
-        .toThrow("This Workers AI model has no Cloudflare credentials.");
+        .rejects.toThrow("This Workers AI model has no Cloudflare credentials.");
   });
 
-  it("appends /v1 to an Ollama server base URL", () => {
-    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+  it("appends /v1 to an Ollama server base URL", async () => {
+    const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "ollama",
       model: "qwen3:8b",
       apiToken: "",
@@ -478,7 +478,7 @@ describe("getModel direct routing (no gateway)", () => {
   it("sends no Authorization header for an Ollama config without an API key", async () => {
     // An empty token means local auth: a strict local proxy may reject an unexpected bearer
     // token, so no Authorization header is sent at all (matching the pre-pi provider).
-    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+    const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "ollama",
       model: "qwen3:8b",
       apiToken: "",
@@ -491,7 +491,7 @@ describe("getModel direct routing (no gateway)", () => {
   }, 15000);
 
   it("sends the configured Ollama API key as a bearer token", async () => {
-    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+    const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "ollama",
       model: "qwen3:8b",
       apiToken: "ollama-token",
@@ -502,10 +502,10 @@ describe("getModel direct routing (no gateway)", () => {
     expect(request.headers.get("authorization")).toBe("Bearer ollama-token");
   }, 15000);
 
-  it("strips a legacy /api (or /v1) suffix from an Ollama base URL", () => {
+  it("strips a legacy /api (or /v1) suffix from an Ollama base URL", async () => {
     // Configs saved before the pi migration store the native-API base (".../api").
     for (const apiUrl of ["http://my-ollama:11434/api", "http://my-ollama:11434/v1/"]) {
-      const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
         provider: "ollama",
         model: "qwen3:8b",
         apiToken: "",
@@ -516,7 +516,7 @@ describe("getModel direct routing (no gateway)", () => {
   });
 });
 
-describe("PDF attachment bridging", () => {
+describe("PDF attachment bridging", async () => {
   beforeEach(() => {
     capturedRequests.length = 0;
   });
@@ -541,7 +541,7 @@ describe("PDF attachment bridging", () => {
   }
 
   it("sends Anthropic PDFs as document blocks", async () => {
-    const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
+    const handle = await getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
     const body = await capturePdfRequest(handle) as
         { messages: { content: { type: string; source?: { media_type: string } }[] }[] };
 
@@ -560,7 +560,7 @@ describe("PDF attachment bridging", () => {
   }, 15000);
 
   it("sends OpenAI PDFs as input_file parts", async () => {
-    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+    const handle = await getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "openai",
       model: "gpt-5.2",
       apiToken: "direct-api-token",

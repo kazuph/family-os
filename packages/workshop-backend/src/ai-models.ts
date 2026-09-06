@@ -20,7 +20,7 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
-import { OPENCODE_GO_BASE_URL, isOpenCodeGoModelId } from "./opencode-go.js";
+import { OPENCODE_GO_BASE_URL, getOpenCodeGoMetadata } from "./opencode-go.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -351,36 +351,43 @@ function makeHandle(args: HandleArgs): ModelHandle {
  * access with the config's own credentials. The handle carries the matching AI Gateway log route
  * for cost accounting, when there is one.
  */
-export function getModel(env: Cloudflare.Env, config: AiModelConfig,
+export async function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
-                         options: ModelRoutingOptions = {}): ModelHandle {
+                         options: ModelRoutingOptions = {}): Promise<ModelHandle> {
   // OpenCode Go is a deployment subscription, not a Cloudflare AI Gateway provider or a
   // user-supplied model. Its credential always comes from the Worker environment.
   if (config.provider === "opencode-go") {
-    if (!isOpenCodeGoModelId(config.model) || !env.OPENCODE_GO_API_TOKEN) {
+    if (!env.OPENCODE_GO_API_TOKEN) {
       throw new Error("This OpenCode Go model is not configured by the deployment.");
     }
+    const { api, metadata } = await getOpenCodeGoMetadata(config.model);
     const suggested = SUGGESTED_MODELS["opencode-go"][config.model];
     return makeHandle({
       model: {
         id: config.model,
-        name: suggested.name,
-        api: "openai-completions",
+        name: suggested?.name ?? metadata?.name ?? config.model,
+        api,
         provider: "opencode-go",
-        baseUrl: OPENCODE_GO_BASE_URL,
-        reasoning: true,
-        input: suggested.input ?? ["text"],
+        baseUrl: api === "anthropic-messages"
+          ? OPENCODE_GO_BASE_URL.replace(/\/v1$/, "") : OPENCODE_GO_BASE_URL,
+        reasoning: metadata?.reasoning ?? true,
+        input: metadata?.modalities.input.includes("image") ? ["text", "image"] : ["text"],
         cost: ZERO_COST,
         ...modelTokenWindow(config, undefined),
+        ...(metadata ? { contextWindow: metadata.limit.context, maxTokens: metadata.limit.output } : {}),
         compat: {
           // Go exposes interleaved reasoning through reasoning_content. Preserve that field when
           // replaying assistant turns, but leave thinking controls to the gateway/model default:
           // the shared OpenAI-compatible endpoint does not use one native family's thinking
           // request format for every model.
-          requiresReasoningContentOnAssistantMessages: true,
+          requiresReasoningContentOnAssistantMessages: api === "openai-completions",
         },
       },
       apiKey: env.OPENCODE_GO_API_TOKEN,
+      headers: {
+        "User-Agent": "family-os",
+        ...(options.sessionAffinity ? { "x-opencode-session": options.sessionAffinity } : {}),
+      },
       sessionAffinity: options.sessionAffinity,
     });
   }
@@ -700,7 +707,7 @@ export class LanguageModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<LanguageModelBinding> {
-    let model = getModel(this.env, this.ctx.props.config, this.ctx.props.initiator, {
+    let model = await getModel(this.env, this.ctx.props.config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
     return new LanguageModelBindingImpl(model);

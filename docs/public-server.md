@@ -39,6 +39,16 @@ present, DeepSeek V4 Flash is the first model in the picker and connects directl
 it is not routed through Cloudflare AI Gateway. The same name should be registered as a Worker
 secret after the target Worker exists.
 
+The picker reads all available models from `https://opencode.ai/zen/go/v1/models` whenever the
+model list is loaded. New Go models therefore appear after reopening or reloading the page,
+without deploying code. The last selected model is retained in the browser for new chats; Flash
+remains the initial choice when there is no saved selection. Model resolution reads and
+ETag-revalidates the OpenCode Go catalog at `https://models.dev/api.json` for each request,
+including native Responses, Anthropic Messages, or OpenAI-compatible routing, input modalities,
+and token limits. Credentials and the API origin remain deployment-owned. Catalog failures are
+reported instead of silently serving an old fixed model list. Models absent from models.dev use
+the catalog provider protocol and the existing generic token limits until metadata is published.
+
 Do not keep both `.dev.vars` and `.env`; Wrangler gives `.dev.vars` precedence. A minimal
 configuration is:
 
