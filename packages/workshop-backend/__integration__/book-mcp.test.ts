@@ -1,4 +1,5 @@
 import { exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import type { AuthenticatedApi, FamilyEntry, PublicApi } from "@gadgets/workshop-shared/api";
 import { unwrapFamilyRpcResult } from "@gadgets/workshop-shared/api";
@@ -156,4 +157,56 @@ describe("Family OS book MCP", () => {
     family[Symbol.dispose]();
     root[Symbol.dispose]();
   });
+
+  it("addresses each book explicitly after moving into a workspace that already contains a book", async () => {
+    const token = await signFamilyAccessJwt(3);
+    const create = async (title: string) => {
+      const response = await mcp(token, "tools/call", { name: "book.create", arguments: {title} });
+      const body = await response.json() as {
+        result: {structuredContent: {value: {workspaceId: string; gadgetId: number}}};
+      };
+      return body.result.structuredContent.value;
+    };
+    const first = await create("移動する本");
+    const second = await create("移動先にある本");
+    const session = await authenticatedApi();
+    using root = session.root;
+    using family = session.family;
+    using api = session.api;
+    family.onRpcBroken(() => {});
+    api.onRpcBroken(() => {});
+    const disconnected = new Promise<void>(resolve => root.onRpcBroken(() => resolve()));
+    using source = await api.openGadget(first.workspaceId);
+    using _target = await api.openGadget(second.workspaceId);
+    using book = await source.getGadget(first.gadgetId);
+    const moved = await book.moveToWorkspace(second.workspaceId);
+    await disconnected;
+
+    const listed = await mcp(token, "tools/call", {name: "book.list", arguments: {}});
+    const list = await listed.json() as {
+      result: {structuredContent: {value: {workspaceId: string; gadgetId: number}[]}};
+    };
+    expect(list.result.structuredContent.value.filter(item => item.workspaceId === second.workspaceId)
+      .map(item => item.gadgetId).toSorted()).toEqual([second.gadgetId, moved.gadgetId].toSorted());
+    expect(list.result.structuredContent.value.some(item => item.workspaceId === first.workspaceId)).toBe(false);
+
+    const files = [{path: "content/move-test.md", content: "移動した本だけに保存する本文"}];
+    const targetHost = exports.OverseerDurableObject.get(
+      exports.OverseerDurableObject.idFromString(second.workspaceId));
+    const ownerId = exports.UserDurableObject.idFromName(FAMILY_ACCESS_ADULT.email).toString();
+    await runInDurableObject(targetHost, async instance => {
+      await expect(instance.putBookMcpFiles(ownerId, files)).rejects.toThrow("gadgetId");
+    });
+    const written = await mcp(token, "tools/call", {name: "book.put_files", arguments: {
+      workspaceId: second.workspaceId, gadgetId: moved.gadgetId, files,
+    }});
+    await expect(written.json()).resolves.toMatchObject({result: {structuredContent: {value: files}}});
+    for (const [gadgetId, expected] of [[moved.gadgetId, files], [second.gadgetId, []]] as const) {
+      const read = await mcp(token, "tools/call", {name: "book.read_files", arguments: {
+        workspaceId: second.workspaceId, gadgetId, paths: [files[0].path],
+      }});
+      await expect(read.json()).resolves.toMatchObject({result: {structuredContent: {value: expected}}});
+    }
+  });
+
 });

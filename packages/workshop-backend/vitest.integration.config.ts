@@ -1,6 +1,14 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
+import { unstable_getMiniflareWorkerOptions, unstable_readConfig } from "wrangler";
+
+// Replace this one KV binding with the local fault-capable emulator. Miniflare merges
+// binding maps additively, so remove the native binding before composing worker options.
+const runtimeConfig = unstable_readConfig({config: "./wrangler.jsonc"});
+runtimeConfig.kv_namespaces = runtimeConfig.kv_namespaces.filter(binding => binding.binding !== "BLUEPRINTS");
+const {workerOptions, externalWorkers, define} = unstable_getMiniflareWorkerOptions(
+    runtimeConfig, undefined, {overrides: {enableContainers: false}});
 
 const EXPECTED_RPC_ERROR_CODES = new Set([
   "WORKSPACE_NOT_FOUND",
@@ -9,6 +17,7 @@ const EXPECTED_RPC_ERROR_CODES = new Set([
 ]);
 
 export default defineConfig({
+  define,
   esbuild: {
     target: "es2022",
   },
@@ -18,22 +27,50 @@ export default defineConfig({
       main: "./src/server.ts",
       remoteBindings: false,
       miniflare: {
+        ...workerOptions,
+        compatibilityFlags: workerOptions.compatibilityFlags,
+        wrappedBindings: {
+          BLUEPRINTS: {
+            scriptName: "local-blueprints-kv-emulator",
+            bindings: {NAMESPACE: "gadgets-blueprint-metadata"},
+          },
+        },
         bindings: {
+          ...workerOptions.bindings,
           CF_ACCESS_AUD: "family-integration-audience",
           CF_ACCESS_ISS: "https://access.integration.test",
           OPENCODE_GO_API_TOKEN: "integration-opencode-go-token",
         },
         serviceBindings: {
+          ...workerOptions.serviceBindings,
           ACCESS_IDENTITY: "local-access-emulator",
+          LOCAL_ACTION_PROVIDER: "local-action-provider",
+          LOCAL_HOOK_CONTROLLER: "local-hook-controller-emulator",
         },
-        workers: [{
+        workers: [...externalWorkers, {
+          name: "local-blueprints-kv-emulator",
+          modules: true,
+          scriptPath: "./__integration__/local-blueprints-kv-emulator.js",
+          kvNamespaces: {STORE: "gadgets-blueprint-metadata"},
+        }, {
+          name: "local-action-provider",
+          modules: true,
+          scriptPath: "./__integration__/local-action-provider.js",
+          compatibilityDate: "2026-02-02",
+          compatibilityFlags: ["allow_irrevocable_stub_storage"],
+          durableObjects: {PROVIDER: {className: "LocalActionProvider", useSQLite: true}},
+        }, {
+          name: "local-hook-controller-emulator",
+          modules: true,
+          scriptPath: "./__integration__/local-hook-controller-emulator.js",
+          compatibilityDate: "2026-02-02",
+          compatibilityFlags: ["allow_irrevocable_stub_storage"],
+          durableObjects: {CALLBACK: {className: "HookCallback", useSQLite: true}},
+        }, {
           name: "local-access-emulator",
           modules: true,
           scriptPath: "./__integration__/local-access-emulator.js",
         }],
-      },
-      wrangler: {
-        configPath: "./wrangler.jsonc",
       },
     }),
   ],
