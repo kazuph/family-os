@@ -1695,6 +1695,9 @@ export type ActionLogEntry = {
   /** The workspace whose action store owns this entry and its gatekeeper capability. */
   sourceWorkspaceId: string;
 
+  /** Host-local change sequence, used to reject stale action notifications and replay snapshots. */
+  sourceVersion?: number;
+
   /**
    * Which gatekeeper produced this action? Omitted if the log entry came from a non-gatekeeper
    * source (e.g. webFetch tool).

@@ -954,25 +954,24 @@ function stampBindHookAction(storage: OverseerStorage, actionId: number, enabled
 }
 
 async function subscribeActionRecords(
-    impl: OverseerImpl, subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date,
-    gadgetIds?: ReadonlySet<WorkpieceId> | (() => ReadonlySet<WorkpieceId>), sendReady = true,
+    impl: OverseerImpl, subscriber: RpcStub<ActionsSubscriber> | NativeRpcStub<NativeRpcTarget & ActionsSubscriber>, startAfter?: Date,
+    gadgetIds?: ReadonlySet<WorkpieceId | undefined> | (() => ReadonlySet<WorkpieceId | undefined>), sendReady = true,
     assertAccess?: () => void): Promise<NativeRpcStub<any>> {
   let actions = impl.storage.actions;
   subscriber = subscriber.dup();
   let subscribed = false;
   let disposed = false;
-  let sourceWorkspaceId = impl.ctx.id.toString();
   let visible = (record: ActionRecord) => {
     let allowed = typeof gadgetIds === "function" ? gadgetIds() : gadgetIds;
     let gadgetId = impl.actionGadgetId(record);
-    return allowed === undefined || (gadgetId !== undefined && allowed.has(gadgetId));
+    return allowed === undefined || allowed.has(gadgetId);
   };
 
   let deliver = (record: ActionRecord) => {
     if (!visible(record)) return;
     try {
       assertAccess?.();
-      subscriber.entry(actionRecordToLog(record, sourceWorkspaceId)).catch(unsubscribe);
+      subscriber.entry(impl.actionLogEntry(record)).catch(unsubscribe);
     } catch {
       unsubscribe();
     }
@@ -1008,7 +1007,7 @@ async function subscribeActionRecords(
           {...from, end, limit: ACTION_REPLAY_PAGE_SIZE})];
       let visiblePage = page.filter(visible);
       await Promise.all(visiblePage.map(record =>
-          subscriber.entry(actionRecordToLog(record, sourceWorkspaceId))));
+          subscriber.entry(impl.actionLogEntry(record))));
       if (page.length < ACTION_REPLAY_PAGE_SIZE) break;
       from = {startAfter: actionLastChangedKey(page.at(-1)!)};
     }
@@ -1107,6 +1106,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextGatekeeperId: 0,
 
       nextActionId: 0,
+      movedActionSequence: 0,
       nextChatId: 0,
       nextHookId: 0,
 
@@ -1203,6 +1203,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       boundHooks: collection<BoundHookRecord>()({
         primaryKey: "id",
       }),
+
+      movedActionVersions: collection<{id: number, version: number}>()({primaryKey: "id"}),
 
       // User-enabled rules to auto-approve actions carrying a given action kind on a given
       // gatekeeper. Presence of a record -> the rule is enabled. Legacy rules are workspace-wide;
@@ -1469,6 +1471,8 @@ export function sanitizeMessageFormatRefs(
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
+  #movedActionSubscribers = new Set<(entry: ActionLogEntry) => void>();
+  #movedActionDelivery: Promise<void> = Promise.resolve();
 
   // Identifies this DO instance. Sent to chat subscribers so they can detect a full server
   // restart (see AiChatSubscriber.streamGeneration). A timestamp suffices since a DO won't
@@ -1810,9 +1814,64 @@ class OverseerImpl implements AgentHooks {
       remove: () => this.markOutputsDirty(),
     });
 
+    // Send plain-data notifications only when leased actions change. Retaining a remote
+    // subscriber here would keep every source workspace connected while the target is idle.
+    this.storage.actions.subscribe({
+      add: record => this.#publishMovedAction(record),
+      update: (_oldRecord, record) => this.#publishMovedAction(record),
+      remove: record => { this.storage.movedActionVersions.delete(record.id); },
+    });
+
     // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
     // interrupted by a server restart).
     this.#resumeInterruptedAgents();
+  }
+
+  #publishMovedAction(record: ActionRecord): void {
+    let gadgetId = this.actionGadgetId(record);
+    if (gadgetId === undefined) return;
+    let move = this.storage.gadgets.get(gadgetId)?.move;
+    if (move?.state !== "leased" || move.targetGadgetId === undefined || !this.ownerId) return;
+    let namespace = this.ctx.exports.OverseerDurableObject;
+    let targetWorkspaceId = move.targetWorkspaceId;
+    let targetGadgetId = move.targetGadgetId;
+    let token = move.token;
+    let ownerId = this.ownerId;
+    let sourceWorkspaceId = this.ctx.id.toString();
+    let version = this.storage.movedActionSequence.get() + 1;
+    this.storage.movedActionSequence.put(version);
+    this.storage.movedActionVersions.put({id: record.id, version});
+    let entry = this.actionLogEntry(record);
+
+    // Serialize changes from this host so a hook toggle cannot overtake its previous value.
+    // The call carries no stubs and returns no stubs; its session ends at acknowledgement.
+    this.#movedActionDelivery = this.#movedActionDelivery.then(async () => {
+      let target = namespace.get(namespace.idFromString(targetWorkspaceId));
+      await target.receiveMovedGadgetAction(
+          sourceWorkspaceId, gadgetId, targetGadgetId, token, ownerId, entry);
+    }).catch(error => {
+      // The authoritative action stays in this host and is replayed on reconnection.
+      this.logger.warn("failed to forward a moved gadget action", {
+        event: "gadget.move.action-notification.failed", error,
+      });
+    });
+    this.ctx.waitUntil(this.#movedActionDelivery);
+  }
+
+  subscribeMovedActionEntries(subscriber: (entry: ActionLogEntry) => void): () => void {
+    this.#movedActionSubscribers.add(subscriber);
+    return () => { this.#movedActionSubscribers.delete(subscriber); };
+  }
+
+  deliverMovedActionEntry(entry: ActionLogEntry): void {
+    for (let subscriber of this.#movedActionSubscribers) subscriber(entry);
+  }
+
+  actionLogEntry(record: ActionRecord): ActionLogEntry {
+    return {
+      ...actionRecordToLog(record, this.ctx.id.toString()),
+      sourceVersion: this.storage.movedActionVersions.get(record.id)?.version ?? 0,
+    };
   }
 
   // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
@@ -2116,7 +2175,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   actionPage(beforeId: number | undefined, filter: ActionHistoryFilter = "all",
-             gadgetIds?: ReadonlySet<WorkpieceId>):
+             gadgetIds?: ReadonlySet<WorkpieceId | undefined>):
       {entries: ActionLogEntry[], nextBeforeId?: number} {
     let actions = this.storage.actions;
     let scanBefore = beforeId;
@@ -2132,10 +2191,8 @@ class OverseerImpl implements AgentHooks {
       if (page.length === 0) break;
 
       for (let record of page) {
-        if (gadgetIds !== undefined &&
-            (this.actionGadgetId(record) === undefined ||
-             !gadgetIds.has(this.actionGadgetId(record)!))) continue;
-        entries.push(actionRecordToLog(record, this.ctx.id.toString()));
+        if (gadgetIds !== undefined && !gadgetIds.has(this.actionGadgetId(record))) continue;
+        entries.push(this.actionLogEntry(record));
         if (entries.length === ACTION_HISTORY_PAGE_DEFAULT_LIMIT) {
           return {entries, nextBeforeId: record.id};
         }
@@ -2381,7 +2438,7 @@ class OverseerImpl implements AgentHooks {
       this.storage.externalChats.delete(record.externalChatKey);
     }
     for (let record of Array.from(this.storage.gadgetResponseDeliveries.list())) {
-      this.storage.gadgetResponseDeliveries.delete(record.idempotencyKey);
+      this.#deleteExternalMessageResponseDeliveryRecord(record);
     }
     for (let record of Array.from(this.storage.chatAttachmentContent.list())) {
       this.storage.chatAttachmentContent.delete(record.fileId);
@@ -2402,6 +2459,7 @@ class OverseerImpl implements AgentHooks {
     for (let record of Array.from(this.storage.blueprints.list())) this.storage.blueprints.delete(record.id);
     for (let record of Array.from(this.storage.observers.list())) this.storage.observers.delete(record.profileId);
 
+    this.#updateExternalMessageResponseDeliveryAlarm();
     await owner.deleteGadget(this.ctx.id.toString());
     this.storage.hostOnly.put(true);
   }
@@ -3151,11 +3209,15 @@ class OverseerImpl implements AgentHooks {
     let codeVersions = this.storage.code;
     subscriber = subscriber.dup();
 
+    let disposed = false;
     let unsubscribe = () => {
+      if (disposed) return;
+      disposed = true;
       codeVersions.unsubscribe(dbSubscriber);
       subscriber[Symbol.dispose]();
     };
     let sendSnapshot = () => {
+      if (disposed) return;
       if (!allowLeasedHost) this.getUserGadgetRecord(gadgetId);
       let {ydoc, version} = this.buildGadgetCodeDoc("current");
       try {
@@ -8108,13 +8170,28 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return this.impl.actionPage(beforeId, filter, gadgetIds);
   }
 
-  async subscribeMovedGadgetActions(
+  async replayMovedGadgetActions(
       leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
-      subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>> {
+      subscriber: NativeRpcStub<NativeRpcTarget & ActionsSubscriber>, startAfter?: Date): Promise<number> {
     let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
-    return await subscribeActionRecords(
-        this.impl, subscriber, startAfter, gadgetIds, false,
-        () => this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId));
+    let version = this.impl.storage.movedActionSequence.get();
+    if (startAfter !== undefined) {
+      using _subscription = await subscribeActionRecords(
+          this.impl, subscriber, startAfter, gadgetIds, false,
+          () => this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId));
+    }
+    return version;
+  }
+
+  /** Accept a host's action notification only for the matching, published target proxy. */
+  receiveMovedGadgetAction(sourceWorkspaceId: string, sourceGadgetId: WorkpieceId,
+      targetGadgetId: WorkpieceId, token: string, ownerId: string, entry: ActionLogEntry): void {
+    let gadget = this.impl.storage.gadgets.get(targetGadgetId);
+    let source = gadget?.movedFrom;
+    if (this.impl.ownerId !== ownerId || !gadget || gadget.movePending || !source
+        || source.sourceWorkspaceId !== sourceWorkspaceId || source.sourceGadgetId !== sourceGadgetId
+        || source.token !== token || entry.sourceWorkspaceId !== sourceWorkspaceId) return;
+    this.impl.deliverMovedActionEntry(entry);
   }
 
   async approveMovedAction(
@@ -9637,11 +9714,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         this.impl.logger);
   }
 
-  #localActionGadgetIds(): Set<WorkpieceId> {
-    return new Set([...this.impl.storage.gadgets.list()]
+  #localActionGadgetIds(): Set<WorkpieceId | undefined> {
+    // Workspace chat actions have no gadget ID and remain local. Host lease sets never
+    // include undefined, so these actions are not exposed through a moved gadget.
+    return new Set<WorkpieceId | undefined>([undefined, ...[...this.impl.storage.gadgets.list()]
         .filter(gadget => !gadget.pending && !gadget.movePending && !gadget.movedFrom
           && gadget.move?.state !== "leased")
-        .map(gadget => gadget.id));
+        .map(gadget => gadget.id)]);
   }
 
   #localGatekeeperIds(): Set<WorkpieceId> {
@@ -10198,7 +10277,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
     let action = this.impl.storage.actions.get(id);
-    if (!action) {
+    if (!action || !this.#localActionGadgetIds().has(this.impl.actionGadgetId(action))) {
       throw new Error(`No such action: ${id}`);
     }
 
@@ -10231,7 +10310,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async listHooks(): Promise<BoundHookInfo[]> {
     let defaultGadgetId = this.impl.defaultGadgetId;
     let result: BoundHookInfo[] = [];
+    let local = this.#localActionGadgetIds();
     for (let record of this.impl.storage.boundHooks.list()) {
+      if (!local.has(record.gadgetId ?? defaultGadgetId)) continue;
       let gatekeeper = this.impl.storage.gatekeepers.get(record.gatekeeperId);
       result.push({
         id: record.id,
@@ -10263,8 +10344,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           lease, this.impl.ctx.id.toString(), this.impl.ownerId!, id);
       return;
     }
-    let record = this.impl.storage.boundHooks.get(id);
-    if (!record) throw new Error("Invalid hook ID.");
+    let record = this.#getLocalHook(id);
 
     if (!record.enabled) {
       let props: GatekeeperHookLoopbackProps = {
@@ -10298,8 +10378,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           lease, this.impl.ctx.id.toString(), this.impl.ownerId!, id);
       return;
     }
-    let record = this.impl.storage.boundHooks.get(id);
-    if (!record) throw new Error("Invalid hook ID.");
+    let record = this.#getLocalHook(id);
 
     if (record.enabled) {
       await record.controller.disable();
@@ -10317,7 +10396,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           lease, this.impl.ctx.id.toString(), this.impl.ownerId!, id);
       return;
     }
+    this.#getLocalHook(id);
     return this.impl.deleteHook(id);
+  }
+
+  #getLocalHook(id: number): BoundHookRecord {
+    let record = this.impl.storage.boundHooks.get(id);
+    if (!record || !this.#localActionGadgetIds().has(record.gadgetId ?? this.impl.defaultGadgetId)) {
+      throw new Error("Invalid hook ID.");
+    }
+    return record;
   }
 
   // Resume a turn suspended on awaitDecision once all awaited actions from that turn are approved.
@@ -10372,7 +10460,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
     let action = this.impl.storage.actions.get(id);
-    if (!action) {
+    if (!action || !this.#localActionGadgetIds().has(this.impl.actionGadgetId(action))) {
       throw new Error(`No such action: ${id}`);
     }
 
@@ -10614,9 +10702,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     subscriber = subscriber.dup();
     let children: RpcStub<any>[] = [];
     let disposed = false;
+    let moved = this.#movedGadgetLeases();
+    let initializing = new Set(moved.keys());
+    let sourceFloors = new Map<string, number>();
+    let buffered = new Map<string, ActionLogEntry>();
+    let versions = new Map<string, number>();
+    let forward = async (entry: ActionLogEntry): Promise<void> => {
+      if (disposed) return;
+      let key = `${entry.sourceWorkspaceId}:${entry.id}`;
+      let version = entry.sourceVersion ?? 0;
+      let previous = versions.get(key);
+      if (previous !== undefined && version < previous) return;
+      versions.set(key, version);
+      await subscriber.entry(entry);
+    };
     let unsubscribe = () => {
       if (disposed) return;
       disposed = true;
+      unsubscribeMoved();
       for (let child of children) child[Symbol.dispose]();
       subscriber[Symbol.dispose]();
     };
@@ -10624,13 +10727,34 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (disposed) child[Symbol.dispose]();
       else children.push(child);
     };
+    let unsubscribeMoved = this.impl.subscribeMovedActionEntries(entry => {
+      let version = entry.sourceVersion ?? 0;
+      if (initializing.has(entry.sourceWorkspaceId)) {
+        let key = `${entry.sourceWorkspaceId}:${entry.id}`;
+        if (version >= (buffered.get(key)?.sourceVersion ?? 0)) buffered.set(key, entry);
+      } else if (version > (sourceFloors.get(entry.sourceWorkspaceId) ?? 0)) {
+        forward(entry).catch(unsubscribe);
+      }
+    });
     try {
       addChild(await subscribeActionRecords(
           this.impl, subscriber, startAfter, () => this.#localActionGadgetIds(), false));
-      let moved = this.#movedGadgetLeases();
+      // Calls finish without retaining a remote subscription. The source's floor excludes
+      // queued notifications older than the pending snapshot the browser loads after ready().
+      using replaySubscriber = new NativeRpcStub(new class extends NativeRpcTarget {
+        entry(entry: ActionLogEntry): Promise<void> { return forward(entry); }
+        ready(): void {}
+      });
       await Promise.all([...moved].map(async ([sourceWorkspaceId, leases]) => {
-        addChild(await this.#movedSource(sourceWorkspaceId).subscribeMovedGadgetActions(
-            leases, this.impl.ctx.id.toString(), this.impl.ownerId!, subscriber, startAfter));
+        let floor = await this.#movedSource(sourceWorkspaceId).replayMovedGadgetActions(
+            leases, this.impl.ctx.id.toString(), this.impl.ownerId!, replaySubscriber, startAfter);
+        sourceFloors.set(sourceWorkspaceId, floor);
+        initializing.delete(sourceWorkspaceId);
+        for (let [key, entry] of buffered) {
+          if (entry.sourceWorkspaceId !== sourceWorkspaceId) continue;
+          buffered.delete(key);
+          if ((entry.sourceVersion ?? 0) > floor) await forward(entry);
+        }
       }));
       if (!disposed) await subscriber.ready();
     } catch (error) {
@@ -10741,7 +10865,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
       if (record) {
-        msg.actionLog = actionRecordToLog(record, this.impl.ctx.id.toString());
+        msg.actionLog = this.impl.actionLogEntry(record);
       }
     }
     return this.impl.hydrateChatMessageForClient(msg);
