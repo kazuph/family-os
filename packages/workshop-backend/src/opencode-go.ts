@@ -14,6 +14,11 @@ export const OPENCODE_GO_PRO_MODEL_ID = "deepseek-v4-pro";
 /** OpenAI-compatible API base for deployment-managed OpenCode Go models. */
 export const OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 
+// User-requested picker exclusions: these catalog entries were rejected by Go's upstream.
+const UNAVAILABLE_MODEL_IDS = new Set([
+  "hy3-preview", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni",
+]);
+
 const modelListSchema = z.object({ data: z.array(z.object({ id: z.string().min(1) })) });
 const metadataSchema = z.object({
   "opencode-go": z.object({
@@ -108,7 +113,7 @@ export async function getOpenCodeGoModel(env: Cloudflare.Env, modelId: string = 
 /** List OpenCode Go models in deployment-default picker order. */
 export async function listOpenCodeGoModels(env: Cloudflare.Env): Promise<AiChatAuthorInfo[]> {
   if (!env.OPENCODE_GO_API_TOKEN) return [];
-  const ids = await listOpenCodeGoModelIds();
+  const ids = (await listOpenCodeGoModelIds()).filter(id => !UNAVAILABLE_MODEL_IDS.has(id));
   // Preserve the existing default without constraining which new models can appear.
   ids.sort((a, b) => Number(b === OPENCODE_GO_FLASH_MODEL_ID) - Number(a === OPENCODE_GO_FLASH_MODEL_ID));
   return ids.map(id => ({

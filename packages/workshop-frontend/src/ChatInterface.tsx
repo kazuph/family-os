@@ -60,6 +60,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import * as Y from "yjs";
 import styles from "./ChatInterface.module.css";
+import { modelPickerGroups, modelPickerLabel } from "./model-picker";
 import {
   getStoredSelectedModel,
   persistSelectedModel,
@@ -3267,9 +3268,10 @@ export const ChatInput = ({
     : consoleLogSeverity === "warn"
       ? "warning"
       : "log";
+  const selectedModelInfo = models.find((model) => model.id === selectedModel);
   const selectedModelLabel = selectedModel == null
     ? "No agent"
-    : models.find((model) => model.id === selectedModel)?.name ?? selectedModel;
+    : selectedModelInfo ? modelPickerLabel(selectedModelInfo) : selectedModel;
 
   const hasReadyAttachment = pendingAttachments.some(
     (attachment) => attachment.uploadState === "ready" && attachment.ref,
@@ -3669,21 +3671,30 @@ export const ChatInput = ({
                   }
                 />
                 <DropdownMenu.Content className="themed-floating-shadow-lg !z-[1100] !min-w-[190px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
-                  {models.map((model) => {
-                    const active = selectedModel === model.id;
-                    return (
-                      <DropdownMenu.Item
-                        key={model.id}
-                        onClick={() => onModelChange(model.id)}
-                        className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
-                      >
-                        <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                        {active && (
-                          <Check size={12} weight="bold" className="ml-3 flex-shrink-0 text-kumo-inactive" />
-                        )}
-                      </DropdownMenu.Item>
-                    );
-                  })}
+                  {modelPickerGroups(models).map((group) => (
+                    <DropdownMenu.Group key={group.kind}>
+                      <DropdownMenu.Label className="!text-xs text-kumo-inactive">
+                        {group.kind === "recommended" ? familyLabel("Recommended", "おすすめ")
+                          : group.kind === "alpha" ? familyLabel("Alpha / experimental", "Alpha・試験モデル")
+                          : familyLabel("Other models", "その他のモデル")}
+                      </DropdownMenu.Label>
+                      {group.models.map((model) => {
+                        const active = selectedModel === model.id;
+                        return (
+                          <DropdownMenu.Item
+                            key={model.id}
+                            onClick={() => onModelChange(model.id)}
+                            className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
+                          >
+                            <span className="min-w-0 flex-1 truncate">{modelPickerLabel(model)}</span>
+                            {active && (
+                              <Check size={12} weight="bold" className="ml-3 flex-shrink-0 text-kumo-inactive" />
+                            )}
+                          </DropdownMenu.Item>
+                        );
+                      })}
+                    </DropdownMenu.Group>
+                  ))}
                   <div className="my-1 border-t border-kumo-line/70" />
                   <DropdownMenu.Item
                     onClick={() => onModelChange(null)}

@@ -19,7 +19,11 @@ describe("listOpenCodeGoModels", async () => {
 
     const response = await fetch("https://opencode.ai/zen/go/v1/models");
     const payload = await response.json() as { data: { id: string }[] };
-    expect(models.map(model => model.id).toSorted()).toEqual(payload.data.map(model => model.id).toSorted());
+    const excluded = ["hy3-preview", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni"];
+    expect(models.map(model => model.id).toSorted()).toEqual(
+      payload.data.map(model => model.id).filter(id => !excluded.includes(id)).toSorted());
+    expect(models.some(model => excluded.includes(model.id))).toBe(false);
+    expect(models.some(model => model.id === "omen-alpha")).toBe(true);
     expect(models[0].id).toBe(OPENCODE_GO_FLASH_MODEL_ID);
     expect(models.every(model => model.managedByDeployment)).toBe(true);
     expect(models.some(model => model.id === "muse-spark-1.3-contributor")).toBe(true);

@@ -49,6 +49,14 @@ and token limits. Credentials and the API origin remain deployment-owned. Catalo
 reported instead of silently serving an old fixed model list. Models absent from models.dev use
 the catalog provider protocol and the existing generic token limits until metadata is published.
 
+The household picker hides four upstream-unavailable entries by explicit owner preference:
+`hy3-preview`, `kimi-k2.5`, `mimo-v2-pro`, and `mimo-v2-omni`. This only removes picker entries;
+existing chat records are retained. The chat dropdown groups `glm-5.3-flash`,
+`muse-spark-1.3-contributor`, and `kimi-k3` first, in that order, with a star marker. Alpha-named
+models (currently `omen-alpha`) follow in an experimental group with a test-tube marker, then the
+remaining models. Grouping is display-only: it does not change the saved selection or the
+initial default, and newly published Alpha IDs receive the marker without another deployment.
+
 Do not keep both `.dev.vars` and `.env`; Wrangler gives `.dev.vars` precedence. A minimal
 configuration is:
 
