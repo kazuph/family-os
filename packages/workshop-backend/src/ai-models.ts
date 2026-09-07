@@ -709,6 +709,7 @@ export class LanguageModelGatekeeper
       : Promise<LanguageModelBinding> {
     let model = await getModel(this.env, this.ctx.props.config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
+      sessionAffinity: this.ctx.id.toString(),
     });
     return new LanguageModelBindingImpl(model);
   }
@@ -747,6 +748,7 @@ class LanguageModelBindingImpl extends RpcTarget implements LanguageModelBinding
     return await completeText(this.model, {
       prompt: options.prompt,
       systemPrompt: options.systemPrompt,
+      thinking: true,
     });
   }
 }

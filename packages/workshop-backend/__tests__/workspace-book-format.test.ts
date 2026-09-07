@@ -37,7 +37,9 @@ describe("workspace book format", () => {
   it("keeps book content separate from the reusable reader and server", async () => {
     let {files} = await readBookFiles();
     let client = files.get("client.js")!.toString();
-    expect([...files.keys()].toSorted()).toEqual(["README.md", "client.js", "server.js"]);
+    expect([...files.keys()]).toEqual(expect.arrayContaining(["README.md", "client.js", "server.js"]));
+    expect([...files.keys()].some(name => name.includes("characters%2Fmio.png"))).toBe(true);
+    expect([...files.keys()].some(name => name.includes("illustrations"))).toBe(false);
     expect([...files.keys()].some((name) => name.startsWith("client.js.gz/"))).toBe(false);
     expect(client).not.toContain("data:image/");
     expect(client).toContain("gadget.getBookFiles");
@@ -46,6 +48,16 @@ describe("workspace book format", () => {
     expect(client).toContain("event.isComposing");
     expect(client).toContain("event.keyCode === 229");
     expect(client).toContain('bookFiles["content/toc.json"]');
+    expect(client).toContain('chapterIdByPath = Object.fromEntries(toc.parts.flatMap');
+    expect(client).toContain('class="mobile-tabs"');
+    expect(client).toContain('class="chat"');
+    expect(client).toContain('class="tutor"');
+    expect(client).toContain('class="send" type="button"');
+    expect(client).toContain("katex.renderToString");
+    expect(client).toContain("mountAnimations(article)");
+    expect(client).toContain("sending = true");
+    expect(client).toContain("catch (error2)");
+    expect(client).not.toContain('"part0/ch00.md"');
     expect(client).toContain("globalThis.__gadgetAssets");
     expect((await readUiBundle(files))!.jsCode).toContain("gadget.getBookFiles");
 
@@ -59,5 +71,8 @@ describe("workspace book format", () => {
     expect(server).toContain("chapterText");
     expect(server).toContain('"content/introduction.md"');
     expect(server).toContain("新しい本");
+    expect(server).toContain("if (!this.env.AI)");
+    expect(server).not.toContain("電気・電波・音響工学 統合教科書");
+    expect(files.get("README.md")!.toString()).toContain("putBookFiles");
   });
 });

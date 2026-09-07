@@ -488,7 +488,13 @@ export interface AgentHooks {
    * doesn't exist.
    */
   fetchBlueprint(blueprintId: string)
-      : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}>;
+      : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput,
+          modelBindings: string[]}>;
+
+  /** Connect a new blueprint's model bindings to the model selected for this turn. */
+  connectBlueprintModels(gadgetId: WorkpieceId, chatId: number, names: string[],
+      model: {profile: AiChatAuthorInfo, config: AiModelConfig}, initiator: AiChatAuthorInfo)
+      : Promise<void>;
 
   /**
    * Rename the given chat. The agent's `setChatTitle` tool is a capability on the *current*
@@ -2975,6 +2981,9 @@ export async function runAgent(
             // doesn't remember; it is visible in the chat's proposed changes and reverts
             // normally.
             flushCapturedYdocChanges();
+
+            await hooks.connectBlueprintModels(created.id, chatId, blueprint.modelBindings,
+                {profile: author, config: compaction.modelConfig}, initiator);
 
             output.blueprintNotes = blueprint.notes;
           }

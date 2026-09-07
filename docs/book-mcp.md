@@ -3,11 +3,21 @@
 Family OS exposes a stateless Streamable HTTP MCP endpoint at `/mcp` so a local authoring agent can
 read and update the table of contents and Markdown chapters of a Workspace Book instance.
 
-The bundled `format.book` blueprint is only a generic starter for creating new books. Creating a
+The bundled `format.book` blueprint uses the original three-pane reader and Mio tutor chat,
+including math, footnotes, animations, chapter navigation, and reading progress. Its starter
+manuscript is generic; another book's private chapters and illustrations are not copied. Creating a
 book copies that blueprint into a new workspace; the workspace then owns its executable snapshot
 and its `book_files` SQLite rows. Updating the bundled blueprint therefore changes future books but
 does not rewrite an existing book. Deployment-specific manuscripts, illustrations, and reader
 customizations belong in their workspace, not in the bundled format blueprint.
+
+When the Workshop chat creates a book from the blueprint, its `AI` binding is connected to the
+model selected for that chat. The creating agent must write `content/toc.json` and chapter Markdown
+through the new gadget's `putBookFiles()` method, then read them back with `getBookFiles()`.
+Writing Markdown as code-editor files alone does not update the reader's SQLite content.
+The reader derives chapter paths from the current TOC, so books can use their own chapter IDs.
+The creation remains a proposed change until accepted; interrupted generation can leave only a
+starter, which is not a completed manuscript. The book's README describes these steps to the agent.
 
 ## Who may call it
 

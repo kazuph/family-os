@@ -2925,6 +2925,33 @@ class OverseerImpl implements AgentHooks {
     return new GatekeeperClientImpl<any>(this, id, facet);
   }
 
+  async addModelGatekeeper(model: UserAiModelRecord, initiator: AiChatAuthorInfo)
+      : Promise<GatekeeperClient<any>> {
+    let props: LanguageModelGatekeeperProps = {
+      displayName: model.profile.name,
+      config: model.config,
+      initiator,
+      metadata: {source: "model-binding", gadgetId: this.ctx.id.toString()},
+    };
+    return this.addGatekeeper(this.ctx.exports.LanguageModelGatekeeper({props}), {
+      type: "aiModel", modelId: model.profile.id,
+      provider: model.config.provider, modelName: model.config.model,
+    });
+  }
+
+  async connectBlueprintModels(gadgetId: WorkpieceId, chatId: number, names: string[],
+      model: UserAiModelRecord, initiator: AiChatAuthorInfo): Promise<void> {
+    if (names.length === 0) return;
+    if (this.getGadgetRecord(gadgetId).pending?.chatId !== chatId) {
+      throw new Error("Blueprint model connections require this chat's new gadget.");
+    }
+    for (let name of names) {
+      let gatekeeper = await this.addModelGatekeeper(model, initiator);
+      // Accepting/reverting the whole provisional gadget also governs its connections.
+      this.bindWorkpiece(gadgetId, name, await gatekeeper.getId());
+    }
+  }
+
   // Destroy a gatekeeper (connection) workpiece. Any binding edges pointing at it are severed so
   // no gadget's env retains a dangling entry. (This is distinct from merely unbinding it from one
   // gadget -- GadgetClient.unbind() -- which leaves the gatekeeper alive, possibly orphaned.)
@@ -6267,7 +6294,8 @@ class OverseerImpl implements AgentHooks {
   // by the agent's createGadget tool. Blueprint ids are bearer capabilities (like blueprint share
   // links), so possession of the id is sufficient to read it. Throws agent-readable errors.
   async fetchBlueprint(blueprintId: string)
-      : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}> {
+      : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput,
+          modelBindings: string[]}> {
     let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
     if (!kvRecord) {
       throw new Error(`No such blueprint: ${blueprintId}. Use listBlueprints to see available ` +
@@ -6307,15 +6335,18 @@ class OverseerImpl implements AgentHooks {
         : `The blueprint contained no files, so the new gadget is empty.`);
 
     let bindings = Object.entries(kvRecord.metadata.bindings);
+    let modelBindings = bindings.filter(([, binding]) =>
+        binding.type === "aiModel" && !binding.spawnerOnly).map(([name]) => name);
     if (bindings.length === 0) {
       lines.push("", `The blueprint requires no bindings.`);
     } else {
       lines.push("",
-          `The blueprint's code expects the following bindings, which the new gadget does not ` +
-          `have yet. Wire up each one under the exact binding name given. For external ` +
+          `The blueprint's code expects the following bindings under the exact binding name ` +
+          `given. AI-model bindings are automatically ` +
+          `connected to this chat's selected model unless marked spawner-only. For external ` +
           `resources, use setGadgetBinding on the new gadget (first requesting a connection via ` +
-          `requestConnection if your env doesn't already hold a suitable resource). AI-model ` +
-          `and agent-spawner bindings cannot be created from chat; ask the user to add those ` +
+          `requestConnection if your env doesn't already hold a suitable resource). Spawner-only ` +
+          `and agent-spawner bindings still require the user to add those ` +
           `from the gadget's Connections panel.`);
       for (let [name, binding] of bindings) {
         let details: string;
@@ -6343,7 +6374,7 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    return {files, notes: lines.join("\n"), output};
+    return {files, notes: lines.join("\n"), output, modelBindings};
   }
 
   #tailSubscribers: Set<RpcStub<ConsoleLogSubscriber>> = new Set();
@@ -8144,26 +8175,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>> {
     let chatMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
-    let props: LanguageModelGatekeeperProps = {
-      displayName: chatMeta.aiModel!.profile.name,
-      config: chatMeta.aiModel!.config,
-      initiator: {
+    let result = await this.impl.addModelGatekeeper(chatMeta.aiModel!, {
         type: "gadget",
         id: chatMeta.profile.id,
         name: this.impl.storage.title.get(),
-      },
-      metadata: { source: "model-binding", gadgetId: this.impl.ctx.id.toString() },
-    }
-
-    let creationSpec: GatekeeperCreationSpec = {
-      type: "aiModel",
-      modelId,
-      provider: chatMeta.aiModel!.config.provider,
-      modelName: chatMeta.aiModel!.config.model,
-    };
-
-    let result = await this.impl.addGatekeeper(
-        this.impl.ctx.exports.LanguageModelGatekeeper({props}), creationSpec);
+    });
     await this.recordConnectionCreated(result, "ai_model");
     return result;
   }
