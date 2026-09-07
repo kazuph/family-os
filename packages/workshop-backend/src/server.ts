@@ -1040,7 +1040,8 @@ export default {
       let workspace = (id: string) => overseers.get(overseers.idFromString(id));
       let ownedWorkspace = async (email: string, workspaceId: string) => {
         let ownerStub = owner(email);
-        if (!(await ownerStub.listGadgets()).some(({ id }) => id === workspaceId)) {
+        let metadata = await ownerStub.getGadget(workspaceId);
+        if (!metadata || metadata.owner) {
           throw new Error("The account does not own this workspace.");
         }
         return { ownerId: ownerStub.id.toString(), workspace: workspace(workspaceId) };
@@ -1076,20 +1077,20 @@ export default {
           let ownerStub = owner(ownerEmail);
           let ownerId = ownerStub.id.toString();
           let books = await Promise.all((await ownerStub.listGadgets()).map(({ id }) =>
-            workspace(id).getBookMcpWorkspace(ownerId)));
-          return books.filter(book => book !== null);
+            workspace(id).getBookMcpWorkspaces(ownerId)));
+          return books.flat();
         },
-        async readFiles(ownerEmail, workspaceId, paths) {
+        async readFiles(ownerEmail, workspaceId, paths, gadgetId) {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.readBookMcpFiles(owned.ownerId, paths);
+          return owned.workspace.readBookMcpFiles(owned.ownerId, paths, gadgetId);
         },
-        async putFiles(ownerEmail, workspaceId, files) {
+        async putFiles(ownerEmail, workspaceId, files, gadgetId) {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.putBookMcpFiles(owned.ownerId, files);
+          return owned.workspace.putBookMcpFiles(owned.ownerId, files, gadgetId);
         },
-        async readProgress(ownerEmail, workspaceId) {
+        async readProgress(ownerEmail, workspaceId, gadgetId) {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.readBookMcpProgress(owned.ownerId);
+          return owned.workspace.readBookMcpProgress(owned.ownerId, gadgetId);
         },
       };
       return handleBookMcpRequest(req, accessPayload, store);

@@ -8,6 +8,8 @@ export type BookMcpWorkspace = {
   workspaceId: string;
   title: string;
   gadgetId: number;
+  /** The book title within its workspace, returned by book.list. */
+  gadgetTitle?: string;
 };
 
 /** Blueprint every book workspace is created from; it carries the bundled chapters. */
@@ -19,9 +21,9 @@ export const DEFAULT_BOOK_TUTOR_MODEL = "deepseek-v4-flash";
 export interface BookMcpStore {
   createBook(ownerEmail: string, title?: string, modelId?: string): Promise<BookMcpWorkspace>;
   listBooks(ownerEmail: string): Promise<BookMcpWorkspace[]>;
-  readFiles(ownerEmail: string, workspaceId: string, paths?: string[]): Promise<BookMcpFile[]>;
-  putFiles(ownerEmail: string, workspaceId: string, files: BookMcpFile[]): Promise<BookMcpFile[]>;
-  readProgress(ownerEmail: string, workspaceId: string): Promise<unknown>;
+  readFiles(ownerEmail: string, workspaceId: string, paths?: string[], gadgetId?: number): Promise<BookMcpFile[]>;
+  putFiles(ownerEmail: string, workspaceId: string, files: BookMcpFile[], gadgetId?: number): Promise<BookMcpFile[]>;
+  readProgress(ownerEmail: string, workspaceId: string, gadgetId?: number): Promise<unknown>;
 }
 
 type JsonRpcRequest = { jsonrpc: "2.0"; id?: string | number; method: string; params?: unknown };
@@ -99,7 +101,7 @@ const tools = [
     inputSchema: {
       type: "object", additionalProperties: false, required: ["workspaceId"],
       properties: {
-        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" },
+        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" }, gadgetId: gadgetIdProperty(),
         paths: { type: "array", items: { type: "string" } },
       },
     },
@@ -110,7 +112,7 @@ const tools = [
     inputSchema: {
       type: "object", additionalProperties: false, required: ["workspaceId", "files"],
       properties: {
-        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" },
+        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" }, gadgetId: gadgetIdProperty(),
         files: {
           type: "array", minItems: 1,
           items: {
@@ -127,6 +129,13 @@ const tools = [
     inputSchema: workspaceSchema(),
   },
 ] as const;
+
+function gadgetIdProperty() {
+  return {
+    type: "integer",
+    description: "Book gadgetId returned by book.list. Required when the workspace contains multiple books.",
+  } as const;
+}
 
 function ownerEmailProperty() {
   return {
@@ -147,7 +156,7 @@ function ownerSchema() {
 function workspaceSchema() {
   return {
     type: "object", additionalProperties: false, required: ["workspaceId"],
-    properties: { ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" } },
+    properties: { ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" }, gadgetId: gadgetIdProperty() },
   } as const;
 }
 
@@ -244,17 +253,21 @@ export async function handleBookMcpRequest(
         ownerEmail, args.title as string | undefined, args.modelId as string | undefined);
     } else {
       let workspaceId = stringField(args, "workspaceId");
+      let gadgetId = args.gadgetId;
+      if (gadgetId !== undefined && (typeof gadgetId !== "number" || !Number.isSafeInteger(gadgetId))) {
+        throw new Error("gadgetId must be an integer returned by book.list.");
+      }
       if (name === "book.read_files") {
         let paths = args.paths;
         if (paths !== undefined && (!Array.isArray(paths) || paths.some(path => typeof path !== "string"))) {
           throw new Error("paths must be an array of strings.");
         }
         for (let path of paths ?? []) validateBookFilePath(path as string);
-        value = await store.readFiles(ownerEmail, workspaceId, paths as string[] | undefined);
+        value = await store.readFiles(ownerEmail, workspaceId, paths as string[] | undefined, gadgetId);
       } else if (name === "book.put_files") {
-        value = await store.putFiles(ownerEmail, workspaceId, parseFiles(args.files));
+        value = await store.putFiles(ownerEmail, workspaceId, parseFiles(args.files), gadgetId);
       } else if (name === "book.read_progress") {
-        value = await store.readProgress(ownerEmail, workspaceId);
+        value = await store.readProgress(ownerEmail, workspaceId, gadgetId);
       } else {
         return error(rpc.id, -32602, `Unknown tool: ${name}`);
       }

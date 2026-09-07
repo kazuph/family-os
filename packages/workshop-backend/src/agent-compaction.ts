@@ -1,4 +1,5 @@
-import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig}
+import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig,
+  type WorkpieceId}
   from "@gadgets/workshop-shared/api";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import * as Y from "yjs";
@@ -89,7 +90,11 @@ export function startsAgentTurn(message: AiChatMessage): boolean {
  * One batch of code changes, addressed by the chat sequence that recorded it. `update` is absent for
  * a batch that records only gadget creations or binding additions.
  */
-export type ChangeBatch = {sequence: number, update?: Uint8Array};
+export type ChangeBatch = {
+  sequence: number;
+  update?: Uint8Array;
+  gadgetIds?: WorkpieceId[];
+};
 
 /**
  * Folds `merge` and `revert` over a chat log. A merge accepts through `mergeThrough` inclusively; a
@@ -100,16 +105,22 @@ export type ChangeBatch = {sequence: number, update?: Uint8Array};
  */
 export function foldProposedChanges(
     messages: Iterable<AiChatMessage>, seed: readonly ChangeBatch[] = [])
-    : {proposed: ChangeBatch[], accepted: Uint8Array[]} {
+    : {proposed: ChangeBatch[], accepted: Uint8Array[], acceptedBatches: ChangeBatch[]} {
   let proposed = [...seed];
   let accepted: Uint8Array[] = [];
+  let acceptedBatches: ChangeBatch[] = [];
   for (let message of messages) {
     if (message.type === "changes") {
-      proposed.push({sequence: message.sequence, update: message.update});
+      proposed.push({
+        sequence: message.sequence,
+        update: message.update,
+        ...(message.gadgetIds ? {gadgetIds: message.gadgetIds} : {}),
+      });
     } else if (message.type === "merge") {
       while (proposed.length > 0 && proposed[0].sequence <= message.mergeThrough) {
-        let {update} = proposed.shift()!;
-        if (update !== undefined) accepted.push(update);
+        let batch = proposed.shift()!;
+        let {update} = batch;
+        if (update !== undefined) { accepted.push(update); acceptedBatches.push(batch); }
       }
     } else if (message.type === "revert") {
       while (proposed.length > 0 &&
@@ -118,7 +129,7 @@ export function foldProposedChanges(
       }
     }
   }
-  return {proposed, accepted};
+  return {proposed, accepted, acceptedBatches};
 }
 
 /**
@@ -344,19 +355,34 @@ export function buildCompactionState(
   // addressable by sequence until a merge accepts them or a revert drops them. A carried-forward
   // prefix is addressed below every message in this span: the previous checkpoint already folded it,
   // so nothing here can accept or revert part of it.
-  let {proposed, accepted} = foldProposedChanges(
-      compacted, previous?.proposedChanges ? [{sequence: -1, update: previous.proposedChanges}] : []);
-  if (previous?.acceptedChanges) accepted.unshift(previous.acceptedChanges);
-  let stillProposed: Uint8Array[] = [];
-  for (let batch of proposed) {
-    if (batch.update !== undefined) stillProposed.push(batch.update);
-  }
+  const seed: ChangeBatch[] = (previous?.proposedCodeBatches ?? [])
+      .map(batch => ({...batch, sequence: -1}));
+  if (previous?.proposedChanges) seed.push({sequence: -1, update: previous.proposedChanges});
+  const {proposed, acceptedBatches} = foldProposedChanges(compacted, seed);
+  const acceptedCode = [...previous?.acceptedCodeBatches ?? [], ...acceptedBatches];
+  if (previous?.acceptedChanges) acceptedCode.unshift({update: previous.acceptedChanges});
+  const group = (batches: readonly {update?: Uint8Array, gadgetIds?: WorkpieceId[]}[]) => {
+    const grouped = new Map<string, {updates: Uint8Array[], gadgetIds?: WorkpieceId[]}>();
+    for (const batch of batches) {
+      if (!batch.update) continue;
+      const key = JSON.stringify(batch.gadgetIds?.toSorted((a, b) => a - b) ?? []);
+      let entry = grouped.get(key);
+      if (!entry) grouped.set(key, entry = {updates: [], gadgetIds: batch.gadgetIds});
+      entry.updates.push(batch.update);
+    }
+    return [...grouped.values()].map(entry => ({update: Y.mergeUpdatesV2(entry.updates),
+      ...(entry.gadgetIds ? {gadgetIds: entry.gadgetIds} : {})}));
+  };
+  const accepted = group(acceptedCode);
+  const pending = group(proposed);
 
   return {
     chatBindings: [...chatBindings],
     nextChangeId,
     observedCodeVersion,
-    acceptedChanges: accepted.length === 0 ? undefined : Y.mergeUpdatesV2(accepted),
-    proposedChanges: stillProposed.length === 0 ? undefined : Y.mergeUpdatesV2(stillProposed),
+    acceptedChanges: accepted.find(batch => !batch.gadgetIds)?.update,
+    proposedChanges: pending.find(batch => !batch.gadgetIds)?.update,
+    acceptedCodeBatches: accepted.filter(batch => batch.gadgetIds),
+    proposedCodeBatches: pending.filter(batch => batch.gadgetIds),
   };
 }

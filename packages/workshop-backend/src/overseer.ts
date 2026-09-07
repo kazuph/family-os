@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, actionChangeTime, FAMILY_ERROR_CODES, type FamilyRpcResult, unwrapFamilyRpcResult, DEFAULT_CHAT_TITLE, normalizeChatTitle } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionReference, ActionHistoryCursor, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, actionChangeTime, FAMILY_ERROR_CODES, type FamilyRpcResult, unwrapFamilyRpcResult, DEFAULT_CHAT_TITLE, normalizeChatTitle, MovedGadgetLocation } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -37,7 +37,7 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
-import { AutoApprovalDrainer } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRuleKey } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { assertAdultFamilyProfile } from "./family.js";
@@ -81,6 +81,7 @@ import {
   type GadgetExportEntrypoint,
   readCustomExportFormats,
 } from "./gadget-export";
+import { assertGadgetCodeUpdate, encodeGadgetCode } from "./gadget-code-scope.js";
 
 const logger = createWorkshopLogger("workshop.overseer");
 // Yjs string updates carry UTF-8 plus structural overhead. A quarter of the persisted snapshot-row
@@ -278,6 +279,38 @@ type GatekeeperClass = DurableObjectClass<Gatekeeper<any>>;
 type CatalogGatekeeperFacet =
     Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "getAgentCatalog">>>;
 
+type MovedGatekeeperInfo = {
+  id: WorkpieceId;
+  title: string;
+  description: ResourceDescription;
+  creationSpec?: GatekeeperCreationSpec;
+};
+
+// The source-side host capability is derived from the public per-Gadget contract. Keeping this as
+// a Pick prevents a forwarded method from acquiring a second signature that drifts from
+// GadgetClient. The three `create...ForMovedGadget` methods are internal authorization-preserving
+// entrypoints: the target checks the caller's account/model capability before passing it to the
+// fixed source host.
+type MovedGadgetHost = Pick<GadgetClient,
+  "getId" | "getTitle" | "setTitle" | "remove" | "subscribeToCode" | "updateCode" | "getUiBundle" |
+    "connectToGadget" | "getExportFormats" | "export" | "listBindings" | "getBinding" |
+      "bind" | "bindWithSuggestedName" | "unbind" | "renameBinding" | "getBlueprintAnnotation" |
+      "setBlueprintAnnotation" | "createBlueprint" | "getGatekeeperById"> &
+    Pick<GadgetClientImpl,
+      "createGatekeeperForMovedGadget" | "createModelGatekeeperForMovedGadget" |
+      "createAgentSpawnerForMovedGadget" | "validateMovedGadgetCode" |
+      "applyMovedGadgetCode" | "applyMovedGadgetBinding" | "validateMovedGadgetBinding" |
+      "getUiBundleForMovedGadget" | "getCodeSnapshotForMovedGadget" |
+      "connectToMovedGadget" | "getMovedGadgetExportFormats" | "exportMovedGadget" |
+      "getMovedGatekeeperInfo" | "openMovedGatekeeperSession" |
+      "setMovedGatekeeperTitle" | "removeMovedGatekeeper">;
+
+type GadgetCodePreview = {
+  key: string;
+  update?: Uint8Array;
+  bindings: {name: string, target: WorkpieceId}[];
+};
+
 type LegacyBlueprintBindingAnnotation = BlueprintBindingAnnotation & {
   included?: boolean;
 };
@@ -323,6 +356,11 @@ function gatekeeperVendorId(record: GatekeeperRecord | undefined): string | unde
 type BindingRecord = {
   target: WorkpieceId;
 
+  // Denormalized metadata retained on moved proxy records so target chats can describe and route
+  // the source gatekeeper without importing the source workspace's registry.
+  resourceTitle?: string;
+  vendorId?: string;
+
   // User-provided metadata for how this binding should appear in blueprints. Absence means not
   // yet configured. This lives on the edge, not on the gatekeeper: two gadgets binding the same
   // gatekeeper can annotate it differently for their respective blueprints.
@@ -337,6 +375,85 @@ type BindingRecord = {
   // For *writes* it still occupies its name: another chat attempting to add the same name on
   // this gadget fails with an explicit error until this chat's changes are accepted or reverted.
   pending?: {chatId: number, sequence?: number};
+};
+
+type GadgetMoveRecord = {
+  state: "moving" | "leased";
+  targetWorkspaceId: string;
+  targetGadgetId?: WorkpieceId;
+  token: string;
+  // Present while a moved proxy is being transferred again. The source host restores this lease
+  // if installation at the next workspace fails.
+  previousLease?: {targetWorkspaceId: string, targetGadgetId: WorkpieceId};
+};
+
+type MovedFromRecord = {
+  sourceWorkspaceId: string;
+  sourceGadgetId: WorkpieceId;
+  token: string;
+};
+
+type MovedGadgetInstall = {
+  sourceWorkspaceId: string;
+  sourceGadgetId: WorkpieceId;
+  ownerId: string;
+  token: string;
+  title: string;
+  created: Date;
+  bindingName: string;
+  output?: BlueprintOutput;
+  filesRoot: string;
+  bindings?: Record<string, BindingRecord>;
+  sourceProhibitAllSharing: boolean;
+  previousTarget?: {workspaceId: string, gadgetId: WorkpieceId};
+};
+
+type GadgetMoveStatus = {
+  state: "none" | "moving" | "leased";
+  targetWorkspaceId?: string;
+  targetGadgetId?: WorkpieceId;
+  token?: string;
+};
+
+type MovedGadgetInstallStatus = {
+  state: "absent" | "pending" | "active";
+  location?: MovedGadgetLocation;
+};
+
+type MovedGadgetActionLease = {
+  sourceGadgetId: WorkpieceId;
+  targetGadgetId: WorkpieceId;
+  token: string;
+};
+
+type MovedActionPage = {
+  entries: ActionLogEntry[];
+  nextBeforeId?: number;
+};
+
+type AgentGadgetCodeProjection = {
+  gadgetId: WorkpieceId;
+  sourceRootName: string;
+  update: Uint8Array;
+};
+
+type MovedGadgetSpawnTarget = {
+  workspaceId: string;
+  gadgetId: WorkpieceId;
+  sourceWorkspaceId: string;
+  sourceGadgetId: WorkpieceId;
+  bindingTargets: Record<string, BindingLoopbackTarget>;
+};
+
+type MovedSpawnerRoute = {
+  sourceWorkspaceId: string;
+  sourceGadgetId: WorkpieceId;
+  targetGadgetId: WorkpieceId;
+  bindingTargets: Record<string, BindingLoopbackTarget>;
+};
+
+type StoredChatAgentContext = AiChatAgentContext & {
+  movedSpawnerRoute?: MovedSpawnerRoute;
 };
 
 // A gadget workpiece. IDs are allocated from the shared workpiece counter (see the
@@ -364,6 +481,30 @@ type GadgetRecord = {
   // This gadget's bindings: binding name (as it appears in the gadget worker's `env`) -> binding
   // edge. Expected to stay small, so it's a map on the record rather than a separate collection.
   bindings: Record<string, BindingRecord>;
+
+  // A moved Gadget is represented in its target workspace by a registry record only. Its code,
+  // facet, and connections remain in the source host and are reached through MovedGadgetHost.
+  movedFrom?: MovedFromRecord;
+
+  // The target summary must continue to point the editor at the source host's Yjs root. This is
+  // metadata, not a copied code snapshot.
+  filesRoot?: string;
+
+  // Set only while the target-side half of a move is being installed. Pending move records never
+  // enter user-facing lists and are removed if the source cannot commit its lease.
+  movePending?: true;
+
+  // On the source host, this records the two-phase move and is retained after the source user
+  // workspace is retired so the host capability can authenticate the target.
+  move?: GadgetMoveRecord;
+
+  // Gatekeepers created through this Gadget capability remain addressable by that capability even
+  // before a binding edge is added. This is scoped to the Gadget, not to the whole owner workspace.
+  createdGatekeeperIds?: WorkpieceId[];
+
+  // Token of the last move that reclaimed this host's own registry entry. It makes a lost response
+  // on a B -> A move idempotent without allowing an older move token to reclaim a later lease.
+  lastMoveToken?: string;
 
   // Present while the gadget is provisional: it was created within the given chat and follows
   // that chat's accept/reject lifecycle exactly like code changes (see mergeChanges() /
@@ -611,11 +752,14 @@ type ChatDraftUpdateRecord = {
   timestamp: Date;
   author: AiChatAuthorInfo;
   update: Uint8Array;
+  gadgetIds?: WorkpieceId[];
 };
 
 /** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper */
 export type AutoApproveTagRecord = {
   gatekeeperId: WorkpieceId;
+  /** The moved source Gadget this rule serves; absent means the legacy workspace-wide rule. */
+  gadgetId?: WorkpieceId;
   /**
    * The action kind (stable tag + display label, from ActionDescription.actionKind), captured when
    * the rule was enabled so the rule can be listed without showing the raw machine tag.
@@ -739,7 +883,7 @@ async function computeSessionAffinity(gadgetId: string, chatId: number): Promise
   return new Uint8Array(hash).toHex();
 }
 
-function actionRecordToLog(record: ActionRecord): ActionLogEntry {
+function actionRecordToLog(record: ActionRecord, sourceWorkspaceId: string): ActionLogEntry {
   // TODO: ActionRecord and ActionLogEntry are almost identical. The main difference is that
   // ActionRecord includes `action`, which should NOT be provided to the client. We could make
   // the two match more -- just `action` needs to be different.
@@ -752,6 +896,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
     case "observation":
       return {
         id: record.id,
+        sourceWorkspaceId,
         gatekeeperId,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
@@ -763,6 +908,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
     case "action":
       return {
         id: record.id,
+        sourceWorkspaceId,
         gatekeeperId,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
@@ -777,6 +923,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
     case "bindHook":
       return {
         id: record.id,
+        sourceWorkspaceId,
         gatekeeperId,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
@@ -806,6 +953,89 @@ function stampBindHookAction(storage: OverseerStorage, actionId: number, enabled
   storage.actions.put(actionRecord);
 }
 
+async function subscribeActionRecords(
+    impl: OverseerImpl, subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date,
+    gadgetIds?: ReadonlySet<WorkpieceId> | (() => ReadonlySet<WorkpieceId>), sendReady = true,
+    assertAccess?: () => void): Promise<NativeRpcStub<any>> {
+  let actions = impl.storage.actions;
+  subscriber = subscriber.dup();
+  let subscribed = false;
+  let disposed = false;
+  let sourceWorkspaceId = impl.ctx.id.toString();
+  let visible = (record: ActionRecord) => {
+    let allowed = typeof gadgetIds === "function" ? gadgetIds() : gadgetIds;
+    let gadgetId = impl.actionGadgetId(record);
+    return allowed === undefined || (gadgetId !== undefined && allowed.has(gadgetId));
+  };
+
+  let deliver = (record: ActionRecord) => {
+    if (!visible(record)) return;
+    try {
+      assertAccess?.();
+      subscriber.entry(actionRecordToLog(record, sourceWorkspaceId)).catch(unsubscribe);
+    } catch {
+      unsubscribe();
+    }
+  };
+  let dbSubscriber = {
+    add(record: ActionRecord) { deliver(record); },
+    update(_oldRecord: ActionRecord, newRecord: ActionRecord): void { deliver(newRecord); },
+    remove(_record: ActionRecord): void {
+      // Required by typed-storage's Subscriber interface; actions are append-only today.
+    }
+  };
+
+  function unsubscribe() {
+    if (disposed) return;
+    disposed = true;
+    if (subscribed) actions.unsubscribe(dbSubscriber);
+    subscriber[Symbol.dispose]();
+  }
+
+  actions.subscribe(dbSubscriber);
+  subscribed = true;
+
+  let replay = async () => {
+    if (startAfter === undefined) return;
+    let newest = [...actions.byLastChanged.list({reverse: true, limit: 1})].at(0);
+    if (newest === undefined) return;
+    let end = actionLastChangedKey({...newest, id: newest.id + 1});
+    let from: ListOptions<string> = {start: keyString(startAfter.valueOf())};
+    for (;;) {
+      if (disposed) throw new Error("Action subscriber failed during replay");
+      assertAccess?.();
+      let page = [...actions.byLastChanged.list(
+          {...from, end, limit: ACTION_REPLAY_PAGE_SIZE})];
+      let visiblePage = page.filter(visible);
+      await Promise.all(visiblePage.map(record =>
+          subscriber.entry(actionRecordToLog(record, sourceWorkspaceId))));
+      if (page.length < ACTION_REPLAY_PAGE_SIZE) break;
+      from = {startAfter: actionLastChangedKey(page.at(-1)!)};
+    }
+  };
+
+  if (startAfter !== undefined) {
+    try {
+      await replay();
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
+  }
+  if (sendReady && !disposed) {
+    try {
+      await subscriber.ready();
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
+  }
+
+  return new NativeRpcStub<any>({
+    [Symbol.dispose]() { unsubscribe(); }
+  });
+}
+
 // Key of the actions `byLastChanged` index: last state-change time, id-disambiguated because the
 // frozen clock makes same-instant records routine. Every mutation path stamps appliedAt (apply,
 // reject, stampBindHookAction); one that doesn't would be missed by the resume replay.
@@ -818,6 +1048,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     singletons: {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
+
+      // A retired source workspace stays alive only as the host for one or more leased Gadgets.
+      // User-facing open() calls fail closed while internal host-capability calls continue to work.
+      hostOnly: false,
 
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
@@ -971,10 +1205,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // User-enabled rules to auto-approve actions carrying a given action kind on a given
-      // gatekeeper. Presence of a record -> the rule is enabled. Keyed by
-      // `${gatekeeperId}:${actionKind.tag}`.
+      // gatekeeper. Presence of a record -> the rule is enabled. Legacy rules are workspace-wide;
+      // moved rules add the source Gadget ID to their key so a shared connection cannot widen the
+      // target's capability to another Gadget.
       autoApproveTags: collection<AutoApproveTagRecord>()({
-        primaryKey: (r) => `${r.gatekeeperId}:${r.actionKind.tag}`,
+        primaryKey: (r) => autoApprovalRuleKey(r.gatekeeperId, r.actionKind.tag, r.gadgetId),
       }),
 
       chatMeta: collection<AiChatMetadata>()({
@@ -986,7 +1221,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         }
       }),
 
-      chatContext: collection<AiChatAgentContext>()({
+      chatContext: collection<StoredChatAgentContext>()({
         primaryKey: "chatId"
       }),
 
@@ -1142,6 +1377,46 @@ export const ACTION_REPLAY_PAGE_SIZE = 256;
 /** listActions() entries returned per page. Exported for tests. */
 export const ACTION_HISTORY_PAGE_DEFAULT_LIMIT = 50;
 
+type ActionCursorPositions = Record<string, number | null | undefined>;
+
+function encodeActionCursor(positions: ActionCursorPositions): ActionHistoryCursor {
+  return new TextEncoder().encode(JSON.stringify({version: 1, positions})).toBase64({
+    alphabet: "base64url",
+  });
+}
+
+function decodeActionCursor(cursor: ActionHistoryCursor): ActionCursorPositions {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(
+        Uint8Array.fromBase64(cursor, {alphabet: "base64url", lastChunkHandling: "strict"})));
+  } catch (error) {
+    throw new TypeError("Invalid action history cursor.", {cause: error});
+  }
+  if (!decoded || typeof decoded !== "object" ||
+      (decoded as {version?: unknown}).version !== 1 ||
+      !((decoded as {positions?: unknown}).positions instanceof Object)) {
+    throw new TypeError("Invalid action history cursor.");
+  }
+
+  let positions: ActionCursorPositions = {};
+  for (let [workspaceId, beforeId] of Object.entries(
+      (decoded as {positions: Record<string, unknown>}).positions)) {
+    if (beforeId !== null && beforeId !== undefined &&
+        (typeof beforeId !== "number" || !Number.isSafeInteger(beforeId) || beforeId < 0)) {
+      throw new TypeError("Invalid action history cursor.");
+    }
+    positions[workspaceId] = beforeId as number | null | undefined;
+  }
+  return positions;
+}
+
+function compareActionLogNewestFirst(a: ActionLogEntry, b: ActionLogEntry): number {
+  return b.createdAt.valueOf() - a.createdAt.valueOf()
+      || b.sourceWorkspaceId.localeCompare(a.sourceWorkspaceId)
+      || b.id - a.id;
+}
+
 /**
  * Keeps `commandPosition` only if it's a real index into `args`. Anything else becomes undefined,
  * and the command renders at the front. Display-only, so a bad value isn't worth an error.
@@ -1225,6 +1500,10 @@ class OverseerImpl implements AgentHooks {
   #autoApprovalDrainer: AutoApprovalDrainer;
 
   #preparingChatMessages = new Map<number, Promise<void>>();
+
+  // Per-turn source projections for moved Gadgets. The map is consumed when that chat builds its
+  // session Y.Doc, so a source snapshot cannot leak into a later chat in this DO instance.
+  #agentCodeProjections = new Map<number, AgentGadgetCodeProjection[]>();
 
   // Set of chatIds that currently have a running agent turn. Used to manage the DO alarm (held
   // while any agent runs) and to let `alarm()` wait for all agents to finish.
@@ -1516,7 +1795,10 @@ class OverseerImpl implements AgentHooks {
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved));
+            this.applyPendingAction(record, resolvedBy, autoApproved),
+        record => this.actionGadgetId(record),
+        (gatekeeperId, tag, gadgetId) => this.getAutoApprovalRule(
+            gatekeeperId, tag, gadgetId));
 
     // Mirror every gadget-registry change into the owner's outputs index. Subscribing here makes
     // the registry the single chokepoint, so creation, acceptance, renaming, reverting and
@@ -1723,11 +2005,551 @@ class OverseerImpl implements AgentHooks {
     return record;
   }
 
+  /** Return a registry record that is still addressable by a normal user capability. */
+  getUserGadgetRecord(id: WorkpieceId): GadgetRecord {
+    let record = this.getGadgetRecord(id);
+    if (record.move?.state === "leased") {
+      throw new Error("This gadget has moved to another workspace.");
+    }
+    if (record.movePending && !record.movedFrom) {
+      throw new Error("This gadget is being moved; try again shortly.");
+    }
+    return record;
+  }
+
+  async withMovedGadgetHost<T>(gadgetId: WorkpieceId,
+                               run: (host: RpcStub<MovedGadgetHost>) => Promise<T>): Promise<T> {
+    if (!this.ownerId) throw new Error("Workspace not initialized.");
+    let record = this.getGadgetRecord(gadgetId);
+    let movedFrom = record.movedFrom;
+    if (!movedFrom) throw new Error("This Gadget is not moved.");
+    let namespace = this.ctx.exports.OverseerDurableObject;
+    let source = namespace.get(namespace.idFromString(movedFrom.sourceWorkspaceId));
+    let host = await source.getMovedGadgetHost(
+        movedFrom.sourceGadgetId, this.ctx.id.toString(), gadgetId, movedFrom.token,
+        this.ownerId) as unknown as RpcStub<MovedGadgetHost>;
+    try {
+      return await run(host);
+    } finally {
+      host[Symbol.dispose]();
+    }
+  }
+
+  leasedGadgets(): GadgetRecord[] {
+    return [...this.storage.gadgets.list()].filter(gadget => gadget.move?.state === "leased");
+  }
+
+  /** Whether a Gadget may be exposed to ordinary agent bindings in this workspace. */
+  isAgentVisibleGadget(gadget: GadgetRecord, forChatId?: number): boolean {
+    return (!gadget.pending || gadget.pending.chatId === forChatId) &&
+        !gadget.movePending && gadget.move?.state !== "leased";
+  }
+
+  movedBindingSource(target: WorkpieceId, forChatId?: number): string | undefined {
+    for (let gadget of this.storage.gadgets.list()) {
+      if (!gadget.movedFrom || !this.isAgentVisibleGadget(gadget, forChatId)) continue;
+      if (this.visibleBindings(gadget, forChatId).some(([, edge]) => edge.target === target)) {
+        return gadget.movedFrom.sourceWorkspaceId;
+      }
+    }
+    return undefined;
+  }
+
+  rememberGadgetGatekeeper(gadgetId: WorkpieceId, gatekeeperId: WorkpieceId): void {
+    let gadget = this.getGadgetRecord(gadgetId);
+    let ids = gadget.createdGatekeeperIds ?? [];
+    if (ids.includes(gatekeeperId)) return;
+    gadget.createdGatekeeperIds = [...ids, gatekeeperId];
+    this.storage.gadgets.put(gadget);
+  }
+
+  gadgetCanAccessGatekeeper(gadgetId: WorkpieceId, gatekeeperId: WorkpieceId): boolean {
+    let gadget = this.getGadgetRecord(gadgetId);
+    if (this.visibleBindings(gadget).some(([, edge]) => edge.target === gatekeeperId)) return true;
+    return gadget.createdGatekeeperIds?.includes(gatekeeperId) ?? false;
+  }
+
+  // A workspace-wide rule must become a per-Gadget rule before the Gadget is leased: leased
+  // actions cannot fall back to the source workspace's global rule, because that would also grant
+  // a shared connection to unrelated Gadgets. Do this only for the first lease. A later move or
+  // reclaim must preserve the target's explicit enable/disable decision instead of resurrecting a
+  // source rule that the target already removed.
+  migrateInitialAutoApprovalRules(gadgetId: WorkpieceId): void {
+    let gadget = this.getGadgetRecord(gadgetId);
+    for (let rule of Array.from(this.storage.autoApproveTags.list())) {
+      if (rule.gadgetId !== undefined || !this.gadgetCanAccessGatekeeper(gadget.id, rule.gatekeeperId)) {
+        continue;
+      }
+      let scopedKey = autoApprovalRuleKey(rule.gatekeeperId, rule.actionKind.tag, gadget.id);
+      if (this.storage.autoApproveTags.get(scopedKey) === undefined) {
+        this.storage.autoApproveTags.put({...rule, gadgetId: gadget.id});
+      }
+    }
+  }
+
+  assertGadgetGatekeeperAccess(gadgetId: WorkpieceId, gatekeeperId: WorkpieceId): void {
+    if (!this.gadgetCanAccessGatekeeper(gadgetId, gatekeeperId)) {
+      throw new Error(`Gatekeeper ${gatekeeperId} is not connected to this gadget.`);
+    }
+    if (!this.storage.gatekeepers.get(gatekeeperId)) {
+      throw new Error(`No such gatekeeper id: ${gatekeeperId}`);
+    }
+  }
+
+  actionGadgetId(record: ActionRecord): WorkpieceId | undefined {
+    if (record.caller.from === "gadget") {
+      return record.caller.gadgetId ?? this.defaultGadgetId;
+    }
+    if (record.caller.from === "agent") {
+      return record.caller.gadgetId;
+    }
+    if (record.caller.from === "hook") {
+      let hook = [...this.storage.boundHooks.list()]
+          .find(candidate => candidate.actionId === record.id);
+      return record.caller.gadgetId ?? hook?.gadgetId ?? this.defaultGadgetId;
+    }
+    return undefined;
+  }
+
+  actionBelongsToGadget(record: ActionRecord, gadgetId: WorkpieceId): boolean {
+    return this.actionGadgetId(record) === gadgetId;
+  }
+
+  actionPage(beforeId: number | undefined, filter: ActionHistoryFilter = "all",
+             gadgetIds?: ReadonlySet<WorkpieceId>):
+      {entries: ActionLogEntry[], nextBeforeId?: number} {
+    let actions = this.storage.actions;
+    let scanBefore = beforeId;
+    let entries: ActionLogEntry[] = [];
+    for (;;) {
+      let range = {
+        end: scanBefore,
+        reverse: true,
+        limit: ACTION_HISTORY_PAGE_DEFAULT_LIMIT,
+      };
+      let page = [...(filter === "all"
+          ? actions.list(range) : actions.byHistoryFilter.get(filter, range))];
+      if (page.length === 0) break;
+
+      for (let record of page) {
+        if (gadgetIds !== undefined &&
+            (this.actionGadgetId(record) === undefined ||
+             !gadgetIds.has(this.actionGadgetId(record)!))) continue;
+        entries.push(actionRecordToLog(record, this.ctx.id.toString()));
+        if (entries.length === ACTION_HISTORY_PAGE_DEFAULT_LIMIT) {
+          return {entries, nextBeforeId: record.id};
+        }
+      }
+
+      scanBefore = page.at(-1)!.id;
+      if (page.length < ACTION_HISTORY_PAGE_DEFAULT_LIMIT) break;
+    }
+    return {entries};
+  }
+
+  /** Prevent the legacy workspace-wide code capability from crossing a leased Gadget boundary. */
+  assertWorkspaceCodeAccess(): void {
+    if (this.leasedGadgets().length > 0) {
+      throw new Error(
+          "Workspace-wide code synchronization is unavailable while a Gadget is moved; " +
+          "use the Gadget code capability instead.");
+    }
+  }
+
+  #newMoveToken(): string {
+    return crypto.randomUUID();
+  }
+
+  beginGadgetMove(id: WorkpieceId, targetWorkspaceId: string): string {
+    if (!this.ownerId) throw new Error("Workspace not initialized.");
+    let record = this.getUserGadgetRecord(id);
+    if (record.pending) throw new Error("A provisional gadget cannot be moved.");
+    if (record.movedFrom) throw new Error("This gadget is already a moved proxy.");
+    if (record.move?.state === "moving") {
+      if (record.move.targetWorkspaceId === targetWorkspaceId) return record.move.token;
+      throw new Error("This gadget is already being moved to another workspace.");
+    }
+    if (record.move) throw new Error("This gadget is already leased to another workspace.");
+    let token = this.#newMoveToken();
+    record.move = {state: "moving", targetWorkspaceId, token};
+    this.storage.gadgets.put(record);
+    return token;
+  }
+
+  beginLeasedGadgetMove(id: WorkpieceId, currentTargetWorkspaceId: string,
+                        currentTargetGadgetId: WorkpieceId, targetWorkspaceId: string,
+                        ownerId: string): string {
+    if (this.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let record = this.getGadgetRecord(id);
+    let move = record.move;
+    if (!move) {
+      throw new Error("The moved gadget lease is no longer current.");
+    }
+    if (move.state === "moving") {
+      if (move.targetWorkspaceId !== targetWorkspaceId || !move.previousLease
+          || move.previousLease.targetWorkspaceId !== currentTargetWorkspaceId
+          || move.previousLease.targetGadgetId !== currentTargetGadgetId) {
+        throw new Error("This moved gadget is already being moved elsewhere.");
+      }
+      return move.token;
+    }
+    if (move.targetWorkspaceId !== currentTargetWorkspaceId
+        || move.targetGadgetId !== currentTargetGadgetId) {
+      throw new Error("The moved gadget lease is no longer current.");
+    }
+    record.move = {
+      state: "moving",
+      targetWorkspaceId,
+      token: move.token,
+      previousLease: {
+        targetWorkspaceId: currentTargetWorkspaceId,
+        targetGadgetId: currentTargetGadgetId,
+      },
+    };
+    this.storage.gadgets.put(record);
+    return move.token;
+  }
+
+  commitGadgetMove(id: WorkpieceId, targetWorkspaceId: string,
+                   targetGadgetId: WorkpieceId, token: string, ownerId: string,
+                   previousTarget?: {workspaceId: string, gadgetId: WorkpieceId}): boolean {
+    if (this.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let record = this.getGadgetRecord(id);
+    let move = record.move;
+    if (!move || move.token !== token || move.targetWorkspaceId !== targetWorkspaceId) {
+      throw new Error("The gadget move is no longer current.");
+    }
+    // A retry after the target committed is safe and idempotent. This is needed when the target
+    // DO was restarted after the source commit but before it published its pending proxy.
+    if (move.state === "leased") {
+      if (move.targetGadgetId === targetGadgetId) return false;
+      throw new Error("The gadget move target changed after commit.");
+    }
+    let previousLease = move.previousLease;
+    if (previousLease && (!previousTarget
+        || previousTarget.workspaceId !== previousLease.targetWorkspaceId
+        || previousTarget.gadgetId !== previousLease.targetGadgetId)) {
+      throw new Error("The previous moved gadget lease does not match.");
+    }
+    if (!previousLease && previousTarget) {
+      throw new Error("Unexpected previous moved gadget lease.");
+    }
+    if (!previousLease && record.lastMoveToken === undefined) {
+      this.migrateInitialAutoApprovalRules(id);
+    }
+    record.move = {state: "leased", targetWorkspaceId, targetGadgetId, token};
+    this.storage.gadgets.put(record);
+    // Existing facet stubs and agent bindings must not remain usable after the source lease is
+    // published. The source storage stays intact; only the running facet is invalidated here, and
+    // the surrounding RPC session is restarted by commitMovedGadget below.
+    this.ctx.facets.abort(this.gadgetFacetName(id), new Error(
+        "Gadget moved to another workspace."));
+    return true;
+  }
+
+  abortGadgetMove(id: WorkpieceId, targetWorkspaceId: string, token: string,
+                  previousTarget?: {workspaceId: string, gadgetId: WorkpieceId}): void {
+    let record = this.storage.gadgets.get(id);
+    let move = record?.move;
+    if (!record || !move || move.token !== token || move.targetWorkspaceId !== targetWorkspaceId) {
+      return;
+    }
+    if (move.state === "moving") {
+      if (move.previousLease) {
+        if (!previousTarget
+            || previousTarget.workspaceId !== move.previousLease.targetWorkspaceId
+            || previousTarget.gadgetId !== move.previousLease.targetGadgetId) {
+          throw new Error("The previous moved gadget lease does not match.");
+        }
+        record.move = {
+          state: "leased",
+          targetWorkspaceId: move.previousLease.targetWorkspaceId,
+          targetGadgetId: move.previousLease.targetGadgetId,
+          token,
+        };
+      } else {
+        delete record.move;
+      }
+    } else if (previousTarget) {
+      record.move = {
+        state: "leased",
+        targetWorkspaceId: previousTarget.workspaceId,
+        targetGadgetId: previousTarget.gadgetId,
+        token,
+      };
+    } else {
+      delete record.move;
+    }
+    this.storage.gadgets.put(record);
+  }
+
+  reclaimGadgetMove(id: WorkpieceId, token: string, ownerId: string,
+                    previousTarget?: {workspaceId: string, gadgetId: WorkpieceId}): WorkpieceId {
+    if (this.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let record = this.getGadgetRecord(id);
+    let move = record.move;
+    if (!move && record.lastMoveToken === token) return id;
+    if (!move || move.state !== "moving" || move.targetWorkspaceId !== this.ctx.id.toString()
+        || move.token !== token || !move.previousLease || !previousTarget
+        || move.previousLease.targetWorkspaceId !== previousTarget.workspaceId
+        || move.previousLease.targetGadgetId !== previousTarget.gadgetId) {
+      throw new Error("The moved gadget cannot be reclaimed by this lease.");
+    }
+    delete record.move;
+    record.lastMoveToken = token;
+    this.storage.gadgets.put(record);
+    // B -> A reclaims the fixed host's registry entry without going through commitGadgetMove.
+    // Invalidate the old B capability immediately, then let the native wrapper schedule the same
+    // session restart used by a normal commit after this input gate has returned.
+    this.ctx.facets.abort(this.gadgetFacetName(id), new Error(
+        "Gadget move reclaimed by its source workspace."));
+    return id;
+  }
+
+  getGadgetMoveStatus(id: WorkpieceId, ownerId: string): GadgetMoveStatus {
+    if (this.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let move = this.storage.gadgets.get(id)?.move;
+    if (!move) return {state: "none"};
+    return {
+      state: move.state,
+      targetWorkspaceId: move.targetWorkspaceId,
+      ...(move.targetGadgetId === undefined ? {} : {targetGadgetId: move.targetGadgetId}),
+      token: move.token,
+    };
+  }
+
+  /** Drop user-facing state while retaining only the leased Gadget host material. */
+  async retireAsMovedHost(owner: DurableObjectStub<UserDurableObject>): Promise<void> {
+    let leased = this.leasedGadgets();
+    if (leased.length === 0) return;
+
+    this.destroyAllLiveChats();
+    let leasedIds = new Set(leased.map(gadget => gadget.id));
+    let boundGatekeepers = new Set<WorkpieceId>();
+    for (let gadget of leased) {
+      for (let edge of Object.values(gadget.bindings)) boundGatekeepers.add(edge.target);
+    }
+
+    for (let hook of Array.from(this.storage.boundHooks.list())) {
+      let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
+      if (gadgetId === undefined || !leasedIds.has(gadgetId)) await this.deleteHook(hook.id);
+    }
+
+    for (let gadget of Array.from(this.storage.gadgets.list())) {
+      if (!leasedIds.has(gadget.id)) {
+        if (gadget.movedFrom) {
+          await this.withMovedGadgetHost(gadget.id, host => host.remove());
+        }
+        await this.removeGadget(gadget.id);
+      }
+    }
+    for (let gatekeeper of Array.from(this.storage.gatekeepers.list())) {
+      if (!boundGatekeepers.has(gatekeeper.id)) this.removeGatekeeper(gatekeeper.id);
+    }
+
+    let retainedActionIds = new Set(
+        [...this.storage.actions.list()]
+            .filter(record => leased.some(gadget => this.actionBelongsToGadget(record, gadget.id)))
+            .map(record => record.id));
+
+    // Chats, drafts, sharing, and attachment bytes are user-facing state. The leased Gadget's
+    // code, binding map, gatekeeper facets, hooks, ownerId, move records, its action history, and
+    // the auto-approval rules for its bound connections are retained in the host.
+    for (let record of Array.from(this.storage.chatMeta.list())) this.storage.chatMeta.delete(record.id);
+    for (let record of Array.from(this.storage.chatContext.list())) this.storage.chatContext.delete(record.chatId);
+    for (let record of Array.from(this.storage.chatCompactions.list())) {
+      this.storage.chatCompactions.delete(compactionKey(record.chatId, record.compactedTo));
+    }
+    for (let record of Array.from(this.storage.chats.list())) {
+      this.storage.chats.delete(`${keyString(record.chatId)}.${keyString(record.sequence)}`);
+    }
+    for (let record of Array.from(this.storage.chatDraftUpdates.list())) {
+      this.storage.chatDraftUpdates.delete(
+          `${keyString(record.chatId)}.${keyString(record.timestamp.valueOf())}`);
+    }
+    for (let record of Array.from(this.storage.nextChatSequences.list())) {
+      this.storage.nextChatSequences.delete(record.chatId);
+    }
+    for (let record of Array.from(this.storage.agentCallbackArgs.list())) {
+      this.storage.agentCallbackArgs.delete(`${keyString(record.chatId)}.${keyString(record.sequence)}`);
+    }
+    for (let record of Array.from(this.storage.chatModelData.list())) {
+      this.storage.chatModelData.delete(`${keyString(record.chatId)}.${keyString(record.sequence)}`);
+    }
+    for (let record of Array.from(this.storage.activeAgents.list())) this.storage.activeAgents.delete(record.chatId);
+    for (let record of Array.from(this.storage.externalChats.list())) {
+      this.storage.externalChats.delete(record.externalChatKey);
+    }
+    for (let record of Array.from(this.storage.gadgetResponseDeliveries.list())) {
+      this.storage.gadgetResponseDeliveries.delete(record.idempotencyKey);
+    }
+    for (let record of Array.from(this.storage.chatAttachmentContent.list())) {
+      this.storage.chatAttachmentContent.delete(record.fileId);
+    }
+    for (let record of Array.from(this.storage.actions.list())) {
+      if (!retainedActionIds.has(record.id)) this.storage.actions.delete(record.id);
+    }
+    for (let record of Array.from(this.storage.autoApproveTags.list())) {
+      if (!boundGatekeepers.has(record.gatekeeperId)) {
+        this.storage.autoApproveTags.delete(
+            autoApprovalRuleKey(record.gatekeeperId, record.actionKind.tag, record.gadgetId));
+      }
+    }
+    for (let record of Array.from(this.storage.collaborators.list())) {
+      this.storage.collaborators.delete(record.profile.id);
+    }
+    for (let record of Array.from(this.storage.shareKeys.list())) this.storage.shareKeys.delete(record.id);
+    for (let record of Array.from(this.storage.blueprints.list())) this.storage.blueprints.delete(record.id);
+    for (let record of Array.from(this.storage.observers.list())) this.storage.observers.delete(record.profileId);
+
+    await owner.deleteGadget(this.ctx.id.toString());
+    this.storage.hostOnly.put(true);
+  }
+
+  async moveGadget(id: WorkpieceId, targetWorkspaceId: string, requesterId: string)
+      : Promise<MovedGadgetLocation> {
+    if (this.ownerId !== requesterId) throw new Error("Only the workspace owner can move a gadget.");
+    if (targetWorkspaceId === this.ctx.id.toString()) {
+      throw new Error("A gadget is already in this workspace.");
+    }
+    let owner = this.users.get(this.users.idFromString(requesterId));
+    let targetMeta = await owner.getGadget(targetWorkspaceId);
+    if (!targetMeta || targetMeta.owner) {
+      throw new Error("The destination workspace must belong to the same account.");
+    }
+
+    let record = this.getUserGadgetRecord(id);
+    if (record.pending) throw new Error("A provisional gadget cannot be moved.");
+    let ns = this.ctx.exports.OverseerDurableObject;
+    let movedFrom = record.movedFrom;
+    let previousTarget = movedFrom
+      ? {workspaceId: this.ctx.id.toString(), gadgetId: id}
+      : undefined;
+    let source: DurableObjectStub<OverseerDurableObject> | undefined;
+    let sourceProhibitAllSharing = this.storage.prohibitAllSharing.get();
+    let token: string | undefined;
+    try {
+      if (movedFrom) {
+        source = ns.get(ns.idFromString(movedFrom.sourceWorkspaceId));
+        sourceProhibitAllSharing = await source.getMovedGadgetProtection(
+            movedFrom.sourceGadgetId, this.ctx.id.toString(), id, movedFrom.token, requesterId);
+        try {
+          token = await source.beginLeasedGadgetMove(
+              movedFrom.sourceGadgetId, this.ctx.id.toString(), id,
+              targetWorkspaceId, requesterId);
+        } catch (error) {
+          // A lost response after the source persisted `moving` is recoverable. Read the durable
+          // source state and continue the same move instead of creating a second lease token.
+          let status = await source.getGadgetMoveStatus(movedFrom.sourceGadgetId, requesterId);
+          if (status.state !== "moving"
+              || status.targetWorkspaceId !== targetWorkspaceId
+              || status.token !== movedFrom.token) throw error;
+          token = status.token;
+        }
+        record = this.getGadgetRecord(id);
+        record.movePending = true;
+        this.storage.gadgets.put(record);
+      } else {
+        token = this.beginGadgetMove(id, targetWorkspaceId);
+      }
+      let target = ns.get(ns.idFromString(targetWorkspaceId));
+      let hostWorkspaceId = movedFrom?.sourceWorkspaceId ?? this.ctx.id.toString();
+      let hostGadgetId = movedFrom?.sourceGadgetId ?? id;
+      let location = await target.installMovedGadget({
+        sourceWorkspaceId: hostWorkspaceId,
+        sourceGadgetId: hostGadgetId,
+        ownerId: requesterId,
+        token: token!,
+        title: record.title,
+        created: record.created,
+        bindingName: record.bindingName,
+        ...(record.output ? {output: record.output} : {}),
+        filesRoot: record.filesRoot ?? this.gadgetRootName(id),
+        bindings: Object.fromEntries(Object.entries(record.bindings).map(([name, edge]) => {
+          let gatekeeper = this.storage.gatekeepers.get(edge.target);
+          return [name, {
+            ...edge,
+            ...(gatekeeper?.resourceTitle ? {resourceTitle: gatekeeper.resourceTitle} : {}),
+            ...(gatekeeper ? {vendorId: gatekeeperVendorId(gatekeeper)} : {}),
+          }];
+        })),
+        sourceProhibitAllSharing,
+        ...(previousTarget ? {previousTarget} : {}),
+      });
+      if (movedFrom) {
+        // The source host is fixed for the lifetime of the Gadget. Only the old target registry
+        // entry is removed after the new target has durably published its proxy.
+        this.storage.gadgets.delete(id);
+      }
+      return location;
+    } catch (error) {
+      let hostWorkspaceId = movedFrom?.sourceWorkspaceId ?? this.ctx.id.toString();
+      let hostGadgetId = movedFrom?.sourceGadgetId ?? id;
+      if (token) {
+        try {
+          let target = ns.get(ns.idFromString(targetWorkspaceId));
+          let status = await target.getMovedGadgetInstallStatus(
+              hostWorkspaceId, hostGadgetId, token, requesterId);
+          if (status.state === "active" && status.location) {
+            if (movedFrom) this.storage.gadgets.delete(id);
+            return status.location;
+          }
+
+          if (status.state === "pending") {
+            // The target has the only durable resume key. Do not roll back the source until this
+            // pending record is reconciled with source state by a later retry.
+            if (movedFrom && source) {
+              let sourceStatus = await source.getGadgetMoveStatus(hostGadgetId, requesterId);
+              if (sourceStatus.state === "none"
+                  || sourceStatus.targetWorkspaceId !== targetWorkspaceId
+                  || sourceStatus.token !== token) {
+                await target.abortMovedGadgetInstall(
+                    hostWorkspaceId, hostGadgetId, token, requesterId);
+                let current = this.storage.gadgets.get(id);
+                if (current?.movePending) {
+                  delete current.movePending;
+                  this.storage.gadgets.put(current);
+                }
+              } else {
+                throw error;
+              }
+            } else {
+              throw error;
+            }
+          }
+        } catch (reconciliationError) {
+          // A failed status read is itself indeterminate. Keep source and target state so a later
+          // invocation can return the already-published location or complete the same token.
+          if (reconciliationError === error) throw error;
+          throw error;
+        }
+      }
+      if (movedFrom && source && token) {
+        try {
+          await source.abortMovedGadget(
+              movedFrom.sourceGadgetId, targetWorkspaceId, token, previousTarget);
+        } catch {
+          // Keep the durable source move for a later retry/reconciliation if this response is also
+          // lost. The target proxy remains hidden until the source state is resolved.
+        }
+        let current = this.storage.gadgets.get(id);
+        if (current?.movePending) {
+          delete current.movePending;
+          this.storage.gadgets.put(current);
+        }
+      } else if (token) {
+        this.abortGadgetMove(id, targetWorkspaceId, token);
+      }
+      throw error;
+    }
+  }
+
   // Name of the Y.Doc root map holding the given gadget's files. The default gadget keeps the
   // legacy unnamed root ""; all others use the decimal workpiece ID.
   gadgetRootName(id: WorkpieceId): string {
     return this.defaultGadgetId === id ? "" : `${id}`;
   }
+
 
   // Facet name for the given gadget. The facet name is a storage key, so the default gadget
   // keeps the legacy name "gadget"; all others get `gadget${id}` (collision-free with
@@ -1752,6 +2574,10 @@ class OverseerImpl implements AgentHooks {
           "createGadget first.");
     }
     let id = this.resolveGadgetId(workpieceId);
+    let existing = this.storage.gadgets.get(id);
+    if (existing?.move?.state === "leased" || existing?.movePending) {
+      throw new Error(`Gadget ${id} is not available in this workspace while it is being moved.`);
+    }
     if (mustExist) {
       if (!this.storage.gadgets.get(id) && this.storage.gatekeepers.get(id)) {
         // A name resolving here almost certainly came from the chat binding map, so tell the
@@ -1763,7 +2589,10 @@ class OverseerImpl implements AgentHooks {
         throw new Error(`No such gadget: ${id}`);
       }
     }
-    return {workpieceId: id, rootName: this.gadgetRootName(id)};
+    return {
+      workpieceId: id,
+      rootName: existing?.movedFrom ? (existing.filesRoot ?? this.gadgetRootName(id)) : this.gadgetRootName(id),
+    };
   }
 
   // Create a new gadget workpiece with the given title and binding name, no files, and no
@@ -1973,6 +2802,28 @@ class OverseerImpl implements AgentHooks {
     this.bumpVersion([gadgetId]);
   }
 
+  bindMovedWorkpiece(gadgetId: WorkpieceId, name: string, target: WorkpieceId,
+                     chatId: number): void {
+    validateBindingName(name);
+    if (name === "GADGET") {
+      throw new Error("The binding name `GADGET` is reserved.");
+    }
+    let gadget = this.getGadgetRecord(gadgetId);
+    if (!gadget.movedFrom) throw new Error("This Gadget is not moved.");
+    if (!this.storage.chatMeta.get(chatId)) throw new Error(`No such chat: ${chatId}`);
+    let existing = gadget.bindings[name];
+    if (existing) {
+      if (existing.pending && existing.pending.chatId !== chatId) {
+        throw new Error(`The binding name "${name}" is already proposed by another chat. ` +
+            "Accept or revert that chat's changes first, or choose a different name.");
+      }
+      throw new Error(`There is already a binding named "${name}".`);
+    }
+    gadget.bindings[name] = {target, pending: {chatId}};
+    this.storage.gadgets.put(gadget);
+    this.bumpVersion([gadgetId]);
+  }
+
   // Remove the named binding edge from the gadget. The target gatekeeper itself survives,
   // possibly no longer bound by any gadget. `forChatId` scopes visibility: an edge pending in
   // some other chat is treated as nonexistent (it isn't this caller's to remove).
@@ -2044,6 +2895,13 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
+    for (let rule of Array.from(this.storage.autoApproveTags.list())) {
+      if (rule.gadgetId === id) {
+        this.storage.autoApproveTags.delete(
+            autoApprovalRuleKey(rule.gatekeeperId, rule.actionKind.tag, id));
+      }
+    }
+
     let facetName = this.gadgetFacetName(id);
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
     this.#runningChatIds.delete(id);
@@ -2077,7 +2935,8 @@ class OverseerImpl implements AgentHooks {
         id: record.id,
         type: "gadget",
         title: record.title,
-        filesRoot: this.gadgetRootName(record.id),
+        filesRoot: record.filesRoot ?? this.gadgetRootName(record.id),
+        ...(record.movedFrom ? {isMoved: true} : {}),
       };
       if (record.output) {
         summary.output = record.output;
@@ -2098,15 +2957,25 @@ class OverseerImpl implements AgentHooks {
 
     let dbSubscriber = {
       add(record: GadgetRecord) {
-        if (!includePending && record.pending) return;
+        if (record.move?.state === "leased" || record.movePending
+            || (!includePending && record.pending)) return;
         subscriber.entry(toSummary(record)).catch(unsubscribe);
       },
-      update(_oldRecord: GadgetRecord, newRecord: GadgetRecord) {
-        if (!includePending && newRecord.pending) return;
+      update(oldRecord: GadgetRecord, newRecord: GadgetRecord) {
+        let oldHidden = oldRecord.move?.state === "leased" || oldRecord.movePending
+            || (!includePending && oldRecord.pending);
+        let newHidden = newRecord.move?.state === "leased" || newRecord.movePending
+            || (!includePending && newRecord.pending);
+        if (oldHidden && newHidden) return;
+        if (newHidden) {
+          if (!oldHidden) subscriber.removed(newRecord.id).catch(unsubscribe);
+          return;
+        }
         subscriber.entry(toSummary(newRecord)).catch(unsubscribe);
       },
       remove(record: GadgetRecord) {
-        if (!includePending && record.pending) return;
+        if (!includePending && (record.pending || record.move?.state === "leased"
+            || record.movePending)) return;
         subscriber.removed(record.id).catch(unsubscribe);
       },
     };
@@ -2114,7 +2983,8 @@ class OverseerImpl implements AgentHooks {
     subscriber.onRpcBroken(() => unsubscribe());
 
     for (let record of gadgets.list()) {
-      if (!includePending && record.pending) continue;
+      if (record.move?.state === "leased" || record.movePending
+          || (!includePending && record.pending)) continue;
       subscriber.entry(toSummary(record)).catch(unsubscribe);
     }
     subscriber.ready().catch(unsubscribe);
@@ -2261,6 +3131,76 @@ class OverseerImpl implements AgentHooks {
     return {ydoc, version};
   }
 
+  // Reconstruct a non-GC document for the per-Gadget capability boundary. The projection keeps
+  // source struct IDs and clock positions, so a client edit can be validated and applied to the
+  // host without copying the workspace document or sending another Gadget's tombstones back.
+  buildGadgetCodeDoc(version: number | "current"): {ydoc: Y.Doc, version: number} {
+    let ydoc = new Y.Doc({gc: false});
+    version = this.replayUpdates(0, version, (entry: CodeUpdate) => {
+      Y.applyUpdateV2(ydoc, entry.update);
+    });
+    return {ydoc, version};
+  }
+
+  subscribeToGadgetCode(gadgetId: WorkpieceId, subscriber: RpcStub<CodeSubscriber>,
+                        _fromVersion: number = 0, allowLeasedHost = false): RpcStub<{}> {
+    let gadget = allowLeasedHost
+        ? this.getGadgetRecord(gadgetId)
+        : this.getUserGadgetRecord(gadgetId);
+    let rootName = gadget.filesRoot ?? this.gadgetRootName(gadgetId);
+    let codeVersions = this.storage.code;
+    subscriber = subscriber.dup();
+
+    let unsubscribe = () => {
+      codeVersions.unsubscribe(dbSubscriber);
+      subscriber[Symbol.dispose]();
+    };
+    let sendSnapshot = () => {
+      if (!allowLeasedHost) this.getUserGadgetRecord(gadgetId);
+      let {ydoc, version} = this.buildGadgetCodeDoc("current");
+      try {
+        subscriber.update({
+          version,
+          timestamp: codeVersions.get(version)?.timestamp ?? new Date(),
+          update: encodeGadgetCode(ydoc, rootName),
+        }).catch(unsubscribe);
+      } finally {
+        ydoc.destroy();
+      }
+    };
+    let dbSubscriber = {
+      add: (_record: CodeUpdate) => sendSnapshot(),
+      update: (_oldRecord: CodeUpdate, _newRecord: CodeUpdate) => {},
+      remove: (_record: CodeUpdate) => {},
+    };
+
+    // A full scoped projection is safe for both initial load and reconnect. It is never placed in
+    // the client update queue: the browser applies server deliveries with the "server" origin.
+    sendSnapshot();
+    subscriber.ready().catch(unsubscribe);
+    codeVersions.subscribe(dbSubscriber);
+    // @ts-expect-error Bugs in native RPC types make this not work currently.
+    return new NativeRpcStub<{}>({
+      [Symbol.dispose]() { unsubscribe(); }
+    });
+  }
+
+  updateGadgetCode(gadgetId: WorkpieceId, update: Uint8Array): number {
+    this.validateGadgetCodeUpdate(gadgetId, update);
+    return this.updateCode(update);
+  }
+
+  validateGadgetCodeUpdate(gadgetId: WorkpieceId, update: Uint8Array): void {
+    let gadget = this.getGadgetRecord(gadgetId);
+    let rootName = gadget.filesRoot ?? this.gadgetRootName(gadgetId);
+    let {ydoc} = this.buildGadgetCodeDoc("current");
+    try {
+      assertGadgetCodeUpdate(ydoc, rootName, update);
+    } finally {
+      ydoc.destroy();
+    }
+  }
+
   // Apply a Yjs-encoded (V2) update to the code, incrementing the code version.
   updateCode(update: Uint8Array): number {
     let version = 0;
@@ -2305,9 +3245,41 @@ class OverseerImpl implements AgentHooks {
     return version;
   }
 
-  makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller) {
+  async updateCodeForClient(update: Uint8Array, chatId: number,
+                            author: AiChatAuthorInfo,
+                            gadgetId?: WorkpieceId): Promise<void> {
+    let meta = this.getChatMetaOrThrow(chatId);
+    let existingUpdates = this.listChatDraftUpdates(chatId);
+    if (existingUpdates.length > 0) {
+      let latest = existingUpdates[existingUpdates.length - 1];
+      if (!this.sameChatAuthor(latest.author, author)) {
+        let elapsed = Date.now() - latest.timestamp.getTime();
+        if (!meta.activeAgent && elapsed > CHAT_DRAFT_AUTHOR_SPLIT_MS) {
+          let result = this.materializeChatDraft(chatId, meta);
+          if (result) meta = result.meta;
+          existingUpdates = [];
+        }
+      }
+    }
+
+    let timestamp = this.getChatTimestamp();
+    let newRecord: ChatDraftUpdateRecord = {
+      chatId, timestamp, author, update,
+      ...(gadgetId === undefined ? {} : {gadgetIds: [gadgetId]}),
+    };
+    this.storage.chatDraftUpdates.put(newRecord);
+    meta.lastActive = timestamp;
+    this.storage.chatMeta.put(meta);
+    this.recomputeHasProposedChanges(chatId, meta);
+    let allUpdates = [...existingUpdates, newRecord];
+    this.emitChatDraftUpdate(chatId, timestamp, this.normalizeDraftAuthor(allUpdates), update, newRecord.gadgetIds);
+    this.compactChatDraftUpdates(chatId, allUpdates);
+  }
+
+  makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller,
+                      overseerId = this.ctx.id.toString()) {
     let props: GatekeeperLoopbackProps = {
-      overseerId: this.ctx.id.toString(),
+      overseerId,
       target,
       caller,
     };
@@ -2320,12 +3292,16 @@ class OverseerImpl implements AgentHooks {
   // chat is included (the chat's own preview/test runs see its proposed additions), while edges
   // pending in other chats -- or in any chat, when loading mainline -- are treated as
   // nonexistent.
-  getEnvForLoader(gadgetId: WorkpieceId, caller: GatekeeperCaller, forChatId?: number): object {
+  getEnvForLoader(gadgetId: WorkpieceId, caller: GatekeeperCaller, forChatId?: number,
+                  previewBindings: GadgetCodePreview["bindings"] = []): object {
     let env: Record<string, any> = {}
     let gadget = this.getGadgetRecord(gadgetId);
     env.GADGET = this.makeBindingLoopback({type: "gadget", id: gadgetId}, caller);
     for (let [name, edge] of this.visibleBindings(gadget, forChatId)) {
       env[name] = this.makeBindingLoopback({type: "gatekeeper", id: edge.target}, caller);
+    }
+    for (const {name, target} of previewBindings) {
+      env[name] = this.makeBindingLoopback({type: "gatekeeper", id: target}, caller);
     }
     return env;
   }
@@ -2335,7 +3311,11 @@ class OverseerImpl implements AgentHooks {
   // Entries whose targets no longer exist are silently skipped, mirroring the deleted-gadget
   // behavior elsewhere.
   getEnvForAgent(chatId: number, bindings: Record<string, ChatBindingEntry>): object {
-    let caller: GatekeeperCaller = {from: "agent", chatId};
+    let movedSpawnerRoute = this.getChatAgentContext(chatId).movedSpawnerRoute;
+    let caller: GatekeeperCaller = {
+      from: "agent", chatId,
+      ...(movedSpawnerRoute === undefined ? {} : {gadgetId: movedSpawnerRoute.sourceGadgetId}),
+    };
     // This must be a *plain* object: it becomes the loaded worker's `env`, and the loader's
     // serializer rejects anything else (including a null-prototype object) with DataCloneError.
     // So prototype-pollution safety comes from validation instead: names from before name
@@ -2354,10 +3334,29 @@ class OverseerImpl implements AgentHooks {
       }
       switch (entry.type) {
         case "workpiece": {
-          if (this.storage.gadgets.get(entry.id)) {
+          let route = movedSpawnerRoute;
+          let routedTarget = route?.bindingTargets[name];
+          if (route && routedTarget) {
+            let target = routedTarget;
+            let overseerId = route.sourceWorkspaceId;
+            if (target.type === "gadget" && target.id === route.sourceGadgetId) {
+              target = {type: "gadget", id: route.targetGadgetId};
+              overseerId = this.ctx.id.toString();
+            }
+            env[name] = this.makeBindingLoopback(target, caller, overseerId);
+            break;
+          }
+          let gadget = this.storage.gadgets.get(entry.id);
+          if (gadget && this.isAgentVisibleGadget(gadget, chatId)) {
             env[name] = this.makeBindingLoopback({type: "gadget", id: entry.id}, caller);
           } else if (this.storage.gatekeepers.get(entry.id)) {
             env[name] = this.makeBindingLoopback({type: "gatekeeper", id: entry.id}, caller);
+          } else {
+            let sourceWorkspaceId = this.movedBindingSource(entry.id, chatId);
+            if (sourceWorkspaceId) {
+              env[name] = this.makeBindingLoopback(
+                  {type: "gatekeeper", id: entry.id}, caller, sourceWorkspaceId);
+            }
           }
           break;
         }
@@ -2382,7 +3381,7 @@ class OverseerImpl implements AgentHooks {
 
   // Which chat ID is each gadget's facet currently running from? Keyed by gadget ID; a gadget
   // with no entry has never had its facet loaded this session.
-  #runningChatIds = new Map<WorkpieceId, number | null>();
+  #runningChatIds = new Map<WorkpieceId, number | string | null>();
 
   proposedChangesChanged(chatId: number) {
     for (let [gadgetId, runningChatId] of this.#runningChatIds) {
@@ -2394,9 +3393,9 @@ class OverseerImpl implements AgentHooks {
   }
 
   emitChatDraftUpdate(chatId: number, timestamp: Date,
-                      author: AiChatAuthorInfo, update: Uint8Array): void {
+                      author: AiChatAuthorInfo, update: Uint8Array, gadgetIds?: WorkpieceId[]): void {
     for (let subscriber of this.#chatSubscribers) {
-      subscriber.draftUpdate(chatId, timestamp, author, update).catch(() => {
+      subscriber.draftUpdate(chatId, timestamp, author, update, gadgetIds).catch(() => {
         subscriber[Symbol.dispose]();
         this.#chatSubscribers.delete(subscriber);
       });
@@ -2477,6 +3476,26 @@ class OverseerImpl implements AgentHooks {
     return meta;
   }
 
+  groupChatDraftUpdates(updates: ChatDraftUpdateRecord[]): ChatDraftUpdateRecord[][] {
+    let groups = new Map<string, ChatDraftUpdateRecord[]>();
+    for (let update of updates) {
+      let gadgetIds = update.gadgetIds?.length
+          ? [...new Set(update.gadgetIds)].toSorted((left, right) => left - right)
+          : undefined;
+      let key = JSON.stringify(gadgetIds ?? []);
+      let group = groups.get(key);
+      if (!group) {
+        group = [];
+        groups.set(key, group);
+      }
+      group.push(gadgetIds === undefined ||
+                 JSON.stringify(gadgetIds) === JSON.stringify(update.gadgetIds)
+          ? update
+          : {...update, gadgetIds});
+    }
+    return [...groups.values()];
+  }
+
   compactChatDraftUpdates(chatId: number,
                           updates?: ChatDraftUpdateRecord[]): void {
     if (!updates) {
@@ -2486,15 +3505,19 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
-    let compacted: ChatDraftUpdateRecord = {
-      chatId,
-      timestamp: updates[updates.length - 1].timestamp,
-      author: this.normalizeDraftAuthor(updates),
-      update: Y.mergeUpdatesV2(updates.map(update => update.update)),
-    };
-
+    let compacted = this.groupChatDraftUpdates(updates).map(group => {
+      let last = group[group.length - 1];
+      let gadgetIds = group[0].gadgetIds;
+      return {
+        chatId,
+        timestamp: last.timestamp,
+        author: this.normalizeDraftAuthor(group),
+        update: Y.mergeUpdatesV2(group.map(entry => entry.update)),
+        ...(gadgetIds === undefined ? {} : {gadgetIds}),
+      } satisfies ChatDraftUpdateRecord;
+    });
     this.deleteChatDraftUpdates(chatId, updates);
-    this.storage.chatDraftUpdates.put(compacted);
+    for (let entry of compacted) this.storage.chatDraftUpdates.put(entry);
   }
 
   materializeChatDraft(chatId: number,
@@ -2517,24 +3540,30 @@ class OverseerImpl implements AgentHooks {
       throw new Error(AGENT_RUNNING_ERROR_MESSAGE);
     }
 
-    let timestamp = this.getChatTimestamp();
-    let sequence = this.nextChatSequence(chatId);
-    this.storage.chats.put({
-      chatId,
-      sequence,
-      timestamp,
-      author: this.normalizeDraftAuthor(updates),
-      type: "changes",
-      update: Y.mergeUpdatesV2(updates.map(update => update.update)),
-      // Record the base version the user's edits were captured against; agent history replay
-      // seeds its version lock from this (see the "changes" replay case in agent.ts).
-      observedCodeVersion: this.currentCodeBaseVersion(),
-    });
+    let sequence = -1;
+    let timestamp: Date | undefined;
+    for (let group of this.groupChatDraftUpdates(updates)) {
+      timestamp = this.getChatTimestamp();
+      sequence = this.nextChatSequence(chatId);
+      let gadgetIds = group[0].gadgetIds;
+      this.storage.chats.put({
+        chatId,
+        sequence,
+        timestamp,
+        author: this.normalizeDraftAuthor(group),
+        type: "changes",
+        update: Y.mergeUpdatesV2(group.map(entry => entry.update)),
+        ...(gadgetIds === undefined ? {} : {gadgetIds}),
+        // Record the base version the user's edits were captured against; agent history replay
+        // seeds its version lock from this (see the "changes" replay case in agent.ts).
+        observedCodeVersion: this.currentCodeBaseVersion(),
+      });
+    }
 
     this.deleteChatDraftUpdates(chatId, updates);
     this.emitChatDraftCleared(chatId);
 
-    meta.lastActive = timestamp;
+    meta.lastActive = timestamp!;
     this.storage.chatMeta.put(meta);
     this.recomputeHasProposedChanges(chatId, meta);
     this.proposedChangesChanged(chatId);
@@ -2547,7 +3576,7 @@ class OverseerImpl implements AgentHooks {
   //
   // If `chatId` is specified, load the worker including changes proposed in the given chat
   // thread. (The caller is presumed to have verified the chat exists and has proposed changes.)
-  loadGadgetWorker(gadgetId: WorkpieceId, chatId?: number): WorkerStub {
+  loadGadgetWorker(gadgetId: WorkpieceId, chatId?: number, preview?: GadgetCodePreview): WorkerStub {
     let codeVersion = `${this.storage.codeVersion.get()}`;
     let sequence: number | undefined;
     if (chatId !== undefined) {
@@ -2555,15 +3584,14 @@ class OverseerImpl implements AgentHooks {
       codeVersion += `.${chatId}.${sequence}`;
     }
 
+    if (preview) codeVersion += `.preview.${preview.key}`;
     return this.env.LOADER.get(`${this.ctx.id}.${codeVersion}.${gadgetId}`, async () => {
-      let {ydoc} = this.buildYDoc("current");
+      let {ydoc} = preview ? this.buildGadgetCodeDoc("current") : this.buildYDoc("current");
+      if (preview?.update) Y.applyUpdateV2(ydoc, preview.update);
 
       if (chatId !== undefined) {
-        this.getProposedChanges(chatId, sequence).forEach(({update}) => {
-          if (update !== undefined) {
-            Y.applyUpdateV2(ydoc, update);
-          }
-        });
+        const update = this.getProposedGadgetCodeUpdate(chatId, gadgetId, sequence);
+        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
       }
 
       let modules: Record<string, string> = {};
@@ -2588,7 +3616,7 @@ class OverseerImpl implements AgentHooks {
         ],
         mainModule: "server.js",
         modules,
-        env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId),
+        env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId, preview?.bindings),
         globalOutbound: null,
 
         // TODO: Switch to streaming tails when the workerd log spam issue is fixed.
@@ -2601,8 +3629,13 @@ class OverseerImpl implements AgentHooks {
   //
   // If `chatId` is specified, load the gadget including changes proposed in the given chat
   // thread.
-  getGadgetFacetFetcher(gadgetId: WorkpieceId, chatId?: number): Fetcher<DurableObject> {
-    this.getGadgetRecord(gadgetId);  // validate it exists
+  getGadgetFacetFetcher(gadgetId: WorkpieceId, chatId?: number,
+                        allowLeasedHost = false, preview?: GadgetCodePreview): Fetcher<DurableObject> {
+    if (allowLeasedHost) {
+      this.getGadgetRecord(gadgetId);  // validate it exists
+    } else {
+      this.getUserGadgetRecord(gadgetId);
+    }
 
     if (chatId !== undefined) {
       // Check if the requested chat has proposed changes. If not, then we don't want to load the
@@ -2633,7 +3666,7 @@ class OverseerImpl implements AgentHooks {
     // sophisticated.
     let facetName = this.gadgetFacetName(gadgetId);
     let oldChat = this.#runningChatIds.get(gadgetId);
-    let newChat = chatId ?? null;
+    let newChat = preview?.key ?? chatId ?? null;
     if (newChat !== oldChat) {
       this.ctx.facets.abort(facetName, new Error(
           newChat === null
@@ -2643,7 +3676,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     return this.ctx.facets.get<DurableObject>(facetName, () => {
-      let stub = this.loadGadgetWorker(gadgetId, chatId);
+      let stub = this.loadGadgetWorker(gadgetId, chatId, preview);
 
       return {
         class: stub.getDurableObjectClass<any>("Gadget"),
@@ -2656,8 +3689,9 @@ class OverseerImpl implements AgentHooks {
   //
   // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
   // look like an RpcTarget instead.
-  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number): Promise<RpcStub<any>> {
-    let facet = this.getGadgetFacetFetcher(gadgetId, chatId);
+  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number,
+                       allowLeasedHost = false, preview?: GadgetCodePreview): Promise<RpcStub<any>> {
+    let facet = this.getGadgetFacetFetcher(gadgetId, chatId, allowLeasedHost, preview);
 
     let self = this;
 
@@ -2717,27 +3751,44 @@ class OverseerImpl implements AgentHooks {
 
     let {ydoc} = this.buildYDoc("current");
     if (chatId !== undefined) {
-      this.getProposedChanges(chatId).forEach(({update}) => {
-        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
-      });
+      const update = this.getProposedGadgetCodeUpdate(chatId, gadgetId);
+      if (update !== undefined) Y.applyUpdateV2(ydoc, update);
     }
 
     let file = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId)).get("client.js");
     return file ? {jsCode: file.toString()} : null;
   }
 
-  async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
+  getGadgetUiBundleForUpdate(gadgetId: WorkpieceId, update?: Uint8Array): UiBundle | null {
+    let gadget = this.getGadgetRecord(gadgetId);
+    let rootName = gadget.filesRoot ?? this.gadgetRootName(gadgetId);
+    let {ydoc} = this.buildGadgetCodeDoc("current");
+    try {
+      if (update) {
+        assertGadgetCodeUpdate(ydoc, rootName, update);
+        Y.applyUpdateV2(ydoc, update);
+      }
+      let file = ydoc.getMap<Y.Text>(rootName).get("client.js");
+      return file ? {jsCode: file.toString()} : null;
+    } finally {
+      ydoc.destroy();
+    }
+  }
+
+  async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number,
+                              allowLeasedHost = false, preview?: GadgetCodePreview)
       : Promise<GadgetExportFormat[]> {
     this.checkChatExistsAndMaterializeDrafts(chatId);
-    let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId, allowLeasedHost, preview);
     resolved.gadget?.[Symbol.dispose]();
     return resolved.formats;
   }
 
-  async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number)
+  async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number,
+                     allowLeasedHost = false, preview?: GadgetCodePreview)
       : Promise<ReadableStream<Uint8Array>> {
     this.checkChatExistsAndMaterializeDrafts(chatId);
-    let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId, allowLeasedHost, preview);
     if (!gadget) throw new Error("The Gadget server stub is unavailable.");
     using exportGadget = gadget;
     let format = formats.find(candidate => candidate.id === formatId);
@@ -2750,7 +3801,8 @@ class OverseerImpl implements AgentHooks {
     } else {
       let browser = this.env.BROWSER;
       if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-      let bundle = this.getGadgetUiBundle(gadgetId, chatId);
+      let bundle = preview ? this.getGadgetUiBundleForUpdate(gadgetId, preview.update)
+          : this.getGadgetUiBundle(gadgetId, chatId);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
       let title = this.getGadgetRecord(gadgetId).title;
       return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.dup(), format);
@@ -2764,25 +3816,26 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number): Promise<{
+  async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number,
+                                     allowLeasedHost = false, preview?: GadgetCodePreview): Promise<{
     formats: GadgetExportFormat[];
     handler: Fetcher<GadgetExportEntrypoint> | null;
     gadget: NativeRpcStub<any> | null;
   }> {
-    let {ydoc} = this.buildYDoc("current");
+    let {ydoc} = preview ? this.buildGadgetCodeDoc("current") : this.buildYDoc("current");
+    if (preview?.update) Y.applyUpdateV2(ydoc, preview.update);
     if (chatId !== undefined) {
-      this.getProposedChanges(chatId).forEach(({update}) => {
-        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
-      });
+      const update = this.getProposedGadgetCodeUpdate(chatId, gadgetId);
+      if (update !== undefined) Y.applyUpdateV2(ydoc, update);
     }
     let files = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId));
     if (!files.has("server.js")) return {formats: [], handler: null, gadget: null};
 
-    let handler = this.loadGadgetWorker(gadgetId, chatId)
+    let handler = this.loadGadgetWorker(gadgetId, chatId, preview)
       .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
     // getGadgetFacet() wraps this native stub for Cap'n Web's type system, but this path invokes
     // native Worker RPC and needs its actual runtime type.
-    let gadget = await this.getGadgetFacet(gadgetId, chatId) as unknown as NativeRpcStub<any>;
+    let gadget = await this.getGadgetFacet(gadgetId, chatId, allowLeasedHost, preview) as unknown as NativeRpcStub<any>;
     try {
       let formats = await readCustomExportFormats(handler, gadget);
       return formats === null
@@ -2866,6 +3919,17 @@ class OverseerImpl implements AgentHooks {
   // gatekeeper double-applying an action (the DO's input gate is open across the apply await).
   drainAutoApprovals(gatekeeperId: number): Promise<void> {
     return this.#autoApprovalDrainer.drain(gatekeeperId);
+  }
+
+  getAutoApprovalRule(gatekeeperId: WorkpieceId, tag: string,
+                      gadgetId?: WorkpieceId): AutoApproveTagRecord | undefined {
+    if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.move?.state === "leased") {
+      return this.storage.autoApproveTags.get(
+          autoApprovalRuleKey(gatekeeperId, tag, gadgetId));
+    }
+    return (gadgetId === undefined ? undefined : this.storage.autoApproveTags.get(
+        autoApprovalRuleKey(gatekeeperId, tag, gadgetId))) ??
+        this.storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag));
   }
 
   // Blocks other messages and agent turns for this chat until the returned object is disposed.
@@ -2974,13 +4038,17 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Open the session behind a binding loopback.
-  startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
+  async startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
     switch (target.type) {
       case "gadget": {
         if (caller.from === "agent") {
           this.#getOrCreateCapturedActions(caller.chatId).accessedGadget = true;
         }
         let chatId = "chatId" in caller ? caller.chatId : undefined;
+        if (this.storage.gadgets.get(target.id)?.movedFrom) {
+          const preview = this.getMovedGadgetPreview(target.id, chatId);
+          return this.withMovedGadgetHost(target.id, host => host.connectToMovedGadget(preview));
+        }
         return this.getGadgetFacet(target.id, chatId);
       }
 
@@ -3309,8 +4377,11 @@ class OverseerImpl implements AgentHooks {
 
     // Same auto-approval gate as before, named because awaitDecision uses it too. The drain is
     // deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
-    let willAutoApprove = !!(description.autoApprovable && description.actionKind &&
-        this.storage.autoApproveTags.get(`${gatekeeperId}:${description.actionKind.tag}`) !== undefined);
+    let actionGadgetId = this.actionGadgetId(record);
+    let autoApprovalRule = description.actionKind === undefined
+        ? undefined
+        : this.getAutoApprovalRule(gatekeeperId, description.actionKind.tag, actionGadgetId);
+    let willAutoApprove = !!(description.autoApprovable && autoApprovalRule !== undefined);
 
     // Only agent turns suspend on awaitDecision, and only when a manual decision is pending.
     // Auto-approved actions keep the seamless behavior the user opted into.
@@ -3497,7 +4568,7 @@ class OverseerImpl implements AgentHooks {
   outputsSnapshot(): WorkspaceOutputEntry[] {
     let entries: WorkspaceOutputEntry[] = [];
     for (let gadget of this.storage.gadgets.list()) {
-      if (gadget.pending) continue;
+      if (gadget.pending || gadget.move?.state === "leased" || gadget.movePending) continue;
       entries.push({
         workpieceId: gadget.id,
         title: gadget.title,
@@ -3674,8 +4745,14 @@ class OverseerImpl implements AgentHooks {
       // A creation-only prefix has no update to carry, so the registry rows it left behind are what
       // reveal it (see CompactionCheckpoint.proposedChanges).
       if (checkpoint.proposedChanges || this.#hasPendingStructure(chatId, checkpoint.compactedTo)) {
-        seed.push({sequence: checkpoint.compactedTo - 1, update: checkpoint.proposedChanges});
+        seed.push({
+          sequence: checkpoint.compactedTo - 1,
+          update: checkpoint.proposedChanges,
+        });
       }
+    }
+    for (const batch of checkpoint?.proposedCodeBatches ?? []) {
+      seed.push({...batch, sequence: checkpoint!.compactedTo - 1});
     }
     return foldProposedChanges(
         this.storage.chats.list({
@@ -3684,6 +4761,28 @@ class OverseerImpl implements AgentHooks {
           end: endBefore === undefined ? undefined : compactionKey(chatId, endBefore),
         }),
         seed).proposed;
+  }
+
+  getMovedGadgetPreview(gadgetId: WorkpieceId, chatId?: number): GadgetCodePreview | undefined {
+    if (chatId === undefined) return;
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+    const update = this.getProposedGadgetCodeUpdate(chatId, gadgetId);
+    const bindings = this.visibleBindings(this.getGadgetRecord(gadgetId), chatId)
+        .filter(([, edge]) => edge.pending?.chatId === chatId)
+        .map(([name, edge]) => ({name, target: edge.target}));
+    if (!update && bindings.length === 0) return;
+    const sequence = this.storage.nextChatSequences.get(chatId)?.nextSequence ?? 0;
+    return {key: `${this.ctx.id}:${chatId}:${sequence}`, update, bindings};
+  }
+
+  getProposedGadgetCodeUpdate(chatId: number, gadgetId: WorkpieceId,
+                              endBefore?: number): Uint8Array | undefined {
+    const moved = this.storage.gadgets.get(gadgetId)?.movedFrom !== undefined;
+    let updates = this.getProposedChanges(chatId, endBefore)
+        .filter(batch => batch.update !== undefined &&
+          (batch.gadgetIds ? batch.gadgetIds.includes(gadgetId) : !moved))
+        .map(batch => batch.update!);
+    return updates.length === 0 ? undefined : Y.mergeUpdatesV2(updates);
   }
 
   // Whether the chat still owns a provisional gadget or binding edge recorded before `compactedTo`.
@@ -4129,6 +5228,21 @@ class OverseerImpl implements AgentHooks {
     }
     let gatekeeper = this.storage.gatekeepers.get(id);
     if (!gatekeeper) {
+      let movedGadget = [...this.storage.gadgets.list()].find(gadget =>
+        gadget.movedFrom && this.isAgentVisibleGadget(gadget) &&
+        this.visibleBindings(gadget).some(([, edge]) => edge.target === id));
+      if (movedGadget) {
+        return this.withMovedGadgetHost(movedGadget.id, async host => {
+          let sourceGatekeeper = await host.getGatekeeperById(id);
+          try {
+            return await sourceGatekeeper.describe().then(description =>
+              `Binding: ${envName}\n\nTitle: ${description.title}\n` +
+              `TypeScript type: ${description.tsType}\n`);
+          } finally {
+            sourceGatekeeper[Symbol.dispose]();
+          }
+        });
+      }
       throw new Error(`The resource behind ${envName} no longer exists.`);
     }
     return this.describeGatekeeper(envName, gatekeeper);
@@ -4158,14 +5272,19 @@ class OverseerImpl implements AgentHooks {
   // Add a binding edge to a gadget on behalf of the agent's setGadgetBinding tool. The edge is
   // provisional to the chat (see BindingRecord.pending); the agent loop records the addition in
   // the chat log via `addedBindings`, which sequence-stamps it (see addChatMessages()).
-  addGadgetBinding(gadgetId: WorkpieceId, name: string, target: WorkpieceId,
-                   chatId: number): void {
-    if (!this.storage.gatekeepers.get(target)) {
-      throw new Error("This resource is no longer available.");
-    }
+  async addGadgetBinding(gadgetId: WorkpieceId, name: string, target: WorkpieceId,
+                         chatId: number): Promise<void> {
     // Validate the gadget exists and is visible to this chat.
     let gadget = this.getGadgetRecord(
         this.resolveWorkpieceRoot(gadgetId, true, chatId).workpieceId);
+    if (gadget.movedFrom) {
+      await this.withMovedGadgetHost(gadget.id, host => host.validateMovedGadgetBinding(target));
+      this.bindMovedWorkpiece(gadget.id, name, target, chatId);
+      return;
+    }
+    if (!this.storage.gatekeepers.get(target)) {
+      throw new Error("This resource is no longer available.");
+    }
     this.bindWorkpiece(gadget.id, name, target, chatId);
   }
 
@@ -4711,8 +5830,31 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  getChatAgentContext(chatId: number): AiChatAgentContext {
+  getChatAgentContext(chatId: number): StoredChatAgentContext {
     return this.storage.chatContext.get(chatId) || {chatId};
+  }
+
+  async prepareAgentCode(chatId: number): Promise<void> {
+    let projections: AgentGadgetCodeProjection[] = [];
+    for (let gadget of this.storage.gadgets.list()) {
+      if (!this.isAgentVisibleGadget(gadget, chatId) || !gadget.movedFrom) continue;
+      let snapshot = await this.withMovedGadgetHost(
+          gadget.id, host => host.getCodeSnapshotForMovedGadget());
+      projections.push({
+        gadgetId: gadget.id,
+        sourceRootName: snapshot.rootName,
+        update: snapshot.update,
+      });
+    }
+    this.#agentCodeProjections.set(chatId, projections);
+  }
+
+  buildAgentGadgetDoc(chatId: number, gadgetId: WorkpieceId): Y.Doc {
+    const projection = this.#agentCodeProjections.get(chatId)?.find(item => item.gadgetId === gadgetId);
+    if (!projection) throw new Error("Moved Gadget code was not prepared for this chat.");
+    const doc = new Y.Doc({gc: false});
+    Y.applyUpdateV2(doc, projection.update);
+    return doc;
   }
 
   // Summarize the workspace's gadgets for the agent: each gadget's identity, its files root in
@@ -4721,16 +5863,18 @@ class OverseerImpl implements AgentHooks {
   // changes and don't exist from any other chat's perspective.
   listGadgetInfo(forChatId: number): AgentGadgetInfo[] {
     return [...this.storage.gadgets.list()]
-        .filter(gadget => !gadget.pending || gadget.pending.chatId === forChatId)
+        .filter(gadget => this.isAgentVisibleGadget(gadget, forChatId))
         .map(gadget => ({
       id: gadget.id,
       title: gadget.title,
-      rootName: this.gadgetRootName(gadget.id),
+      rootName: gadget.movedFrom ? (gadget.filesRoot ?? this.gadgetRootName(gadget.id)) : this.gadgetRootName(gadget.id),
+      ...(gadget.movedFrom ? {moved: true} : {}),
       isDefault: gadget.id === this.defaultGadgetId,
       output: gadget.output,
       bindings: this.visibleBindings(gadget, forChatId).map(([name, edge]) => ({
         name,
-        title: this.storage.gatekeepers.get(edge.target)?.resourceTitle || "(title unavailable)",
+        title: edge.resourceTitle ||
+            this.storage.gatekeepers.get(edge.target)?.resourceTitle || "(title unavailable)",
         target: edge.target,
       })),
     }));
@@ -4823,7 +5967,8 @@ class OverseerImpl implements AgentHooks {
     // Null prototype so binding names from before name validation existed can't collide with
     // Object.prototype members.
     let result: Record<string, WorkpieceId> = Object.create(null);
-    let gadgets = [...this.storage.gadgets.list()].filter(gadget => !gadget.pending);
+    let gadgets = [...this.storage.gadgets.list()].filter(gadget =>
+        !gadget.pending && !gadget.movePending && gadget.move?.state !== "leased");
     for (let gadget of gadgets) {
       if (!(gadget.bindingName in result)) result[gadget.bindingName] = gadget.id;
     }
@@ -5004,13 +6149,22 @@ class OverseerImpl implements AgentHooks {
         } else {
           // Drop entries whose targets no longer exist.
           for (let [name, target] of Object.entries(env)) {
-            if (this.storage.gadgets.get(target) || this.storage.gatekeepers.get(target)) {
+            if (this.storage.gadgets.get(target) || this.storage.gatekeepers.get(target) ||
+                this.movedBindingSource(target, chatId)) {
               seed[name] = target;
             }
           }
         }
       } else {
         Object.assign(seed, this.defaultBindingList());
+      }
+
+      for (let [name, target] of Object.entries(seed)) {
+        let gadget = this.storage.gadgets.get(target);
+        if (gadget && !this.isAgentVisibleGadget(gadget, chatId)) {
+          delete seed[name];
+          dirty = true;
+        }
       }
 
       // Fold the ambient resources into the seed, each named by its gatekeeper's suggested
@@ -5228,11 +6382,26 @@ class OverseerImpl implements AgentHooks {
     for (let [name, target] of Object.entries(seedMap)) {
       let gadget = this.storage.gadgets.get(target);
       if (gadget) {
+        if (!this.isAgentVisibleGadget(gadget, chatId)) continue;
         result.push({name, target, title: gadget.title, isGadget: true});
         continue;
       }
       let gk = this.storage.gatekeepers.get(target);
-      if (!gk) continue;
+      if (!gk) {
+        let movedBinding = [...this.storage.gadgets.list()].flatMap(gadget =>
+          gadget.movedFrom && this.isAgentVisibleGadget(gadget, chatId)
+              ? this.visibleBindings(gadget, chatId).filter(([, edge]) => edge.target === target)
+                  .map(([, edge]) => edge)
+              : []).at(0);
+        if (!movedBinding) continue;
+        result.push({
+          name,
+          target,
+          title: movedBinding.resourceTitle || "(untitled resource)",
+          isGadget: false,
+        });
+        continue;
+      }
       let info: SeedBindingInfo =
           {name, target, title: gk.resourceTitle || "(untitled resource)", isGadget: false};
       if (ambientSet.has(target)) info.catalog = catalogs.get(target) ?? null;
@@ -6436,16 +7605,31 @@ class OverseerImpl implements AgentHooks {
   //   - "build" collaborators (full access): every account-requiring gatekeeper.
   //   - "use" collaborators (UI only): only account-requiring gatekeepers bound by some gadget,
   //     since that is all the UI can invoke.
-  #inScopeGatekeepers(role: CollaboratorRole): GatekeeperRecord[] {
+  #inScopeGatekeepers(role: CollaboratorRole,
+                      gadgetIds?: ReadonlySet<WorkpieceId>): GatekeeperRecord[] {
     let boundIds: Set<WorkpieceId> | undefined;
-    if (role === "use") {
+    if (gadgetIds !== undefined || role === "use") {
       boundIds = new Set();
-      for (let gadget of this.storage.gadgets.list()) {
+      let gadgets = gadgetIds === undefined
+        ? this.storage.gadgets.list()
+        : [...gadgetIds].flatMap(id => {
+            let gadget = this.storage.gadgets.get(id);
+            return gadget ? [gadget] : [];
+          });
+      for (let gadget of gadgets) {
         // Provisional gadgets and binding edges aren't visible to "use" collaborators, so they
         // don't bring gatekeepers into scope.
         if (gadget.pending) continue;
         for (let [, edge] of this.visibleBindings(gadget)) {
           boundIds.add(edge.target);
+        }
+      }
+      if (gadgetIds !== undefined) {
+        for (let hook of this.storage.boundHooks.list()) {
+          let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
+          if (gadgetId !== undefined && gadgetIds.has(gadgetId)) {
+            boundIds.add(hook.gatekeeperId);
+          }
         }
       }
     }
@@ -6535,11 +7719,12 @@ class OverseerImpl implements AgentHooks {
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
       role: CollaboratorRole,
-      configureCb?: RpcStub<ObserverConfigCallback>): Promise<void> {
+      configureCb?: RpcStub<ObserverConfigCallback>,
+      gadgetIds?: ReadonlySet<WorkpieceId>): Promise<void> {
     // 1. Select in-scope gatekeepers. If none require an account, there is nothing to verify and
     //    no observer record is needed (built-in gatekeepers never name observers in
     //    excludeObservers).
-    let inScope = this.#inScopeGatekeepers(role);
+    let inScope = this.#inScopeGatekeepers(role, gadgetIds);
     if (inScope.length === 0) return;
 
     // 2. Load any existing observer record, and build a working copy of its account choices.
@@ -6884,6 +8069,253 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     this.impl = new OverseerImpl(ctx, env);
   }
 
+  #assertMovedGadgetLeases(leases: MovedGadgetActionLease[], targetWorkspaceId: string,
+                           ownerId: string): Set<WorkpieceId> {
+    if (this.impl.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let gadgetIds = new Set<WorkpieceId>();
+    for (let lease of leases) {
+      let gadget = this.impl.getGadgetRecord(lease.sourceGadgetId);
+      let move = gadget.move;
+      if (!move || move.state !== "leased" || move.targetWorkspaceId !== targetWorkspaceId
+          || move.targetGadgetId !== lease.targetGadgetId || move.token !== lease.token) {
+        throw new Error("The moved Gadget host capability is invalid.");
+      }
+      gadgetIds.add(gadget.id);
+    }
+    if (gadgetIds.size === 0) throw new Error("No moved Gadget lease was supplied.");
+    return gadgetIds;
+  }
+
+  #assertMovedGadgetLease(lease: MovedGadgetActionLease, targetWorkspaceId: string,
+                          ownerId: string): GadgetRecord {
+    this.#assertMovedGadgetLeases([lease], targetWorkspaceId, ownerId);
+    return this.impl.getGadgetRecord(lease.sourceGadgetId);
+  }
+
+  async ensureMovedGadgetObserver(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      profileId: string, userId: string, role: CollaboratorRole,
+      configureCb?: RpcStub<ObserverConfigCallback>): Promise<void> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    let user = this.impl.users.get(this.impl.users.idFromString(userId));
+    await this.impl.ensureObserver(profileId, user, role, configureCb, gadgetIds);
+  }
+
+  async listMovedGadgetActions(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      beforeId?: number, filter: ActionHistoryFilter = "all"): Promise<MovedActionPage> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    return this.impl.actionPage(beforeId, filter, gadgetIds);
+  }
+
+  async subscribeMovedGadgetActions(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    return await subscribeActionRecords(
+        this.impl, subscriber, startAfter, gadgetIds, false,
+        () => this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId));
+  }
+
+  async approveMovedAction(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      actionId: number, requesterUserId: string): Promise<void> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    let action = this.impl.storage.actions.get(actionId);
+    if (!action || !gadgetIds.has(this.impl.actionGadgetId(action)!)) {
+      throw new Error(`No such moved action: ${actionId}`);
+    }
+    if (action.type === "bindHook") {
+      throw new Error("Hooks should be enabled/disabled, not approved/rejected.");
+    }
+    if (action.state !== "pending") throw new Error(`Action is not pending: ${actionId}`);
+    if (action.type === "observation") {
+      throw new Error("Observations can't have 'pending' state.");
+    }
+    let user = this.impl.users.get(this.impl.users.idFromString(requesterUserId));
+    let profile = await user.whoami();
+    await this.impl.applyPendingAction(action, profile, false);
+    this.ctx.waitUntil(this.impl.drainAutoApprovals(action.gatekeeperId));
+  }
+
+  async rejectMovedAction(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      actionId: number, requesterUserId: string): Promise<void> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    let action = this.impl.storage.actions.get(actionId);
+    if (!action || !gadgetIds.has(this.impl.actionGadgetId(action)!)) {
+      throw new Error(`No such moved action: ${actionId}`);
+    }
+    if (action.state !== "pending") throw new Error(`Action is not pending: ${actionId}`);
+    if (action.type !== "action") throw new Error(`Can't reject an observation: ${actionId}`);
+    let profile = await this.impl.users
+        .get(this.impl.users.idFromString(requesterUserId)).whoami();
+    await this.impl.getGatekeeperFacet(action.gatekeeperId).rejectAction(action.action);
+    action.state = "rejected";
+    action.appliedAt = new Date();
+    action.resolvedBy = profile;
+    this.impl.storage.actions.put(action);
+  }
+
+  async listMovedGadgetHooks(
+      lease: MovedGadgetActionLease, targetWorkspaceId: string, ownerId: string)
+      : Promise<BoundHookInfo[]> {
+    let gadget = this.#assertMovedGadgetLease(lease, targetWorkspaceId, ownerId);
+    let defaultGadgetId = this.impl.defaultGadgetId;
+    let result: BoundHookInfo[] = [];
+    for (let record of this.impl.storage.boundHooks.list()) {
+      if ((record.gadgetId ?? defaultGadgetId) !== gadget.id) continue;
+      let gatekeeper = this.impl.storage.gatekeepers.get(record.gatekeeperId);
+      result.push({
+        id: record.id,
+        sourceWorkspaceId: this.impl.ctx.id.toString(),
+        gatekeeperId: record.gatekeeperId,
+        gadgetId: lease.targetGadgetId,
+        resourceTitle: gatekeeper?.resourceTitle,
+        resourceUrl: gatekeeper?.resourceUrl,
+        description: record.description,
+        enabled: record.enabled,
+      });
+    }
+    return result;
+  }
+
+  async enableMovedGadgetHook(
+      lease: MovedGadgetActionLease, targetWorkspaceId: string, ownerId: string,
+      hookId: number): Promise<void> {
+    let gadget = this.#assertMovedGadgetLease(lease, targetWorkspaceId, ownerId);
+    let record = this.impl.storage.boundHooks.get(hookId);
+    if (!record || (record.gadgetId ?? this.impl.defaultGadgetId) !== gadget.id) {
+      throw new Error("Invalid hook ID.");
+    }
+    if (record.enabled) return;
+    let vendorId = record.vendorId ?? gatekeeperVendorId(
+        this.impl.storage.gatekeepers.get(record.gatekeeperId));
+    if (!vendorId) throw new Error("Hook vendor is unavailable.");
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(vendorId) ||
+        ambientGatekeeperMode(config, vendorId) === "disabled") {
+      throw new Error("Gatekeeper is disabled.");
+    }
+    let props: GatekeeperHookLoopbackProps = {
+      overseerId: this.impl.ctx.id.toString(), hookId,
+    };
+    await record.controller.enable(
+        this.impl.ctx.exports.GatekeeperHookLoopback({props}) as unknown as
+            Fetcher<HookInitiator<RpcTarget>>,
+        {workspaceId: this.impl.ctx.id.toString(), gadgetId: gadget.id});
+    record.enabled = true;
+    this.impl.storage.boundHooks.put(record);
+    stampBindHookAction(this.impl.storage, record.actionId, true);
+  }
+
+  async disableMovedGadgetHook(
+      lease: MovedGadgetActionLease, targetWorkspaceId: string, ownerId: string,
+      hookId: number): Promise<void> {
+    let gadget = this.#assertMovedGadgetLease(lease, targetWorkspaceId, ownerId);
+    let record = this.impl.storage.boundHooks.get(hookId);
+    if (!record || (record.gadgetId ?? this.impl.defaultGadgetId) !== gadget.id) {
+      throw new Error("Invalid hook ID.");
+    }
+    if (!record.enabled) return;
+    await record.controller.disable();
+    record.enabled = false;
+    this.impl.storage.boundHooks.put(record);
+    stampBindHookAction(this.impl.storage, record.actionId, false);
+  }
+
+  async deleteMovedGadgetHook(
+      lease: MovedGadgetActionLease, targetWorkspaceId: string, ownerId: string,
+      hookId: number): Promise<void> {
+    let gadget = this.#assertMovedGadgetLease(lease, targetWorkspaceId, ownerId);
+    let record = this.impl.storage.boundHooks.get(hookId);
+    if (!record || (record.gadgetId ?? this.impl.defaultGadgetId) !== gadget.id) return;
+    if (record.enabled) await record.controller.disable();
+    this.impl.storage.boundHooks.delete(record.id);
+    stampBindHookAction(this.impl.storage, record.actionId, false, {clearHookId: true});
+  }
+
+  async listMovedAutoApprovedActionKinds(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string)
+      : Promise<Array<{sourceWorkspaceId: string; gatekeeperId: WorkpieceId; actionKind: ActionKind}>> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    let boundIds = new Set<WorkpieceId>();
+    for (let id of gadgetIds) {
+      let gadget = this.impl.getGadgetRecord(id);
+      for (let edge of Object.values(gadget.bindings)) {
+        if (!edge.pending) boundIds.add(edge.target);
+      }
+      for (let gatekeeperId of gadget.createdGatekeeperIds ?? []) {
+        boundIds.add(gatekeeperId);
+      }
+    }
+    return [...this.impl.storage.autoApproveTags.list()]
+        .filter(rule => rule.gadgetId !== undefined && gadgetIds.has(rule.gadgetId) &&
+                        boundIds.has(rule.gatekeeperId))
+        .map(rule => ({sourceWorkspaceId: this.impl.ctx.id.toString(),
+          gatekeeperId: rule.gatekeeperId, actionKind: rule.actionKind}));
+  }
+
+  async setMovedAutoApprovedActionKind(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      gatekeeperId: WorkpieceId, actionKind: ActionKind, requesterUserId: string): Promise<void> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    if (![...gadgetIds].some(id => this.impl.gadgetCanAccessGatekeeper(id, gatekeeperId))) {
+      throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a moved Gadget.`);
+    }
+    let enabledBy = await this.impl.users
+        .get(this.impl.users.idFromString(requesterUserId)).whoami();
+    for (let gadgetId of gadgetIds) {
+      if (!this.impl.gadgetCanAccessGatekeeper(gadgetId, gatekeeperId)) continue;
+      this.impl.storage.autoApproveTags.put({gadgetId, gatekeeperId, actionKind, enabledBy});
+    }
+    this.ctx.waitUntil(this.impl.drainAutoApprovals(gatekeeperId));
+  }
+
+  async removeMovedAutoApprovedActionKind(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string,
+      gatekeeperId: WorkpieceId, tag: string): Promise<void> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    if (![...gadgetIds].some(id => this.impl.gadgetCanAccessGatekeeper(id, gatekeeperId))) {
+      throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a moved Gadget.`);
+    }
+    for (let gadgetId of gadgetIds) {
+      this.impl.storage.autoApproveTags.delete(autoApprovalRuleKey(gatekeeperId, tag, gadgetId));
+    }
+  }
+
+  async listMovedPreApprovableActions(
+      leases: MovedGadgetActionLease[], targetWorkspaceId: string, ownerId: string)
+      : Promise<PreApprovableAction[]> {
+    let gadgetIds = this.#assertMovedGadgetLeases(leases, targetWorkspaceId, ownerId);
+    let boundIds = new Set<WorkpieceId>();
+    for (let id of gadgetIds) {
+      let gadget = this.impl.getGadgetRecord(id);
+      for (let edge of Object.values(gadget.bindings)) {
+        if (!edge.pending) boundIds.add(edge.target);
+      }
+      for (let gatekeeperId of gadget.createdGatekeeperIds ?? []) {
+        boundIds.add(gatekeeperId);
+      }
+    }
+    let perGatekeeper = [...boundIds]
+        .map(id => this.impl.storage.gatekeepers.get(id))
+        .filter((gk): gk is GatekeeperRecord => gk !== undefined)
+        .map(async gk => {
+          let kinds = await this.impl.getGatekeeperFacet(gk.id).getAutoApprovableActions();
+          return kinds.map(actionKind => ({
+            sourceWorkspaceId: this.impl.ctx.id.toString(), gatekeeperId: gk.id,
+            resourceTitle: gk.resourceTitle || "(title unavailable)",
+            vendorId: gk.creationSpec?.type === "gatekeeper" ? gk.creationSpec.vendorId : undefined,
+            actionKind,
+            alreadyEnabled: [...gadgetIds].some(gadgetId =>
+                this.impl.storage.autoApproveTags.get(
+                    autoApprovalRuleKey(gk.id, actionKind.tag, gadgetId)) !== undefined),
+          }));
+        });
+    return (await Promise.all(perGatekeeper)).flat();
+  }
+
   /**
    * The alarm handler kicks in when we've had running agents that haven't completed for at least a
    * minute. This serves a few purposes:
@@ -6927,6 +8359,303 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return this.impl.outputsSnapshot();
   }
 
+  /** Begin or resume the source side of a native move; callable only through the DO namespace. */
+  async beginGadgetMove(gadgetId: WorkpieceId, targetWorkspaceId: string,
+                        ownerId: string): Promise<string> {
+    if (this.impl.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    return this.ctx.blockConcurrencyWhile(async () =>
+      this.impl.beginGadgetMove(gadgetId, targetWorkspaceId));
+  }
+
+  /**
+   * Internal two-phase move install. This method is reached only by another Overseer DO through
+   * the native service namespace; it never appears on the browser-facing Overseer capability.
+   */
+  async installMovedGadget(input: MovedGadgetInstall): Promise<MovedGadgetLocation> {
+    let location = await this.ctx.blockConcurrencyWhile(() => this.#installMovedGadget(input));
+    if (input.sourceWorkspaceId === this.ctx.id.toString()) {
+      // Reclaim is the B -> A counterpart of commitMovedGadget. Keep the response deliverable,
+      // then restart the fixed host so capabilities minted by the old target are revoked.
+      void this.impl.scheduleRevocationRestart();
+    }
+    return location;
+  }
+
+  async #installMovedGadget(input: MovedGadgetInstall): Promise<MovedGadgetLocation> {
+    if (!this.impl.ownerId) {
+      let owner = this.impl.users.get(this.impl.users.idFromString(input.ownerId));
+      let meta = await owner.getGadget(this.ctx.id.toString());
+      if (!meta || meta.owner) throw new Error("The destination workspace is not owned by the mover.");
+      this.impl.ownerId = input.ownerId;
+      this.impl.storage.ownerId.put(input.ownerId);
+      this.impl.storage.title.put(meta.title);
+      this.#initializeEmptyCodeSnapshot();
+    }
+    if (this.impl.ownerId !== input.ownerId) {
+      throw new Error("The destination workspace belongs to a different account.");
+    }
+
+    if (input.sourceProhibitAllSharing && (await this.impl.getSharingManager()).hasAnyShares()) {
+      throw new Error("Cannot move a protected Gadget into a shared workspace.");
+    }
+
+    // Moving a proxy back to its fixed source host materializes the original registry record
+    // instead of creating a second record in the same DO.
+    if (input.sourceWorkspaceId === this.ctx.id.toString()) {
+      if (input.sourceProhibitAllSharing) this.impl.storage.prohibitAllSharing.put(true);
+      let gadgetId = this.impl.reclaimGadgetMove(
+          input.sourceGadgetId, input.token, input.ownerId, input.previousTarget);
+      return {workspaceId: this.ctx.id.toString(), gadgetId};
+    }
+
+    let existing = [...this.impl.storage.gadgets.list()].find(gadget =>
+      gadget.movedFrom?.sourceWorkspaceId === input.sourceWorkspaceId
+      && gadget.movedFrom.sourceGadgetId === input.sourceGadgetId
+      && gadget.movedFrom.token === input.token);
+    if (existing && !existing.movePending) {
+      if (input.sourceProhibitAllSharing) this.impl.storage.prohibitAllSharing.put(true);
+      return {workspaceId: this.ctx.id.toString(), gadgetId: existing.id};
+    }
+
+    let conflict = this.impl.storage.gadgets.byBindingName.get(input.bindingName);
+    let targetBindingName = input.bindingName;
+    if (conflict && conflict.id !== existing?.id) {
+      targetBindingName = fallbackBindingName(input.bindingName, name => {
+        let candidate = this.impl.storage.gadgets.byBindingName.get(name);
+        return candidate !== undefined && candidate.id !== existing?.id;
+      });
+    }
+
+    let targetId = existing?.id ?? this.impl.allocateWorkpieceId();
+    let record: GadgetRecord = existing ?? {
+      id: targetId,
+      title: input.title,
+      created: input.created,
+      bindingName: targetBindingName,
+      bindings: input.bindings ?? {},
+      ...(input.output ? {output: input.output} : {}),
+      filesRoot: input.filesRoot,
+      movedFrom: {
+        sourceWorkspaceId: input.sourceWorkspaceId,
+        sourceGadgetId: input.sourceGadgetId,
+        token: input.token,
+      },
+      movePending: true,
+    };
+    this.impl.storage.gadgets.put(record);
+
+    let ns = this.ctx.exports.OverseerDurableObject;
+    let source = ns.get(ns.idFromString(input.sourceWorkspaceId));
+    let publish = () => {
+      let current = this.impl.getGadgetRecord(targetId);
+      delete current.movePending;
+      this.impl.storage.gadgets.put(current);
+      return {workspaceId: this.ctx.id.toString(), gadgetId: targetId};
+    };
+    let commit = () => source.commitMovedGadget(
+        input.sourceGadgetId, this.ctx.id.toString(), targetId, input.token, input.ownerId,
+        input.previousTarget);
+    let publishWithProtection = () => {
+      if (input.sourceProhibitAllSharing) this.impl.storage.prohibitAllSharing.put(true);
+      return publish();
+    };
+    try {
+      await commit();
+      return publishWithProtection();
+    } catch (error) {
+      // The native call may have written the source lease and then lost only its response. Never
+      // delete the pending target in that indeterminate state: re-read the durable source record,
+      // publish if it committed, or retry the idempotent commit while it is still moving.
+      let status: GadgetMoveStatus;
+      try {
+        status = await source.getGadgetMoveStatus(input.sourceGadgetId, input.ownerId);
+      } catch {
+        // Keep both durable records for a later retry. The source-side caller may still roll back
+        // its moving record, but deleting this pending record here would lose the only resume key.
+        throw error;
+      }
+
+      let exactTarget = status.targetWorkspaceId === this.ctx.id.toString()
+          && status.token === input.token;
+      if (exactTarget && status.state === "leased"
+          && status.targetGadgetId === targetId) {
+        return publishWithProtection();
+      }
+      if (exactTarget && status.state === "moving") {
+        try {
+          await commit();
+          return publishWithProtection();
+        } catch (retryError) {
+          // A second response can be lost too. Check once more before leaving the pending record
+          // in place for a later retry.
+          try {
+            let after = await source.getGadgetMoveStatus(input.sourceGadgetId, input.ownerId);
+            if (after.state === "leased"
+                && after.targetWorkspaceId === this.ctx.id.toString()
+                && after.targetGadgetId === targetId && after.token === input.token) {
+              return publishWithProtection();
+            }
+          } catch {
+            // Preserve the pending target when source state cannot be read.
+          }
+          throw retryError;
+        }
+      }
+
+      // The source has durably moved on to another target or rolled back. This pending proxy no
+      // longer has a valid lease and can be removed; the original caller retains the real error.
+      if (this.impl.storage.gadgets.get(targetId)?.movePending) {
+        this.impl.storage.gadgets.delete(targetId);
+      }
+      throw error;
+    }
+  }
+
+  /** Read whether this workspace has published, is installing, or never saw a moved proxy. */
+  async getMovedGadgetInstallStatus(sourceWorkspaceId: string, sourceGadgetId: WorkpieceId,
+                                    token: string, ownerId: string)
+      : Promise<MovedGadgetInstallStatus> {
+    if (this.impl.ownerId !== ownerId) throw new Error("The destination workspace owner changed.");
+    if (sourceWorkspaceId === this.ctx.id.toString()) {
+      let host = this.impl.storage.gadgets.get(sourceGadgetId);
+      if (host?.lastMoveToken === token) {
+        return {
+          state: "active",
+          location: {workspaceId: this.ctx.id.toString(), gadgetId: sourceGadgetId},
+        };
+      }
+    }
+    let record = [...this.impl.storage.gadgets.list()].find(gadget =>
+      gadget.movedFrom?.sourceWorkspaceId === sourceWorkspaceId
+      && gadget.movedFrom.sourceGadgetId === sourceGadgetId
+      && gadget.movedFrom.token === token);
+    if (!record) return {state: "absent"};
+    return record.movePending
+      ? {state: "pending"}
+      : {
+          state: "active",
+          location: {workspaceId: this.ctx.id.toString(), gadgetId: record.id},
+        };
+  }
+
+  /** Remove a target-side pending proxy after source state proved that the move never committed. */
+  async abortMovedGadgetInstall(sourceWorkspaceId: string, sourceGadgetId: WorkpieceId,
+                                token: string, ownerId: string): Promise<void> {
+    if (this.impl.ownerId !== ownerId) throw new Error("The destination workspace owner changed.");
+    let record = [...this.impl.storage.gadgets.list()].find(gadget =>
+      gadget.movedFrom?.sourceWorkspaceId === sourceWorkspaceId
+      && gadget.movedFrom.sourceGadgetId === sourceGadgetId
+      && gadget.movedFrom.token === token);
+    if (record?.movePending) this.impl.storage.gadgets.delete(record.id);
+  }
+
+  /** Begin or resume a lease transfer from one moved target to another. */
+  async beginLeasedGadgetMove(gadgetId: WorkpieceId, currentTargetWorkspaceId: string,
+                              currentTargetGadgetId: WorkpieceId, targetWorkspaceId: string,
+                              ownerId: string): Promise<string> {
+    return this.ctx.blockConcurrencyWhile(async () =>
+      this.impl.beginLeasedGadgetMove(
+          gadgetId, currentTargetWorkspaceId, currentTargetGadgetId, targetWorkspaceId, ownerId));
+  }
+
+  /** Commit the source half of a native two-phase move. */
+  async commitMovedGadget(gadgetId: WorkpieceId, targetWorkspaceId: string,
+                          targetGadgetId: WorkpieceId, token: string, ownerId: string,
+                          previousTarget?: {workspaceId: string, gadgetId: WorkpieceId}): Promise<void> {
+    let committed = await this.ctx.blockConcurrencyWhile(async () => {
+      return this.impl.commitGadgetMove(
+          gadgetId, targetWorkspaceId, targetGadgetId, token, ownerId, previousTarget);
+    });
+    if (committed) void this.impl.scheduleRevocationRestart();
+  }
+
+  /** Roll back a source move that failed before the target proxy became visible. */
+  async abortMovedGadget(gadgetId: WorkpieceId, targetWorkspaceId: string,
+                         token: string,
+                         previousTarget?: {workspaceId: string, gadgetId: WorkpieceId}): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      this.impl.abortGadgetMove(gadgetId, targetWorkspaceId, token, previousTarget);
+    });
+  }
+
+  /** Read the durable source-side move state so a lost commit response can be reconciled. */
+  async getGadgetMoveStatus(gadgetId: WorkpieceId, ownerId: string): Promise<GadgetMoveStatus> {
+    return this.impl.getGadgetMoveStatus(gadgetId, ownerId);
+  }
+
+  /** Read the source workspace's sharing protection through the exact leased host capability. */
+  async getMovedGadgetProtection(gadgetId: WorkpieceId, targetWorkspaceId: string,
+                                 targetGadgetId: WorkpieceId, token: string,
+                                 ownerId: string): Promise<boolean> {
+    if (this.impl.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let record = this.impl.getGadgetRecord(gadgetId);
+    let move = record.move;
+    if (!move || move.state !== "leased" || move.targetWorkspaceId !== targetWorkspaceId
+        || move.targetGadgetId !== targetGadgetId || move.token !== token) {
+      throw new Error("The moved gadget lease is no longer current.");
+    }
+    return this.impl.storage.prohibitAllSharing.get();
+  }
+
+  async getMovedGadgetSpawnTarget(
+      gadgetId: WorkpieceId, ownerId?: string,
+      env?: Record<string, WorkpieceId>): Promise<MovedGadgetSpawnTarget | null> {
+    if (ownerId !== undefined && this.impl.ownerId !== ownerId) {
+      throw new Error("The source workspace owner changed.");
+    }
+    let move = this.impl.getGadgetRecord(gadgetId).move;
+    if (!move) return null;
+    let targetWorkspaceId: string;
+    let targetGadgetId: WorkpieceId;
+    if (move.state === "moving") {
+      if (move.previousLease) {
+        targetWorkspaceId = move.previousLease.targetWorkspaceId;
+        targetGadgetId = move.previousLease.targetGadgetId;
+      } else {
+        throw new Error("The Gadget move is still in progress.");
+      }
+    } else {
+      if (move.targetGadgetId === undefined) {
+        throw new Error("The leased Gadget has no target.");
+      }
+      targetWorkspaceId = move.targetWorkspaceId;
+      targetGadgetId = move.targetGadgetId;
+    }
+
+    let bindingTargets: Record<string, BindingLoopbackTarget> = {};
+    for (let [name, target] of Object.entries(env ?? {})) {
+      if (this.impl.storage.gadgets.get(target)) {
+        bindingTargets[name] = {type: "gadget", id: target};
+      } else if (this.impl.storage.gatekeepers.get(target)) {
+        bindingTargets[name] = {type: "gatekeeper", id: target};
+      }
+    }
+    return {
+      workspaceId: targetWorkspaceId,
+      gadgetId: targetGadgetId,
+      sourceWorkspaceId: this.ctx.id.toString(),
+      sourceGadgetId: gadgetId,
+      bindingTargets,
+    };
+  }
+
+  /**
+   * Mint the per-gadget host capability used by a target proxy. The token and target identity are
+   * checked in the source DO before any GadgetClient is returned.
+   */
+  async getMovedGadgetHost(gadgetId: WorkpieceId, targetWorkspaceId: string,
+                           targetGadgetId: WorkpieceId, token: string,
+                           ownerId: string): Promise<GadgetClientImpl> {
+    if (this.impl.ownerId !== ownerId) throw new Error("The source workspace owner changed.");
+    let record = this.impl.getGadgetRecord(gadgetId);
+    let move = record.move;
+    if (!move || move.state !== "leased" || move.targetWorkspaceId !== targetWorkspaceId
+        || move.targetGadgetId !== targetGadgetId || move.token !== token) {
+      throw new Error("The moved gadget host capability is invalid.");
+    }
+    return new GadgetClientImpl(this.impl, gadgetId, ownerId, false, undefined, true);
+  }
+
   /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
@@ -6937,6 +8666,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
              configureObservers?: RpcStub<ObserverConfigCallback>,
              familyChildRestricted?: boolean,
              assertFamilyCurrent?: NativeRpcStub<() => Promise<FamilyRpcResult<void>>>): Promise<Overseer> {
+    if (this.impl.storage.hostOnly.get()) {
+      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+    }
     let firstOpen = !this.impl.ownerId;
     if (firstOpen) {
       // This Overseer hasn't been initialized yet.
@@ -7042,6 +8774,29 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // role is confirmed, so it never reveals gatekeeper or resource metadata to an unauthorized
       // user. The prohibitAllSharing short-circuit above still wins -- lockdown takes precedence.
       await this.impl.ensureObserver(profileId, clientUser, role, configureObservers);
+
+      // A moved Gadget keeps its gatekeeper facets in the source workspace. Re-run the same
+      // observer verification there, scoped to the moved Gadget's bindings and hooks, before
+      // exposing the target session; otherwise a target collaborator could observe source data
+      // without satisfying the source connection's existing protection.
+      let movedBySource = new Map<string, MovedGadgetActionLease[]>();
+      for (let gadget of this.impl.storage.gadgets.list()) {
+        let movedFrom = gadget.movedFrom;
+        if (!movedFrom || gadget.movePending) continue;
+        let leases = movedBySource.get(movedFrom.sourceWorkspaceId) ?? [];
+        leases.push({
+          sourceGadgetId: movedFrom.sourceGadgetId,
+          targetGadgetId: gadget.id,
+          token: movedFrom.token,
+        });
+        movedBySource.set(movedFrom.sourceWorkspaceId, leases);
+      }
+      let namespace = this.ctx.exports.OverseerDurableObject;
+      for (let [sourceWorkspaceId, leases] of movedBySource) {
+        await namespace.get(namespace.idFromString(sourceWorkspaceId)).ensureMovedGadgetObserver(
+            leases, this.ctx.id.toString(), this.impl.ownerId!, profileId, userId, role,
+            configureObservers);
+      }
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
@@ -7257,26 +9012,79 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  private getOwnedBook(ownerId: string): GadgetRecord {
+  private getOwnedBook(ownerId: string, gadgetId?: WorkpieceId): GadgetRecord {
     if (this.impl.ownerId !== ownerId) throw new Error("The account does not own this workspace.");
-    let gadget = this.impl.getGadgetRecord(this.impl.resolveGadgetId(undefined));
-    if (gadget.output?.id !== "book") throw new Error("The workspace is not a book.");
-    return gadget;
+    let books = [...this.impl.storage.gadgets.list()].filter(candidate =>
+      candidate.output?.id === "book" && !candidate.pending && !candidate.movePending
+      && candidate.move?.state !== "leased");
+    if (gadgetId !== undefined) {
+      let gadget = this.impl.storage.gadgets.get(gadgetId);
+      if (!gadget || !books.some(book => book.id === gadget.id)) {
+        throw new Error(`Gadget ${gadgetId} is not an available book in this workspace.`);
+      }
+      return gadget;
+    }
+    if (books.length === 0) throw new Error("The workspace is not a book.");
+    if (books.length > 1) {
+      throw new Error("This workspace contains multiple books; specify gadgetId.");
+    }
+    return books[0]!;
   }
 
   async getBookMcpWorkspace(ownerId: string): Promise<BookMcpWorkspace | null> {
-    if (this.impl.ownerId !== ownerId || this.impl.defaultGadgetId === undefined) return null;
-    let gadget = this.impl.getGadgetRecord(this.impl.defaultGadgetId);
-    if (gadget.output?.id !== "book") return null;
+    if (this.impl.ownerId !== ownerId) return null;
+    let gadget = [...this.impl.storage.gadgets.list()].find(candidate =>
+      candidate.output?.id === "book" && !candidate.pending && !candidate.movePending
+      && candidate.move?.state !== "leased");
+    if (!gadget) return null;
     return { workspaceId: this.ctx.id.toString(), title: this.impl.storage.title.get(), gadgetId: gadget.id };
   }
 
-  async readBookMcpFiles(ownerId: string, paths?: string[]): Promise<BookMcpFile[]> {
-    let gadget = this.getOwnedBook(ownerId);
+  async getBookMcpWorkspaces(ownerId: string): Promise<BookMcpWorkspace[]> {
+    if (this.impl.ownerId !== ownerId) return [];
+    return [...this.impl.storage.gadgets.list()]
+        .filter(gadget => gadget.output?.id === "book" && !gadget.pending && !gadget.movePending
+          && gadget.move?.state !== "leased")
+        .map(gadget => ({
+          workspaceId: this.ctx.id.toString(),
+          title: this.impl.storage.title.get(),
+          gadgetTitle: gadget.title,
+          gadgetId: gadget.id,
+        }));
+  }
+
+  async #withBookMcpFacet<T>(ownerId: string, gadget: GadgetRecord,
+                             run: (facet: any) => Promise<T>): Promise<T> {
+    let host: NativeRpcStub<any> | undefined;
+    let facet: any;
+    try {
+      if (gadget.movedFrom) {
+        let ns = this.ctx.exports.OverseerDurableObject;
+        let source = ns.get(ns.idFromString(gadget.movedFrom.sourceWorkspaceId));
+        host = await source.getMovedGadgetHost(
+            gadget.movedFrom.sourceGadgetId,
+            this.ctx.id.toString(),
+            gadget.id,
+            gadget.movedFrom.token,
+            ownerId) as unknown as NativeRpcStub<any>;
+        facet = await host.connectToGadget();
+      } else {
+        facet = await this.impl.getGadgetFacet(gadget.id);
+      }
+      return await run(facet);
+    } finally {
+      facet?.[Symbol.dispose]?.();
+      host?.[Symbol.dispose]();
+    }
+  }
+
+  async readBookMcpFiles(ownerId: string, paths?: string[], gadgetId?: WorkpieceId)
+      : Promise<BookMcpFile[]> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
     let requested = paths ? new Set(paths) : undefined;
     for (let path of requested ?? []) validateBookFilePath(path);
-    let facet: any = await this.impl.getGadgetFacet(gadget.id);
-    let stored = await facet.getBookFiles() as Record<string, string>;
+    let stored = await this.#withBookMcpFacet(ownerId, gadget,
+        facet => facet.getBookFiles() as Promise<Record<string, string>>);
     let files: BookMcpFile[] = [];
     for (let [path, content] of Object.entries(stored)) {
       try {
@@ -7290,18 +9098,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return files;
   }
 
-  async putBookMcpFiles(ownerId: string, files: BookMcpFile[]): Promise<BookMcpFile[]> {
-    let gadget = this.getOwnedBook(ownerId);
+  async putBookMcpFiles(ownerId: string, files: BookMcpFile[], gadgetId?: WorkpieceId)
+      : Promise<BookMcpFile[]> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
     for (let file of files) validateBookFilePath(file.path);
-    let facet: any = await this.impl.getGadgetFacet(gadget.id);
-    await facet.putBookFiles(files);
+    await this.#withBookMcpFacet(ownerId, gadget, facet => facet.putBookFiles(files));
     return files.map(({ path, content }) => ({ path, content }));
   }
 
-  async readBookMcpProgress(ownerId: string): Promise<unknown> {
-    let gadget = this.getOwnedBook(ownerId);
-    let facet: any = await this.impl.getGadgetFacet(gadget.id);
-    let state = await facet.getState() as { progress?: unknown };
+  async readBookMcpProgress(ownerId: string, gadgetId?: WorkpieceId): Promise<unknown> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    let state = await this.#withBookMcpFacet(ownerId, gadget,
+        facet => facet.getState() as Promise<{progress?: unknown}>);
     return state?.progress ?? {};
   }
 
@@ -7335,7 +9143,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     return {
       callback: record.callback,
-      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId, {from: "hook"}),
+      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId, {
+        from: "hook", gadgetId: record.gadgetId ?? this.impl.defaultGadgetId,
+      }),
     };
   }
 
@@ -7369,7 +9179,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   async spawnAgent(
       title: string, prompt: string, config: AgentSpawnerConfig,
-      creatorUserId?: string, callable?: boolean) {
+      creatorUserId?: string, callable?: boolean, movedSpawnerRoute?: MovedSpawnerRoute) {
     if (!this.impl.ownerId) throw new Error("Workspace has been deleted.");
     if (callable && !config.modelId) {
       throw new Error("Cannot create a callable agent without a model.");
@@ -7400,17 +9210,21 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // exist are dropped.
     let bindings: Record<string, WorkpieceId> = Object.create(null);
     for (let [name, target] of Object.entries(config.env)) {
-      if (this.impl.storage.gadgets.get(target) ||
-          this.impl.storage.gatekeepers.get(target)) {
+      if (movedSpawnerRoute?.bindingTargets[name] ||
+          (!movedSpawnerRoute && (this.impl.storage.gadgets.get(target) ||
+           this.impl.storage.gatekeepers.get(target) ||
+           this.impl.movedBindingSource(target)))) {
         bindings[name] = target;
       }
     }
 
-    this.impl.storage.chatContext.put({
+    let context: StoredChatAgentContext = {
       chatId,
       spawnerConfig: config,
       bindings,
-    });
+      ...(movedSpawnerRoute === undefined ? {} : {movedSpawnerRoute}),
+    };
+    this.impl.storage.chatContext.put(context);
 
     let author: AiChatAuthorInfo = {
       type: "gadget",
@@ -7454,6 +9268,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 type GatekeeperCaller = {
   from: "agent";
   chatId: number;
+  gadgetId?: WorkpieceId;
 } | {
   from: "gadget";
   chatId?: number;
@@ -7465,9 +9280,18 @@ type GatekeeperCaller = {
 } | {
   from: "user";
   chatId?: number;
-} | {
-  from: "hook";
+  } | {
+    from: "hook";
+    gadgetId?: WorkpieceId;
+  };
+
+type AgentSpawnerSessionContext = {
+  gadgetId: WorkpieceId;
+  ownerId?: string;
 };
+
+type AgentSpawnerApprovalQueue = ApprovalQueue &
+    Pick<ApprovalQueueImpl, "getGadgetSessionContext">;
 
 type GatekeeperLoopbackProps = {
   overseerId: string;
@@ -7813,6 +9637,76 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         this.impl.logger);
   }
 
+  #localActionGadgetIds(): Set<WorkpieceId> {
+    return new Set([...this.impl.storage.gadgets.list()]
+        .filter(gadget => !gadget.pending && !gadget.movePending && !gadget.movedFrom
+          && gadget.move?.state !== "leased")
+        .map(gadget => gadget.id));
+  }
+
+  #localGatekeeperIds(): Set<WorkpieceId> {
+    let useByLocalGadget = new Set<WorkpieceId>();
+    let useByLeasedGadget = new Set<WorkpieceId>();
+    for (let gadget of this.impl.storage.gadgets.list()) {
+      let isLeased = gadget.move?.state === "leased";
+      let isLocal = !gadget.pending && !gadget.movePending && !gadget.movedFrom && !isLeased;
+      let used = isLocal ? useByLocalGadget : isLeased ? useByLeasedGadget : undefined;
+      if (!used) continue;
+      for (let edge of Object.values(gadget.bindings)) {
+        if (!edge.pending) used.add(edge.target);
+      }
+      for (let id of gadget.createdGatekeeperIds ?? []) used.add(id);
+    }
+
+    // Keep the legacy workspace-wide capability for every connection except one that belongs
+    // exclusively to a leased Gadget. Unbound connections remain addressable exactly as before.
+    return new Set([...this.impl.storage.gatekeepers.list()]
+        .map(gatekeeper => gatekeeper.id)
+        .filter(id => useByLocalGadget.has(id) || !useByLeasedGadget.has(id)));
+  }
+
+  #movedGadgetLeases(): Map<string, MovedGadgetActionLease[]> {
+    let result = new Map<string, MovedGadgetActionLease[]>();
+    for (let gadget of this.impl.storage.gadgets.list()) {
+      if (gadget.movePending || !gadget.movedFrom) continue;
+      let leases = result.get(gadget.movedFrom.sourceWorkspaceId);
+      if (!leases) {
+        leases = [];
+        result.set(gadget.movedFrom.sourceWorkspaceId, leases);
+      }
+      leases.push({
+        sourceGadgetId: gadget.movedFrom.sourceGadgetId,
+        targetGadgetId: gadget.id,
+        token: gadget.movedFrom.token,
+      });
+    }
+    return result;
+  }
+
+  #movedLeasesFor(sourceWorkspaceId: string): MovedGadgetActionLease[] {
+    let leases = this.#movedGadgetLeases().get(sourceWorkspaceId);
+    if (!leases || leases.length === 0) {
+      throw new Error("The moved Gadget source is no longer available.");
+    }
+    return leases;
+  }
+
+  async #movedLeaseForHook(sourceWorkspaceId: string, hookId: number)
+      : Promise<MovedGadgetActionLease> {
+    let leases = this.#movedLeasesFor(sourceWorkspaceId);
+    for (let lease of leases) {
+      let hooks = await this.#movedSource(sourceWorkspaceId).listMovedGadgetHooks(
+          lease, this.impl.ctx.id.toString(), this.impl.ownerId!);
+      if (hooks.some(hook => hook.id === hookId)) return lease;
+    }
+    throw new Error("The moved hook is no longer available.");
+  }
+
+  #movedSource(sourceWorkspaceId: string): DurableObjectStub<OverseerDurableObject> {
+    let ns = this.impl.ctx.exports.OverseerDurableObject;
+    return ns.get(ns.idFromString(sourceWorkspaceId));
+  }
+
   #leavePresence: () => void;
   #leaveOutputsFanout: () => void;
 
@@ -8007,7 +9901,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>> {
-    this.impl.getGadgetRecord(id);  // validate it exists
+    this.impl.getUserGadgetRecord(id);  // validate it exists and is not a leased source
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new GadgetClientImpl(this.impl, id, this.clientUserId, this.familyChildRestricted,
@@ -8026,26 +9920,58 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       user_id: this.#clientUser.id.toString(),
     });
 
-    this.impl.destroyAllLiveChats();
-    // TODO: Revoke user sessions.
-
-    // Disable all enabled hooks so that the gatekeepers stop delivering events to this gadget.
-    // We do this before deleting storage so that we still have access to the hook controllers.
-    // TODO: If any disablement fails, deletion will be blocked. We could ignore failures, but that
-    //   would leave gatekeepers pointing at gadgets that don't exist anymore, which is also bad.
-    //   What do we really want here?
-    for (let record of Array.from(this.impl.storage.boundHooks.list())) {
-      if (record.enabled) {
-        await this.disableHook(record.id);
+    let moveInProgress = await this.impl.ctx.blockConcurrencyWhile(async () => {
+      let moving = [...this.impl.storage.gadgets.list()].find(gadget =>
+        gadget.move?.state === "moving" || gadget.movePending);
+      if (moving) {
+        return true;
       }
-    }
 
-    await this.impl.ctx.blockConcurrencyWhile(async () => {
+      let leased = this.impl.leasedGadgets();
+      if (leased.length > 0) {
+        // A moved Gadget is still executing from this DO. Retire the user-facing workspace and
+        // chats, but retain only the leased host records, bindings, facets, hooks, and ownerId.
+        await this.impl.retireAsMovedHost(this.#owner);
+        void this.impl.scheduleRevocationRestart();
+        return false;
+      }
+
+      // A target proxy is only a registry record; its code, facet, hooks, and connections remain
+      // in the fixed source host. Stop each host before deleting this workspace's records, so a
+      // successful user deletion cannot leave a source facet running without a target entry.
+      let namespace = this.impl.ctx.exports.OverseerDurableObject;
+      let moved = [...this.impl.storage.gadgets.list()].filter(gadget => gadget.movedFrom);
+      for (let gadget of moved) {
+        let movedFrom = gadget.movedFrom!;
+        let source = namespace.get(namespace.idFromString(movedFrom.sourceWorkspaceId));
+        let host = await source.getMovedGadgetHost(
+            movedFrom.sourceGadgetId, this.impl.ctx.id.toString(), gadget.id,
+            movedFrom.token, this.impl.ownerId!);
+        try {
+          await host.remove();
+        } finally {
+          host[Symbol.dispose]();
+        }
+      }
+
+      this.impl.destroyAllLiveChats();
+      // TODO: Revoke user sessions.
+
+      // Disable all enabled hooks so that the gatekeepers stop delivering events to this gadget.
+      // We do this before deleting storage so that we still have access to the hook controllers.
+      for (let record of Array.from(this.impl.storage.boundHooks.list())) {
+        if (record.enabled) await this.disableHook(record.id);
+      }
+
       await this.#owner.deleteGadget(this.impl.ctx.id.toString());
       await this.impl.ctx.storage.deleteAll();
-      this.impl.scheduleRevocationRestart();
+      void this.impl.scheduleRevocationRestart();
       this.impl.ownerId = undefined;
+      return false;
     });
+    if (moveInProgress) {
+      throw new Error("Cannot delete this workspace while a gadget move is in progress.");
+    }
 
     this.impl.logger.info("deleted workspace", {
       event: "workspace.delete.completed", durationMs: Date.now() - startedAt,
@@ -8054,13 +9980,23 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async subscribeToCode(subscriber: RpcStub<CodeSubscriber>, fromVersion: number = 0)
       : Promise<RpcStub<{}>> {
+    this.impl.assertWorkspaceCodeAccess();
     let codeVersions = this.impl.storage.code;
+    let impl = this.impl;
 
     subscriber = subscriber.dup();  // keep stub after return
 
     let dbSubscriber = {
       add(record: CodeUpdate) {
-        subscriber.update(record).catch((_err: any) => { codeVersions.unsubscribe(dbSubscriber) });
+        try {
+          // A subscription can outlive the move that was allowed at registration. Re-check before
+          // every workspace-wide delivery so a leased Gadget cannot leak a later root update while
+          // the revocation restart is still draining the old session.
+          impl.assertWorkspaceCodeAccess();
+          subscriber.update(record).catch((_err: any) => { codeVersions.unsubscribe(dbSubscriber) });
+        } catch {
+          unsubscribe();
+        }
       },
       update(oldRecord: CodeUpdate, newRecord: CodeUpdate): void {
         // Never happens.
@@ -8095,45 +10031,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async updateCode(update: Uint8Array, chatId?: number): Promise<void> {
     if (chatId === undefined) {
+      this.impl.assertWorkspaceCodeAccess();
       this.impl.updateCode(update);
       return;
     }
 
     let author = await this.#getClientProfile();
-    let meta = this.impl.getChatMetaOrThrow(chatId);
-
-    // Decide if we want to materialize existing drafts due to changing users. If two users are
-    // typing at the same time we just attribute the edits to both of them, but if the previous
-    // user hasn't typed for a while and a new user starts typing then we materialize the previous
-    // user's changes. That said, we cannot materialize anything while an agent is active because
-    // it'll confuse the agent.
-    let existingUpdates = this.impl.listChatDraftUpdates(chatId);
-    if (existingUpdates.length > 0) {
-      let latest = existingUpdates[existingUpdates.length - 1];
-      if (!this.impl.sameChatAuthor(latest.author, author)) {
-        let elapsed = Date.now() - latest.timestamp.getTime();
-        if (!meta.activeAgent && elapsed > CHAT_DRAFT_AUTHOR_SPLIT_MS) {
-          let result = this.impl.materializeChatDraft(chatId, meta);
-          if (result) {
-            meta = result.meta;
-          }
-          existingUpdates = [];
-        }
-      }
-    }
-
-    let timestamp = this.impl.getChatTimestamp();
-    let newRecord: ChatDraftUpdateRecord = {chatId, timestamp, author, update};
-    this.impl.storage.chatDraftUpdates.put(newRecord);
-
-    meta.lastActive = timestamp;
-    this.impl.storage.chatMeta.put(meta);
-    this.impl.recomputeHasProposedChanges(chatId, meta);
-
-    let allUpdates = [...existingUpdates, newRecord];
-    let displayAuthor = this.impl.normalizeDraftAuthor(allUpdates);
-    this.impl.emitChatDraftUpdate(chatId, timestamp, displayAuthor, update);
-    this.impl.compactChatDraftUpdates(chatId, allUpdates);
+    await this.impl.updateCodeForClient(update, chatId, author);
   }
 
   async getGatekeeperById(id: number): Promise<GatekeeperClient<any>> {
@@ -8229,29 +10133,70 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return result;
   }
 
-  async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
+  async listActions(options?: {cursor?: ActionHistoryCursor, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage> {
-    let {beforeId, filter = "all"} = options ?? {};
-    if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 0)) {
-      throw new TypeError(`Invalid beforeId: ${beforeId}`);
+    let {cursor, filter = "all"} = options ?? {};
+    let localWorkspaceId = this.impl.ctx.id.toString();
+    let positions = cursor === undefined ? {} : decodeActionCursor(cursor);
+    let moved = this.#movedGadgetLeases();
+    let pages = new Map<string, MovedActionPage>();
+    let localPosition = positions[localWorkspaceId];
+    pages.set(localWorkspaceId, localPosition === null
+        ? {entries: []}
+        : this.impl.actionPage(localPosition ?? undefined, filter, this.#localActionGadgetIds()));
+
+    await Promise.all([...moved].map(async ([sourceWorkspaceId, leases]) => {
+      let beforeId = positions[sourceWorkspaceId];
+      let page = beforeId === null
+          ? {entries: []}
+          : await this.#movedSource(sourceWorkspaceId).listMovedGadgetActions(
+              leases, localWorkspaceId, this.impl.ownerId!, beforeId ?? undefined, filter);
+      pages.set(sourceWorkspaceId, page);
+    }));
+
+    let allEntries = [...pages.values()].flatMap(page => page.entries)
+        .toSorted(compareActionLogNewestFirst);
+    let entries = allEntries.slice(0, ACTION_HISTORY_PAGE_DEFAULT_LIMIT);
+    let nextPositions: ActionCursorPositions = {};
+    let hasMore = false;
+    for (let [sourceWorkspaceId, page] of pages) {
+      let selected = entries.filter(entry => entry.sourceWorkspaceId === sourceWorkspaceId);
+      let previous = positions[sourceWorkspaceId];
+      if (page.entries.length === 0) {
+        nextPositions[sourceWorkspaceId] = null;
+      } else if (selected.length > 0) {
+        nextPositions[sourceWorkspaceId] = selected.at(-1)!.id;
+        if (page.nextBeforeId !== undefined || selected.length < page.entries.length) {
+          hasMore = true;
+        } else {
+          nextPositions[sourceWorkspaceId] = null;
+        }
+      } else {
+        nextPositions[sourceWorkspaceId] = previous;
+        hasMore = true;
+      }
+      if (nextPositions[sourceWorkspaceId] !== null &&
+          page.nextBeforeId !== undefined && selected.length === page.entries.length) {
+        hasMore = true;
+      }
     }
 
-    // One ranged read -- off the collection itself for "all" (already id-ordered), off
-    // byHistoryFilter otherwise -- so the work is O(page) however sparse the matches. Pages are
-    // full until the last; the +1 record probes whether an older page exists.
-    let actions = this.impl.storage.actions;
-    let range = {end: beforeId, reverse: true, limit: ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 1};
-    let page = [...(filter === "all"
-        ? actions.list(range) : actions.byHistoryFilter.get(filter, range))];
-    let more = page.length > ACTION_HISTORY_PAGE_DEFAULT_LIMIT;
-    if (more) page.pop();
     return {
-      entries: page.map(actionRecordToLog),
-      nextBeforeId: more ? page.at(-1)!.id : undefined,
+      entries,
+      nextCursor: hasMore ? encodeActionCursor(nextPositions) : undefined,
     };
   }
 
-  async approveAction(id: number): Promise<void> {
+  async approveAction(id: number | ActionReference): Promise<void> {
+    if (typeof id !== "number") {
+      if (id.sourceWorkspaceId === this.impl.ctx.id.toString()) {
+        return this.approveAction(id.actionId);
+      }
+      await this.#movedSource(id.sourceWorkspaceId).approveMovedAction(
+          this.#movedLeasesFor(id.sourceWorkspaceId), this.impl.ctx.id.toString(),
+          this.impl.ownerId!, id.actionId, this.clientUserId);
+      return;
+    }
     let action = this.impl.storage.actions.get(id);
     if (!action) {
       throw new Error(`No such action: ${id}`);
@@ -8290,6 +10235,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let gatekeeper = this.impl.storage.gatekeepers.get(record.gatekeeperId);
       result.push({
         id: record.id,
+        sourceWorkspaceId: this.impl.ctx.id.toString(),
         gatekeeperId: record.gatekeeperId,
         // Hooks recorded before multi-gadget support carry no gadgetId; they belong to the
         // default gadget, which necessarily exists in any workspace old enough to have them.
@@ -8301,10 +10247,22 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       });
     }
 
+    let moved = this.#movedGadgetLeases();
+    let movedHooks = await Promise.all([...moved].flatMap(([sourceWorkspaceId, leases]) =>
+      leases.map(lease => this.#movedSource(sourceWorkspaceId).listMovedGadgetHooks(
+          lease, this.impl.ctx.id.toString(), this.impl.ownerId!))));
+    result.push(...movedHooks.flat());
+
     return result;
   }
 
-  async enableHook(id: number): Promise<void> {
+  async enableHook(id: number, sourceWorkspaceId?: string): Promise<void> {
+    if (sourceWorkspaceId !== undefined && sourceWorkspaceId !== this.impl.ctx.id.toString()) {
+      let lease = await this.#movedLeaseForHook(sourceWorkspaceId, id);
+      await this.#movedSource(sourceWorkspaceId).enableMovedGadgetHook(
+          lease, this.impl.ctx.id.toString(), this.impl.ownerId!, id);
+      return;
+    }
     let record = this.impl.storage.boundHooks.get(id);
     if (!record) throw new Error("Invalid hook ID.");
 
@@ -8333,7 +10291,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
   }
 
-  async disableHook(id: number): Promise<void> {
+  async disableHook(id: number, sourceWorkspaceId?: string): Promise<void> {
+    if (sourceWorkspaceId !== undefined && sourceWorkspaceId !== this.impl.ctx.id.toString()) {
+      let lease = await this.#movedLeaseForHook(sourceWorkspaceId, id);
+      await this.#movedSource(sourceWorkspaceId).disableMovedGadgetHook(
+          lease, this.impl.ctx.id.toString(), this.impl.ownerId!, id);
+      return;
+    }
     let record = this.impl.storage.boundHooks.get(id);
     if (!record) throw new Error("Invalid hook ID.");
 
@@ -8346,7 +10310,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
   }
 
-  async deleteHook(id: number): Promise<void> {
+  async deleteHook(id: number, sourceWorkspaceId?: string): Promise<void> {
+    if (sourceWorkspaceId !== undefined && sourceWorkspaceId !== this.impl.ctx.id.toString()) {
+      let lease = await this.#movedLeaseForHook(sourceWorkspaceId, id);
+      await this.#movedSource(sourceWorkspaceId).deleteMovedGadgetHook(
+          lease, this.impl.ctx.id.toString(), this.impl.ownerId!, id);
+      return;
+    }
     return this.impl.deleteHook(id);
   }
 
@@ -8391,7 +10361,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.#resumeSuspendedAgent(chatId);
   }
 
-  async rejectAction(id: number): Promise<void> {
+  async rejectAction(id: number | ActionReference): Promise<void> {
+    if (typeof id !== "number") {
+      if (id.sourceWorkspaceId === this.impl.ctx.id.toString()) {
+        return this.rejectAction(id.actionId);
+      }
+      await this.#movedSource(id.sourceWorkspaceId).rejectMovedAction(
+          this.#movedLeasesFor(id.sourceWorkspaceId), this.impl.ctx.id.toString(),
+          this.impl.ownerId!, id.actionId, this.clientUserId);
+      return;
+    }
     let action = this.impl.storage.actions.get(id);
     if (!action) {
       throw new Error(`No such action: ${id}`);
@@ -8425,9 +10404,20 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
   // opt-in rule (one of the two gates required to auto-apply -- the action's own `autoApprovable`
   // verdict is the other) with the kind's display label, and immediately drains any pending
-  // actions that this newly unblocks. Auto-approval rules are workspace-wide per gatekeeper.
-  async setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind)
+  // actions that this newly unblocks. A local call stores a workspace-wide rule; a call carrying a
+  // source workspace routes to that host's moved-Gadget-scoped rule instead.
+  async setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind,
+                                  sourceWorkspaceId?: string)
       : Promise<void> {
+    if (sourceWorkspaceId !== undefined && sourceWorkspaceId !== this.impl.ctx.id.toString()) {
+      await this.#movedSource(sourceWorkspaceId).setMovedAutoApprovedActionKind(
+          this.#movedLeasesFor(sourceWorkspaceId), this.impl.ctx.id.toString(),
+          this.impl.ownerId!, gatekeeperId, actionKind, this.clientUserId);
+      return;
+    }
+    if (!this.#localGatekeeperIds().has(gatekeeperId)) {
+      throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a local Gadget.`);
+    }
     let gatekeeper = this.impl.storage.gatekeepers.get(gatekeeperId);
     if (!gatekeeper) {
       throw new Error(`No such gatekeeper: ${gatekeeperId}`);
@@ -8445,27 +10435,43 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   // Remove the auto-approval rule for `tag` on the given gatekeeper, so future matching actions
   // require manual approval again.
-  async removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void> {
-    this.impl.storage.autoApproveTags.delete(`${gatekeeperId}:${tag}`);
+  async removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string,
+                                     sourceWorkspaceId?: string): Promise<void> {
+    if (sourceWorkspaceId !== undefined && sourceWorkspaceId !== this.impl.ctx.id.toString()) {
+      await this.#movedSource(sourceWorkspaceId).removeMovedAutoApprovedActionKind(
+          this.#movedLeasesFor(sourceWorkspaceId), this.impl.ctx.id.toString(),
+          this.impl.ownerId!, gatekeeperId, tag);
+      return;
+    }
+    if (!this.#localGatekeeperIds().has(gatekeeperId)) {
+      throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a local Gadget.`);
+    }
+    this.impl.storage.autoApproveTags.delete(autoApprovalRuleKey(gatekeeperId, tag));
   }
 
   // List the enabled auto-approval rules.
   async listAutoApprovedActionKinds()
-      : Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>> {
-    return [...this.impl.storage.autoApproveTags.list()].map(rule => ({
+      : Promise<Array<{
+        sourceWorkspaceId: string; gatekeeperId: WorkpieceId; actionKind: ActionKind;
+      }>> {
+    let localGatekeepers = this.#localGatekeeperIds();
+    let local = [...this.impl.storage.autoApproveTags.list()]
+        .filter(rule => rule.gadgetId === undefined && localGatekeepers.has(rule.gatekeeperId))
+        .map(rule => ({
+      sourceWorkspaceId: this.impl.ctx.id.toString(),
       gatekeeperId: rule.gatekeeperId,
       actionKind: rule.actionKind,
     }));
+    let moved = this.#movedGadgetLeases();
+    let remote = await Promise.all([...moved].map(([sourceWorkspaceId, leases]) =>
+        this.#movedSource(sourceWorkspaceId).listMovedAutoApprovedActionKinds(
+            leases, this.impl.ctx.id.toString(), this.impl.ownerId!)));
+    return [...local, ...remote.flat()];
   }
 
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
     // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
-    let boundIds = new Set<WorkpieceId>();
-    for (let gadget of this.impl.storage.gadgets.list()) {
-      for (let edge of Object.values(gadget.bindings)) {
-        boundIds.add(edge.target);
-      }
-    }
+    let boundIds = this.#localGatekeeperIds();
 
     // TODO: a single gatekeeper failing (e.g. a rejected RPC) currently fails the whole catalog,
     // since we let getAutoApprovableActions() reject. Eventually we should isolate per-gatekeeper
@@ -8478,6 +10484,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let facet = this.impl.getGatekeeperFacet(gk.id);
       let kinds = await facet.getAutoApprovableActions();
       return kinds.map(actionKind => ({
+        sourceWorkspaceId: this.impl.ctx.id.toString(),
         gatekeeperId: gk.id,
         // resourceTitle is a denormalized cache of the gatekeeper's describe().title, populated in a
         // second step after the record is first persisted (see addGatekeeper). It can be absent if
@@ -8486,11 +10493,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         vendorId: gk.creationSpec?.type === "gatekeeper" ? gk.creationSpec.vendorId : undefined,
         actionKind,
         alreadyEnabled:
-            this.impl.storage.autoApproveTags.get(`${gk.id}:${actionKind.tag}`) !== undefined,
+            this.impl.storage.autoApproveTags.get(
+                autoApprovalRuleKey(gk.id, actionKind.tag)) !== undefined,
       }));
     });
 
-    return (await Promise.all(perGatekeeper)).flat();
+    let local = (await Promise.all(perGatekeeper)).flat();
+    let moved = this.#movedGadgetLeases();
+    let remote = await Promise.all([...moved].map(([sourceWorkspaceId, leases]) =>
+        this.#movedSource(sourceWorkspaceId).listMovedPreApprovableActions(
+            leases, this.impl.ctx.id.toString(), this.impl.ownerId!)));
+    return [...local, ...remote.flat()];
   }
 
   // Find a pending connectionRequest message by id. The request id encodes the chat id as a prefix
@@ -8598,74 +10611,35 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date)
       : Promise<RpcStub<{}>> {
-    let actions = this.impl.storage.actions;
-
-    subscriber = subscriber.dup();  // keep stub after return
-    let subscribed = false;
+    subscriber = subscriber.dup();
+    let children: RpcStub<any>[] = [];
     let disposed = false;
-    subscriber.onRpcBroken(_ => unsubscribe());
-
-    let dbSubscriber = {
-      add(record: ActionRecord) {
-        subscriber.entry(actionRecordToLog(record)).catch(unsubscribe);
-      },
-      update(_oldRecord: ActionRecord, newRecord: ActionRecord): void {
-        subscriber.entry(actionRecordToLog(newRecord)).catch(unsubscribe);
-      },
-      remove(_record: ActionRecord): void {
-        // Required by typed-storage's Subscriber interface; actions are append-only today.
-      }
-    }
-
-    function unsubscribe() {
+    let unsubscribe = () => {
       if (disposed) return;
       disposed = true;
-      if (subscribed) actions.unsubscribe(dbSubscriber);
+      for (let child of children) child[Symbol.dispose]();
       subscriber[Symbol.dispose]();
     };
-
-    actions.subscribe(dbSubscriber);
-    subscribed = true;
-
-    // The subscription delivers live deltas only; clients query current pending state via
-    // listActions({filter: "pending"}) after initiating the subscribe (see api.ts).
-    if (startAfter !== undefined) {
-      // Resubscribe after a disconnect: sweep byLastChanged for everything changed since the
-      // client's last-seen time -- O(changed during the gap), not O(log). The bound is
-      // inclusive: the frozen clock stamps whole batches with one instant, so an exclusive bound
-      // would drop the last-seen record's siblings, while re-delivery is just a harmless upsert.
-      // The end key is fixed up front; a record changing mid-replay re-sorts past it and arrives
-      // via the live subscription instead. Each page's delivery is awaited, so a failure rejects
-      // the subscribe call before ready() and a huge gap can't queue unbounded callbacks.
-      try {
-        let newest = [...actions.byLastChanged.list({reverse: true, limit: 1})].at(0);
-        if (newest !== undefined) {
-          let end = actionLastChangedKey({...newest, id: newest.id + 1});
-          // keyString(t) is a prefix of every key with that timestamp, so `start` is inclusive
-          // of the whole cutoff instant.
-          let from: ListOptions<string> = {start: keyString(startAfter.valueOf())};
-          for (;;) {
-            if (disposed) throw new Error("Action subscriber failed during replay");
-            let page = [...actions.byLastChanged.list(
-                {...from, end, limit: ACTION_REPLAY_PAGE_SIZE})];
-            await Promise.all(page.map(record => subscriber.entry(actionRecordToLog(record))));
-            if (page.length < ACTION_REPLAY_PAGE_SIZE) break;
-            from = {startAfter: actionLastChangedKey(page.at(-1)!)};
-          }
-        }
-      } catch (err) {
-        unsubscribe();
-        throw err;  // rejecting the subscribe call is the client's error signal
-      }
+    let addChild = (child: RpcStub<any>) => {
+      if (disposed) child[Symbol.dispose]();
+      else children.push(child);
+    };
+    try {
+      addChild(await subscribeActionRecords(
+          this.impl, subscriber, startAfter, () => this.#localActionGadgetIds(), false));
+      let moved = this.#movedGadgetLeases();
+      await Promise.all([...moved].map(async ([sourceWorkspaceId, leases]) => {
+        addChild(await this.#movedSource(sourceWorkspaceId).subscribeMovedGadgetActions(
+            leases, this.impl.ctx.id.toString(), this.impl.ownerId!, subscriber, startAfter));
+      }));
+      if (!disposed) await subscriber.ready();
+    } catch (error) {
+      unsubscribe();
+      throw error;
     }
 
-    if (!disposed) subscriber.ready().catch(unsubscribe);
-
-    // @ts-expect-error Bugs in native RPC types make this not work currently.
-    return new NativeRpcStub<{}>({
-      [Symbol.dispose]() {
-        unsubscribe();
-      }
+    return new NativeRpcStub<any>({
+      [Symbol.dispose]() { unsubscribe(); },
     });
   }
 
@@ -8753,6 +10727,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         to: checkpoint.compactedTo,
         summary: checkpoint.summary,
         proposedChanges: checkpoint.proposedChanges,
+        proposedCodeBatches: checkpoint.proposedCodeBatches,
       },
     };
   }
@@ -8766,7 +10741,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
       if (record) {
-        msg.actionLog = actionRecordToLog(record);
+        msg.actionLog = actionRecordToLog(record, this.impl.ctx.id.toString());
       }
     }
     return this.impl.hydrateChatMessageForClient(msg);
@@ -8875,7 +10850,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       for (let draft of draftsToSend) {
         subscriber.draftUpdate(
             draft.chatId, draft.timestamp, authorByChat.get(draft.chatId)!,
-            draft.update).catch(unsubscribe);
+            draft.update, draft.gadgetIds).catch(unsubscribe);
       }
 
       if (startAfter !== undefined) {
@@ -8956,36 +10931,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
 
-    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
-    // changes through `mergeThrough` makes them permanent workspace members. (Reap crash orphans
-    // first. An unstamped record that survives reconciliation -- a crashed turn's not-yet-resumed
-    // tail -- has no sequence and is simply not covered by this merge.) Each stamped creation
-    // sits on an unmerged, unreverted "changes" message at `pending.sequence` (a reverted
-    // creation's gadget would already be deleted, and a merged one already promoted), so any
-    // merge that promotes also has updates to merge below.
+    // Reap crash orphans before collecting the rows this merge will promote. Source-host writes
+    // below must finish first: promoting a target proxy before its fixed host is updated would
+    // make an accepted binding/code change visible only as a target-side record.
     await this.impl.reconcilePendingGadgets(chatId);
-    for (let gadget of this.impl.listPendingGadgets(chatId)) {
-      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough) {
-        delete gadget.pending;
-        this.impl.storage.gadgets.put(gadget);
-      }
-    }
-
-    // Likewise promote provisional binding edges covered by this merge; this is also the moment
-    // an edge becomes visible to mainline loads and the derived workspace default binding list.
-    for (let gadget of this.impl.storage.gadgets.list()) {
-      let promoted = false;
-      for (let edge of Object.values(gadget.bindings)) {
-        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
-            edge.pending.sequence <= mergeThrough) {
-          delete edge.pending;
-          promoted = true;
-        }
-      }
-      if (promoted) {
-        this.impl.storage.gadgets.put(gadget);
-      }
-    }
 
     // Get unmerged updates for the thread.
     let updates = this.impl.getProposedChanges(chatId);
@@ -9001,20 +10950,80 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
 
-    // To detect if this is the first code change, we have to see if there are any changes listed
-    // in the `code` table other than the initial version 1 change created at init time. We can't
-    // just check `codeVersion` because there are other changes which increment it, like adding
-    // bindings.
-    let isFirstChange = [...this.impl.storage.code.list({limit: 1, start: 2})].length === 0;
+    let pendingGadgets = this.impl.listPendingGadgets(chatId).filter(gadget =>
+      gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough);
+    let pendingBindings: {gadget: GadgetRecord, name: string, target: WorkpieceId}[] = [];
+    for (let gadget of this.impl.storage.gadgets.list()) {
+      for (let [name, edge] of Object.entries(gadget.bindings)) {
+        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
+            edge.pending.sequence <= mergeThrough) {
+          pendingBindings.push({gadget, name, target: edge.target});
+        }
+      }
+    }
 
-    // Batches that record only creations/binding additions carry no code update. If the merge
-    // covers nothing else, the code is unchanged, so don't write a new code version -- but still
-    // bump the version counter so cached workers reload with the promoted records visible.
-    let codeUpdates = updates.map(up => up.update)
-        .filter((up): up is Uint8Array => up !== undefined);
-    let version = codeUpdates.length > 0
-        ? this.impl.updateCode(Y.mergeUpdatesV2(codeUpdates))
-        : this.impl.bumpVersion();
+    let movedCode = new Map<WorkpieceId, Uint8Array[]>();
+    let localCode: Uint8Array[] = [];
+    for (let batch of updates) {
+      if (batch.update === undefined) continue;
+      let gadgetIds = batch.gadgetIds ?? [];
+      let movedIds = gadgetIds.filter(gadgetId =>
+        this.impl.storage.gadgets.get(gadgetId)?.movedFrom !== undefined);
+      if (movedIds.length > 0) {
+        if (movedIds.length !== 1 || movedIds.length !== gadgetIds.length) {
+          throw new Error("A moved Gadget change cannot be merged together with another Gadget.");
+        }
+        let list = movedCode.get(movedIds[0]);
+        if (!list) {
+          list = [];
+          movedCode.set(movedIds[0], list);
+        }
+        list.push(batch.update);
+      } else {
+        localCode.push(batch.update);
+      }
+    }
+
+    for (let [gadgetId, batchUpdates] of movedCode) {
+      await this.impl.withMovedGadgetHost(gadgetId,
+          host => host.applyMovedGadgetCode(Y.mergeUpdatesV2(batchUpdates)));
+    }
+    for (let {gadget, name, target} of pendingBindings) {
+      if (!gadget.movedFrom) continue;
+      await this.impl.withMovedGadgetHost(gadget.id,
+          host => host.applyMovedGadgetBinding(name, target));
+    }
+
+    // Target-local updates stay in this workspace. Moved-Gadget updates were written to the fixed
+    // source host above and must not be appended to the target's shared code log.
+    let isFirstChange = [...this.impl.storage.code.list({limit: 1, start: 2})].length === 0;
+    let version: number;
+    if (localCode.length > 0) {
+      version = this.impl.updateCode(Y.mergeUpdatesV2(localCode));
+    } else if (movedCode.size > 0) {
+      version = this.impl.bumpVersion([...movedCode.keys()]);
+    } else {
+      version = this.impl.storage.codeVersion.get();
+    }
+
+    // Promote only after all source-host writes succeeded. Pending rows remain as a durable retry
+    // key if an RPC response is lost before this point.
+    for (let gadget of pendingGadgets) {
+      delete gadget.pending;
+      this.impl.storage.gadgets.put(gadget);
+    }
+    let promotedGadgetIds = new Set<WorkpieceId>();
+    for (let {gadget, name} of pendingBindings) {
+      let edge = gadget.bindings[name];
+      if (edge?.pending?.chatId !== chatId || edge.pending.sequence === undefined ||
+          edge.pending.sequence > mergeThrough) continue;
+      delete edge.pending;
+      this.impl.storage.gadgets.put(gadget);
+      promotedGadgetIds.add(gadget.id);
+    }
+    if (promotedGadgetIds.size > 0 && localCode.length === 0 && movedCode.size === 0) {
+      version = this.impl.bumpVersion([...promotedGadgetIds]);
+    }
     let timestamp = this.impl.getChatTimestamp();
 
     this.impl.storage.chats.put({
@@ -9035,7 +11044,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Maybe generate gadget title if this was the first accepted code. (A merge that accepted no
     // code -- creations/binding additions only -- doesn't count: it writes no code version, so
     // the first *code* merge after it still sees isFirstChange and generates the title then.)
-    if (isFirstChange && codeUpdates.length > 0 && userMeta.quickModel) {
+    if (isFirstChange && localCode.length > 0 && userMeta.quickModel) {
       this.impl.generateGadgetTitle(chatId, userMeta.quickModel, userMeta.profile);
     }
     this.impl.recordGadgetAnalytics({
@@ -9635,7 +11644,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
 
   async getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>> {
-    if (this.impl.getGadgetRecord(id).pending) {  // also validates it exists
+    if (this.impl.getUserGadgetRecord(id).pending) {  // also validates it exists
       throw new Error(`No such gadget: ${id}`);
     }
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
@@ -9664,21 +11673,25 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   // Pending actions are queried eagerly for the badge; resolved history is demand-loaded. Return
   // an empty terminal page so this speculative read does not fail for "use" collaborators.
-  async listActions(_options?: {beforeId?: number, filter?: ActionHistoryFilter})
+  async listActions(_options?: {cursor?: ActionHistoryCursor, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage> {
     return {entries: []};
   }
-  async approveAction(_id: number): Promise<void> { this.#deny(); }
-  async rejectAction(_id: number): Promise<void> { this.#deny(); }
+  async approveAction(_id: number | ActionReference): Promise<void> { this.#deny(); }
+  async rejectAction(_id: number | ActionReference): Promise<void> { this.#deny(); }
   async listHooks(): Promise<BoundHookInfo[]> { this.#deny(); }
-  async enableHook(_id: number): Promise<void> { this.#deny(); }
-  async disableHook(_id: number): Promise<void> { this.#deny(); }
-  async deleteHook(_id: number): Promise<void> { this.#deny(); }
-  async setAutoApprovedActionKind(_gatekeeperId: WorkpieceId, _actionKind: ActionKind)
+  async enableHook(_id: number, _sourceWorkspaceId?: string): Promise<void> { this.#deny(); }
+  async disableHook(_id: number, _sourceWorkspaceId?: string): Promise<void> { this.#deny(); }
+  async deleteHook(_id: number, _sourceWorkspaceId?: string): Promise<void> { this.#deny(); }
+  async setAutoApprovedActionKind(_gatekeeperId: WorkpieceId, _actionKind: ActionKind,
+                                  _sourceWorkspaceId?: string)
       : Promise<void> { this.#deny(); }
-  async removeAutoApprovedActionKind(_gatekeeperId: WorkpieceId, _tag: string): Promise<void> { this.#deny(); }
+  async removeAutoApprovedActionKind(_gatekeeperId: WorkpieceId, _tag: string,
+                                     _sourceWorkspaceId?: string): Promise<void> { this.#deny(); }
   async listAutoApprovedActionKinds()
-      : Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>> {
+      : Promise<Array<{
+        sourceWorkspaceId: string; gatekeeperId: WorkpieceId; actionKind: ActionKind;
+      }>> {
     this.#deny();
   }
   async acceptConnectionRequest(_requestId: string, _result: {gatekeeperId: number}): Promise<void> { this.#deny(); }
@@ -9779,8 +11792,77 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   constructor(private impl: OverseerImpl, private id: WorkpieceId,
       private clientUserId: string,
       private familyChildRestricted = false,
-      private assertFamilyCurrent?: NativeRpcStub<() => Promise<FamilyRpcResult<void>>>) {
+      private assertFamilyCurrent?: NativeRpcStub<() => Promise<FamilyRpcResult<void>>>,
+      private hostAccess = false) {
     super();
+  }
+
+  async #getMovedHost(): Promise<RpcStub<MovedGadgetHost> | null> {
+    if (this.hostAccess) return null;
+    let record = this.impl.getGadgetRecord(this.id);
+    if (!record.movedFrom) return null;
+    if (!this.impl.ownerId) throw new Error("Workspace not initialized.");
+    let ns = this.impl.ctx.exports.OverseerDurableObject;
+    let source = ns.get(ns.idFromString(record.movedFrom.sourceWorkspaceId));
+    return source.getMovedGadgetHost(
+        record.movedFrom.sourceGadgetId,
+        this.impl.ctx.id.toString(),
+        this.id,
+        record.movedFrom.token,
+        this.impl.ownerId) as unknown as RpcStub<MovedGadgetHost>;
+  }
+
+  async #withMovedHost<T>(run: (host: RpcStub<MovedGadgetHost>) => Promise<T>)
+      : Promise<T | undefined> {
+    let host = await this.#getMovedHost();
+    if (!host) return undefined;
+    try {
+      return await run(host);
+    } finally {
+      host[Symbol.dispose]();
+    }
+  }
+
+  async #callMovedHost(
+      run: (host: RpcStub<MovedGadgetHost>) => Promise<void>): Promise<boolean> {
+    let host = await this.#getMovedHost();
+    if (!host) return false;
+    try {
+      await run(host);
+      return true;
+    } finally {
+      host[Symbol.dispose]();
+    }
+  }
+
+  async #syncMovedBindingRecord(): Promise<void> {
+    let bindings = await this.#withMovedHost(host => host.listBindings());
+    if (bindings === undefined) throw new Error("The moved Gadget host is unavailable.");
+    let record = this.impl.getGadgetRecord(this.id);
+    let next: Record<string, BindingRecord> = {};
+    for (let binding of bindings) {
+      let previous = record.bindings[binding.name];
+      next[binding.name] = {
+        target: binding.target,
+        ...(previous?.blueprintAnnotation
+            ? {blueprintAnnotation: previous.blueprintAnnotation} : {}),
+      };
+    }
+    for (let [name, edge] of Object.entries(record.bindings)) {
+      if (edge.pending && next[name] === undefined) next[name] = edge;
+    }
+    record.bindings = next;
+    this.impl.storage.gadgets.put(record);
+  }
+
+  // A source-side stub may outlive the move transaction. It must not fall back to the source
+  // registry after the Gadget became leased, and a target proxy must not silently operate on its
+  // metadata-only record when the fixed host is unavailable.
+  #assertLocalAccess(): void {
+    let record = this.impl.getGadgetRecord(this.id);
+    if (!this.hostAccess && (record.move?.state === "leased" || record.movedFrom)) {
+      throw new Error("The moved Gadget host is unavailable.");
+    }
   }
 
   // Fresh stub per call; see OverseerClientInterface.#clientUser.
@@ -9795,11 +11877,24 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   }
 
   async getTitle(): Promise<string> {
+    let forwarded = await this.#withMovedHost(host => host.getTitle());
+    if (forwarded !== undefined) return forwarded;
+    this.#assertLocalAccess();
     return this.impl.getGadgetRecord(this.id).title;
   }
 
   async setTitle(title: string): Promise<void> {
     if (this.assertFamilyCurrent) unwrapFamilyRpcResult(await this.assertFamilyCurrent());
+    let forwarded = await this.#callMovedHost(async host => {
+      await host.setTitle(title);
+    });
+    if (forwarded) {
+      let record = this.impl.getGadgetRecord(this.id);
+      record.title = title;
+      this.impl.storage.gadgets.put(record);
+      return;
+    }
+    this.#assertLocalAccess();
     let record = this.impl.getGadgetRecord(this.id);
     record.title = title;
     this.impl.storage.gadgets.put(record);
@@ -9807,10 +11902,352 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 
   async remove(): Promise<void> {
     if (this.assertFamilyCurrent) unwrapFamilyRpcResult(await this.assertFamilyCurrent());
+    let forwarded = await this.#callMovedHost(host => host.remove());
+    if (forwarded) {
+      this.impl.storage.gadgets.delete(this.id);
+      return;
+    }
+    this.#assertLocalAccess();
     return this.impl.removeGadget(this.id);
   }
 
+  async moveToWorkspace(targetWorkspaceId: string): Promise<MovedGadgetLocation> {
+    if (this.assertFamilyCurrent) unwrapFamilyRpcResult(await this.assertFamilyCurrent());
+    if (this.hostAccess) throw new Error("A moved gadget host cannot be moved directly.");
+    return this.impl.moveGadget(this.id, targetWorkspaceId, this.clientUserId);
+  }
+
+  async subscribeToCode(subscriber: RpcStub<CodeSubscriber>, fromVersion: number = 0)
+      : Promise<RpcStub<{}>> {
+    let forwarded = await this.#withMovedHost(host => host.subscribeToCode(subscriber, fromVersion));
+    if (forwarded !== undefined) return forwarded;
+    this.#assertLocalAccess();
+    return this.impl.subscribeToGadgetCode(this.id, subscriber, fromVersion, this.hostAccess);
+  }
+
+  async updateCode(update: Uint8Array, chatId?: number): Promise<void> {
+    if (chatId === undefined) {
+      if (await this.#callMovedHost(host => host.updateCode(update))) return;
+      this.#assertLocalAccess();
+      this.impl.updateGadgetCode(this.id, update);
+      return;
+    }
+    let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
+    let gadget = this.impl.getGadgetRecord(this.id);
+    if (gadget.movedFrom) {
+      let previous = this.impl.listChatDraftUpdates(chatId)
+          .filter(entry => entry.gadgetIds?.includes(this.id))
+          .map(entry => entry.update);
+      let candidate = previous.length > 0
+          ? Y.mergeUpdatesV2([...previous, update])
+          : update;
+      await this.impl.withMovedGadgetHost(this.id,
+          host => host.validateMovedGadgetCode(candidate));
+    }
+    await this.impl.updateCodeForClient(update, chatId, author, this.id);
+  }
+
+  async getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>> {
+    let moved = await this.#withMovedHost(host => host.getMovedGatekeeperInfo(id));
+    if (moved !== undefined) return new MovedGatekeeperClientImpl(this.impl, this.id, moved.id);
+    this.#assertLocalAccess();
+    this.impl.assertGadgetGatekeeperAccess(this.id, id);
+    return new GatekeeperClientImpl(this.impl, id, this.impl.getGatekeeperFacet(id));
+  }
+
+  async newGatekeeper(accountId: number, resourceUrl: string)
+      : Promise<GatekeeperClient<any> | null> {
+    // Resolve the account capability in the target workspace before crossing to the fixed source
+    // host. The source host must never reinterpret its owner's account as the target caller's.
+    let {class: cls, vendorId, typeUrlPattern} =
+        await this.#clientUser.getGatekeeperClassFor(accountId, resourceUrl);
+    let creationSpec: GatekeeperCreationSpec = {
+      type: "gatekeeper", vendorId, resourceUrl, typeUrlPattern,
+    };
+    let host = await this.#getMovedHost();
+    let result = host
+        ? new MovedGatekeeperClientImpl(
+            this.impl, this.id,
+            (await host.createGatekeeperForMovedGadget(cls, creationSpec)).id)
+        : await (async () => {
+            this.#assertLocalAccess();
+            let created = await this.impl.addGatekeeper(cls, creationSpec);
+            this.impl.rememberGadgetGatekeeper(this.id, await created.getId());
+            return created;
+          })();
+    await this.#recordConnectionCreated(result, "gatekeeper", vendorId);
+    host?.[Symbol.dispose]();
+    return result;
+  }
+
+  async newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>> {
+    let chatMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(modelId), this.impl.logger);
+    if (!chatMeta.aiModel) throw new Error(`No such AI model: ${modelId}`);
+    let initiator: AiChatAuthorInfo = {
+      type: "gadget", id: chatMeta.profile.id, name: this.impl.getGadgetRecord(this.id).title,
+    };
+    let host = await this.#getMovedHost();
+    let result = host
+        ? new MovedGatekeeperClientImpl(
+            this.impl, this.id,
+            (await host.createModelGatekeeperForMovedGadget(chatMeta.aiModel, initiator)).id)
+        : await (async () => {
+            this.#assertLocalAccess();
+            let created = await this.impl.addModelGatekeeper(chatMeta.aiModel!, initiator);
+            this.impl.rememberGadgetGatekeeper(this.id, await created.getId());
+            return created;
+          })();
+    await this.#recordConnectionCreated(result, "ai_model");
+    host?.[Symbol.dispose]();
+    return result;
+  }
+
+  async newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
+    let host = await this.#getMovedHost();
+    if (host) {
+      let sourceGadgetId = await host.getId();
+      let sourceConfig: AgentSpawnerConfig = {
+        ...config,
+        env: Object.fromEntries(Object.entries(config.env).map(([name, target]) =>
+            [name, target === this.id ? sourceGadgetId : target])),
+      };
+      let creationSpec: GatekeeperCreationSpec = {
+        type: "agentSpawner", config: sourceConfig,
+      };
+      if (config.modelId) {
+        let chatMeta = await retryOnDoReset(
+            () => this.#clientUser.getChatContext(config.modelId!), this.impl.logger);
+        if (chatMeta.aiModel) {
+          creationSpec = {
+            ...creationSpec,
+            modelProvider: chatMeta.aiModel.config.provider,
+            modelName: chatMeta.aiModel.config.model,
+          };
+        }
+      }
+      let result = new MovedGatekeeperClientImpl(
+          this.impl, this.id,
+          (await host.createAgentSpawnerForMovedGadget(
+              sourceConfig, creationSpec, this.clientUserId)).id);
+      await this.#recordConnectionCreated(result, "agent_spawner");
+      host[Symbol.dispose]();
+      return result;
+    }
+
+    this.#assertLocalAccess();
+    for (let [name, target] of Object.entries(config.env)) {
+      validateBindingName(name);
+      let gadget = this.impl.storage.gadgets.get(target);
+      if (gadget) {
+        if (gadget.pending) {
+          throw new Error(`Agent spawner env entry "${name}" references gadget ${target}, ` +
+              `which is still pending in a chat.`);
+        }
+      } else if (!this.impl.storage.gatekeepers.get(target)) {
+        throw new Error(`Agent spawner env entry "${name}" references workpiece ${target}, ` +
+            `which does not exist.`);
+      }
+    }
+    let props: AgentSpawnerBindingProps = {
+      overseerId: this.impl.ctx.id.toString(), config, creatorUserId: this.clientUserId,
+    };
+    let creationSpec: GatekeeperCreationSpec = {type: "agentSpawner", config};
+    if (config.modelId) {
+      let chatMeta = await retryOnDoReset(
+          () => this.#clientUser.getChatContext(config.modelId!), this.impl.logger);
+      if (chatMeta.aiModel) {
+        creationSpec.modelProvider = chatMeta.aiModel.config.provider;
+        creationSpec.modelName = chatMeta.aiModel.config.model;
+      }
+    }
+    let result = await this.impl.addGatekeeper(
+        this.impl.ctx.exports.AgentSpawnerGatekeeper({props}), creationSpec);
+    this.impl.rememberGadgetGatekeeper(this.id, await result.getId());
+    await this.#recordConnectionCreated(result, "agent_spawner");
+    return result;
+  }
+
+  #assertMovedHost(): void {
+    if (!this.hostAccess) throw new Error("This method is only available on a moved Gadget host.");
+  }
+
+  async validateMovedGadgetCode(update: Uint8Array): Promise<void> {
+    this.#assertMovedHost();
+    this.impl.validateGadgetCodeUpdate(this.id, update);
+  }
+
+  async applyMovedGadgetCode(update: Uint8Array): Promise<void> {
+    this.#assertMovedHost();
+    this.impl.updateGadgetCode(this.id, update);
+  }
+
+  async validateMovedGadgetBinding(target: WorkpieceId): Promise<void> {
+    this.#assertMovedHost();
+    this.impl.assertGadgetGatekeeperAccess(this.id, target);
+  }
+
+  async applyMovedGadgetBinding(name: string, target: WorkpieceId): Promise<void> {
+    this.#assertMovedHost();
+    let record = this.impl.getGadgetRecord(this.id);
+    let existing = record.bindings[name];
+    if (existing) {
+      if (existing.target === target && !existing.pending) return;
+      throw new Error(`There is already a binding named "${name}".`);
+    }
+    this.impl.bindWorkpiece(this.id, name, target);
+  }
+
+  #validatePreview(preview?: GadgetCodePreview): void {
+    this.#assertMovedHost();
+    if (preview?.update) this.impl.validateGadgetCodeUpdate(this.id, preview.update);
+    for (const {name, target} of preview?.bindings ?? []) {
+      validateBindingName(name);
+      this.impl.assertGadgetGatekeeperAccess(this.id, target);
+      const edge = this.impl.getGadgetRecord(this.id).bindings[name];
+      if (edge && edge.target !== target) throw new Error(`There is already a binding named "${name}".`);
+    }
+  }
+
+  async connectToMovedGadget(preview?: GadgetCodePreview): Promise<RpcStub<any>> {
+    this.#validatePreview(preview);
+    return this.impl.getGadgetFacet(this.id, undefined, true, preview);
+  }
+
+  async getMovedGadgetExportFormats(preview?: GadgetCodePreview): Promise<GadgetExportFormat[]> {
+    this.#validatePreview(preview);
+    return this.impl.getGadgetExportFormats(this.id, undefined, true, preview);
+  }
+
+  async exportMovedGadget(formatId: string, preview?: GadgetCodePreview): Promise<ReadableStream<Uint8Array>> {
+    this.#validatePreview(preview);
+    return this.impl.exportGadget(this.id, formatId, undefined, true, preview);
+  }
+
+  async getUiBundleForMovedGadget(update?: Uint8Array): Promise<UiBundle | null> {
+    this.#assertMovedHost();
+    return this.impl.getGadgetUiBundleForUpdate(this.id, update);
+  }
+
+  async getCodeSnapshotForMovedGadget(): Promise<{rootName: string, update: Uint8Array}> {
+    this.#assertMovedHost();
+    let record = this.impl.getGadgetRecord(this.id);
+    let rootName = record.filesRoot ?? this.impl.gadgetRootName(this.id);
+    let {ydoc} = this.impl.buildGadgetCodeDoc("current");
+    try {
+      return {rootName, update: encodeGadgetCode(ydoc, rootName)};
+    } finally {
+      ydoc.destroy();
+    }
+  }
+
+  async getMovedGatekeeperInfo(id: WorkpieceId): Promise<MovedGatekeeperInfo> {
+    this.#assertMovedHost();
+    this.impl.assertGadgetGatekeeperAccess(this.id, id);
+    let record = this.impl.storage.gatekeepers.get(id);
+    if (!record) throw new Error(`No such gatekeeper id: ${id}`);
+    return {
+      id,
+      title: record.resourceTitle || "(title unavailable)",
+      description: await this.impl.getGatekeeperFacet(id).describe(),
+      ...(record.creationSpec === undefined ? {} : {creationSpec: record.creationSpec}),
+    };
+  }
+
+  async openMovedGatekeeperSession(id: WorkpieceId): Promise<RpcStub<any>> {
+    this.#assertMovedHost();
+    this.impl.assertGadgetGatekeeperAccess(this.id, id);
+    return new GatekeeperClientImpl(
+        this.impl, id, this.impl.getGatekeeperFacet(id),
+        {from: "gadget", gadgetId: this.id}).openSession();
+  }
+
+  async setMovedGatekeeperTitle(id: WorkpieceId, title: string): Promise<void> {
+    this.#assertMovedHost();
+    this.impl.assertGadgetGatekeeperAccess(this.id, id);
+    let record = this.impl.storage.gatekeepers.get(id);
+    if (!record) throw new Error(`No such gatekeeper id: ${id}`);
+    record.resourceTitle = title;
+    this.impl.storage.gatekeepers.put(record);
+  }
+
+  async removeMovedGatekeeper(id: WorkpieceId): Promise<void> {
+    this.#assertMovedHost();
+    this.impl.assertGadgetGatekeeperAccess(this.id, id);
+    let gadget = this.impl.getGadgetRecord(this.id);
+    let changed = false;
+    for (let [name, edge] of Object.entries(gadget.bindings)) {
+      if (edge.target !== id) continue;
+      delete gadget.bindings[name];
+      changed = true;
+    }
+    if (gadget.createdGatekeeperIds?.includes(id)) {
+      gadget.createdGatekeeperIds = gadget.createdGatekeeperIds.filter(gatekeeperId =>
+        gatekeeperId !== id);
+      changed = true;
+    }
+    if (changed) {
+      this.impl.storage.gadgets.put(gadget);
+      this.impl.bumpVersion([this.id]);
+    }
+    for (let rule of Array.from(this.impl.storage.autoApproveTags.list())) {
+      if (rule.gadgetId === this.id && rule.gatekeeperId === id) {
+        this.impl.storage.autoApproveTags.delete(
+            autoApprovalRuleKey(id, rule.actionKind.tag, this.id));
+      }
+    }
+  }
+
+  async createGatekeeperForMovedGadget(cls: GatekeeperClass, creationSpec: GatekeeperCreationSpec)
+      : Promise<MovedGatekeeperInfo> {
+    this.#assertMovedHost();
+    let result = await this.impl.addGatekeeper(cls, creationSpec);
+    let id = await result.getId();
+    this.impl.rememberGadgetGatekeeper(this.id, id);
+    return this.getMovedGatekeeperInfo(id);
+  }
+
+  async createModelGatekeeperForMovedGadget(
+      model: UserAiModelRecord, initiator: AiChatAuthorInfo): Promise<MovedGatekeeperInfo> {
+    this.#assertMovedHost();
+    let result = await this.impl.addModelGatekeeper(model, initiator);
+    let id = await result.getId();
+    this.impl.rememberGadgetGatekeeper(this.id, id);
+    return this.getMovedGatekeeperInfo(id);
+  }
+
+  async createAgentSpawnerForMovedGadget(
+      config: AgentSpawnerConfig, creationSpec: GatekeeperCreationSpec, creatorUserId: string)
+      : Promise<MovedGatekeeperInfo> {
+    this.#assertMovedHost();
+    for (let [name, target] of Object.entries(config.env)) {
+      validateBindingName(name);
+      if (target === this.id) continue;
+      this.impl.assertGadgetGatekeeperAccess(this.id, target);
+    }
+    let props: AgentSpawnerBindingProps = {
+      overseerId: this.impl.ctx.id.toString(), config, creatorUserId,
+    };
+    let result = await this.impl.addGatekeeper(
+        this.impl.ctx.exports.AgentSpawnerGatekeeper({props}), creationSpec);
+    let id = await result.getId();
+    this.impl.rememberGadgetGatekeeper(this.id, id);
+    return this.getMovedGatekeeperInfo(id);
+  }
+
+  async #recordConnectionCreated(
+      result: GatekeeperClient<any>, connectionType: ProductAnalyticsConnectionType,
+      vendorId?: string): Promise<void> {
+    let gatekeeperId = await result.getId();
+    this.impl.recordGadgetAnalytics({
+      event_name: "connection_created", user_id: this.clientUserId,
+      gatekeeper_id: gatekeeperId, connection_type: connectionType, vendor_id: vendorId,
+    });
+  }
+
   async getUiBundle(chatId?: number): Promise<UiBundle | null> {
+    let moved = this.impl.getGadgetRecord(this.id).movedFrom !== undefined;
+    if (chatId === undefined && !moved) this.#assertLocalAccess();
     // TODO: Bundle the UI? For now we just return client.js.
     if (chatId !== undefined) {
       let meta = this.impl.getChatMetaOrThrow(chatId);
@@ -9819,14 +12256,20 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       }
     }
 
+    if (moved) {
+      let update = chatId === undefined
+          ? undefined : this.impl.getProposedGadgetCodeUpdate(chatId, this.id);
+      let forwarded = await this.#withMovedHost(
+          host => host.getUiBundleForMovedGadget(update));
+      if (forwarded !== undefined) return forwarded;
+      throw new Error("The moved Gadget host is unavailable.");
+    }
+
     let {ydoc} = this.impl.buildYDoc("current");
 
     if (chatId !== undefined) {
-      this.impl.getProposedChanges(chatId).forEach(({update}) => {
-        if (update !== undefined) {
-          Y.applyUpdateV2(ydoc, update);
-        }
-      });
+      const update = this.impl.getProposedGadgetCodeUpdate(chatId, this.id);
+      if (update !== undefined) Y.applyUpdateV2(ydoc, update);
     }
 
     return readUiBundle(ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)));
@@ -9839,19 +12282,55 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       chat_id: chatId,
       interaction_type: "gadget_ui_connected",
     });
-    return this.impl.getGadgetFacet(this.id, chatId);
+    let preview = this.impl.getGadgetRecord(this.id).movedFrom
+        ? this.impl.getMovedGadgetPreview(this.id, chatId) : undefined;
+    let forwarded = await this.#withMovedHost(host => host.connectToMovedGadget(preview));
+    if (forwarded !== undefined) return forwarded;
+    if (chatId === undefined) this.#assertLocalAccess();
+    return this.impl.getGadgetFacet(this.id, chatId, this.hostAccess);
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
-    return this.impl.getGadgetExportFormats(this.id, chatId);
+    let preview = this.impl.getGadgetRecord(this.id).movedFrom
+        ? this.impl.getMovedGadgetPreview(this.id, chatId) : undefined;
+    let forwarded = await this.#withMovedHost(host => host.getMovedGadgetExportFormats(preview));
+    if (forwarded !== undefined) return forwarded;
+    if (chatId === undefined) this.#assertLocalAccess();
+    return this.impl.getGadgetExportFormats(this.id, chatId, this.hostAccess);
   }
 
   async export(formatId: string, chatId?: number): Promise<ReadableStream<Uint8Array>> {
-    return this.impl.exportGadget(this.id, formatId, chatId);
+    let preview = this.impl.getGadgetRecord(this.id).movedFrom
+        ? this.impl.getMovedGadgetPreview(this.id, chatId) : undefined;
+    let forwarded = await this.#withMovedHost(host => host.exportMovedGadget(formatId, preview));
+    if (forwarded !== undefined) return forwarded;
+    if (chatId === undefined) this.#assertLocalAccess();
+    return this.impl.exportGadget(this.id, formatId, chatId, this.hostAccess);
   }
 
   async listBindings(chatId?: number): Promise<GadgetBindingInfo[]> {
     let record = this.impl.getGadgetRecord(this.id);
+    if (record.movedFrom) {
+      let forwarded = await this.#withMovedHost(host => host.listBindings());
+      if (forwarded === undefined) throw new Error("The moved Gadget host is unavailable.");
+      if (chatId === undefined) return forwarded;
+      let pending = this.impl.visibleBindings(record, chatId)
+          .filter(([, edge]) => edge.pending?.chatId === chatId)
+          .map(([name, edge]) => {
+            let gatekeeper = this.impl.storage.gatekeepers.get(edge.target);
+            return {
+              name,
+              target: edge.target,
+              resourceTitle: gatekeeper?.resourceTitle || "(title unavailable)",
+              vendorId: gatekeeper?.creationSpec?.type === "gatekeeper"
+                  ? gatekeeper.creationSpec.vendorId : undefined,
+              chatId,
+            };
+          });
+      let names = new Set(forwarded.map(binding => binding.name));
+      return [...forwarded, ...pending.filter(binding => !names.has(binding.name))];
+    }
+    if (chatId === undefined) this.#assertLocalAccess();
     // Edges pending in other chats are those chats' unaccepted proposals, so they aren't listed.
     return this.impl.visibleBindings(record, chatId).map(([name, edge]) => {
       let gatekeeper = this.impl.storage.gatekeepers.get(edge.target);
@@ -9869,14 +12348,29 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 
   async getBinding(name: string): Promise<GatekeeperClient<any> | null> {
     let record = this.impl.getGadgetRecord(this.id);
+    if (record.movedFrom) {
+      let moved = await this.#withMovedHost(async host => {
+        let binding = (await host.listBindings()).find(candidate => candidate.name === name);
+        return binding === undefined ? null : host.getMovedGatekeeperInfo(binding.target);
+      });
+      if (moved === undefined) throw new Error("The moved Gadget host is unavailable.");
+      return moved === null ? null : new MovedGatekeeperClientImpl(this.impl, this.id, moved.id);
+    }
     let edge = record.bindings[name];
-    if (!edge || edge.pending || !this.impl.storage.gatekeepers.get(edge.target)) return null;
+    if (!edge || edge.pending) return null;
+    this.#assertLocalAccess();
+    if (!this.impl.storage.gatekeepers.get(edge.target)) return null;
     return new GatekeeperClientImpl(
         this.impl, edge.target, this.impl.getGatekeeperFacet(edge.target));
   }
 
   async bind(name: string, target: WorkpieceId, chatId?: number): Promise<void> {
     if (chatId === undefined) {
+      if (await this.#callMovedHost(host => host.bind(name, target))) {
+        await this.#syncMovedBindingRecord();
+        return;
+      }
+      this.#assertLocalAccess();
       this.impl.bindWorkpiece(this.id, name, target);
       return;
     }
@@ -9888,7 +12382,13 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       throw new Error(`No such chat: ${chatId}`);
     }
     let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
-    this.impl.bindWorkpiece(this.id, name, target, chatId);
+    if (this.impl.getGadgetRecord(this.id).movedFrom) {
+      await this.impl.withMovedGadgetHost(
+          this.id, host => host.validateMovedGadgetBinding(target));
+      this.impl.bindMovedWorkpiece(this.id, name, target, chatId);
+    } else {
+      this.impl.bindWorkpiece(this.id, name, target, chatId);
+    }
     this.impl.addChatMessages(chatId, author, [{
       type: "changes",
       addedBindings: [{gadgetId: this.id, name, target}],
@@ -9896,6 +12396,14 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   }
 
   async bindWithSuggestedName(target: WorkpieceId, chatId?: number): Promise<string> {
+    if (chatId === undefined) {
+      let forwarded = await this.#withMovedHost(host => host.bindWithSuggestedName(target));
+      if (forwarded !== undefined) {
+        await this.#syncMovedBindingRecord();
+        return forwarded;
+      }
+    }
+    if (chatId === undefined) this.#assertLocalAccess();
     let record = this.impl.getGadgetRecord(this.id);
     let existing = this.impl.visibleBindings(record, chatId)
         .find(([, edge]) => edge.target === target);
@@ -9903,7 +12411,13 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       return existing[0];
     }
 
-    let description = await this.impl.getGatekeeperFacet(target).describe();
+    let description = await (this.impl.getGadgetRecord(this.id).movedFrom
+        ? this.impl.withMovedGadgetHost(this.id, async host => {
+            let moved = await host.getMovedGatekeeperInfo(target);
+            return moved.description;
+          })
+        : this.impl.getGatekeeperFacet(target).describe());
+    if (!description) throw new Error("The moved Gadget host is unavailable.");
     let suggestedName = description.suggestedBindingName;
     let i = 1;
     // Re-read the record after the describe() await, in case bindings changed meanwhile. Dedupe
@@ -9917,10 +12431,20 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   }
 
   async unbind(name: string): Promise<void> {
+    if (await this.#callMovedHost(host => host.unbind(name))) {
+      await this.#syncMovedBindingRecord();
+      return;
+    }
+    this.#assertLocalAccess();
     this.impl.unbindWorkpiece(this.id, name);
   }
 
   async renameBinding(oldName: string, newName: string): Promise<void> {
+    if (await this.#callMovedHost(host => host.renameBinding(oldName, newName))) {
+      await this.#syncMovedBindingRecord();
+      return;
+    }
+    this.#assertLocalAccess();
     this.impl.renameBinding(this.id, oldName, newName);
   }
 
@@ -9932,6 +12456,9 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   }
 
   async getBlueprintAnnotation(name: string): Promise<BlueprintBindingAnnotation | null> {
+    let forwarded = await this.#withMovedHost(host => host.getBlueprintAnnotation(name));
+    if (forwarded !== undefined) return forwarded;
+    this.#assertLocalAccess();
     let {edge} = this.#getBindingEdge(name);
     let annotation = edge.blueprintAnnotation;
     if (!annotation) return null;
@@ -9946,6 +12473,8 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 
   async setBlueprintAnnotation(name: string, annotation: BlueprintBindingAnnotation)
       : Promise<void> {
+    if (await this.#callMovedHost(host => host.setBlueprintAnnotation(name, annotation))) return;
+    this.#assertLocalAccess();
     let {record, edge} = this.#getBindingEdge(name);
     let gatekeeper = this.impl.storage.gatekeepers.get(edge.target);
     edge.blueprintAnnotation = {
@@ -9967,6 +12496,10 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (this.familyChildRestricted) {
       return { ok: false, error: FAMILY_ERROR_CODES.adultProfileRequired };
     }
+    let forwarded = await this.#withMovedHost(async host =>
+        await host.createBlueprint(title, description, screenshotUpload));
+    if (forwarded !== undefined) return forwarded;
+    this.#assertLocalAccess();
     if (!this.impl.ownerId) throw new Error("Workspace not initialized.");
 
     // NOTE: It is INTENTIONAL that collaborators can publish blueprints on behalf of the owner.
@@ -10060,13 +12593,6 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     super();
   }
 
-  // Fresh stub per call; see OverseerClientInterface.#clientUser.
-  get #clientUser(): DurableObjectStub<UserDurableObject> {
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)),
-        this.impl.logger);
-  }
-
   #deny(): never {
     throw new Error("Unauthorized: this collaborator only has permission to use the gadget's UI.");
   }
@@ -10077,6 +12603,19 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     return this.id;
   }
 
+  async moveToWorkspace(_targetWorkspaceId: string): Promise<MovedGadgetLocation> { this.#deny(); }
+  async subscribeToCode(
+      _subscriber: RpcStub<CodeSubscriber>, _fromVersion?: number): Promise<RpcStub<{}>> {
+    this.#deny();
+  }
+  async updateCode(_update: Uint8Array, _chatId?: number): Promise<void> { this.#deny(); }
+  async getGatekeeperById(_id: WorkpieceId): Promise<GatekeeperClient<any>> { this.#deny(); }
+  async newGatekeeper(_accountId: number, _resourceUrl: string)
+      : Promise<GatekeeperClient<any> | null> { this.#deny(); }
+  async newAiModelGatekeeper(_modelId: string): Promise<GatekeeperClient<any>> { this.#deny(); }
+  async newAgentSpawnerGatekeeper(_config: AgentSpawnerConfig)
+      : Promise<GatekeeperClient<any>> { this.#deny(); }
+
   async getTitle(): Promise<string> {
     return this.impl.getGadgetRecord(this.id).title;
   }
@@ -10085,8 +12624,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     if (chatId !== undefined) {
       this.#deny();
     }
-    let {ydoc} = this.impl.buildYDoc("current");
-    return readUiBundle(ydoc.getMap<Y.Text>(this.impl.gadgetRootName(this.id)));
+    return new GadgetClientImpl(this.impl, this.id, this.clientUserId).getUiBundle(chatId);
   }
 
   async connectToGadget(chatId?: number): Promise<RpcStub<any>> {
@@ -10094,22 +12632,17 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
       this.#deny();
     }
 
-    this.impl.recordGadgetAnalytics({
-      event_name: "gadget_interaction",
-      user_id: this.#clientUser.id.toString(),
-      interaction_type: "gadget_ui_connected",
-    });
-    return this.impl.getGadgetFacet(this.id, undefined);
+    return new GadgetClientImpl(this.impl, this.id, this.clientUserId).connectToGadget(chatId);
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
     if (chatId !== undefined) this.#deny();
-    return this.impl.getGadgetExportFormats(this.id);
+    return new GadgetClientImpl(this.impl, this.id, this.clientUserId).getExportFormats(chatId);
   }
 
   async export(id: string, chatId?: number): Promise<ReadableStream<Uint8Array>> {
     if (chatId !== undefined) this.#deny();
-    return this.impl.exportGadget(this.id, id);
+    return new GadgetClientImpl(this.impl, this.id, this.clientUserId).export(id, chatId);
   }
 
   // --- Denied methods (build-only) ---
@@ -10131,6 +12664,69 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
                         _screenshot?: BlueprintScreenshotUpload)
       : Promise<FamilyRpcResult<BlueprintGadgetSummary>> {
     this.#deny();
+  }
+}
+
+@validateRpc()
+class MovedGatekeeperClientImpl extends RpcTarget implements GatekeeperClient<any> {
+  constructor(private impl: OverseerImpl, private gadgetId: WorkpieceId,
+              private id: WorkpieceId) {
+    super();
+  }
+
+  #info(): Promise<MovedGatekeeperInfo> {
+    return this.impl.withMovedGadgetHost(
+        this.gadgetId, host => host.getMovedGatekeeperInfo(this.id));
+  }
+
+  async getId(): Promise<WorkpieceId> {
+    return (await this.#info()).id;
+  }
+
+  async getTitle(): Promise<string> {
+    return (await this.#info()).title;
+  }
+
+  async setTitle(title: string): Promise<void> {
+    await this.impl.withMovedGadgetHost(
+        this.gadgetId, host => host.setMovedGatekeeperTitle(this.id, title));
+    let record = this.impl.getGadgetRecord(this.gadgetId);
+    if (Object.values(record.bindings).some(edge => edge.target === this.id)) {
+      this.impl.storage.gadgets.put(record);
+    }
+  }
+
+  async remove(): Promise<void> {
+    await this.impl.withMovedGadgetHost(
+        this.gadgetId, host => host.removeMovedGatekeeper(this.id));
+    let record = this.impl.getGadgetRecord(this.gadgetId);
+    let removed = false;
+    for (let [name, edge] of Object.entries(record.bindings)) {
+      if (edge.target !== this.id) continue;
+      delete record.bindings[name];
+      removed = true;
+    }
+    if (removed) {
+      this.impl.storage.gadgets.put(record);
+      this.impl.bumpVersion([this.gadgetId]);
+    }
+  }
+
+  async describe(): Promise<ResourceDescription> {
+    return (await this.#info()).description;
+  }
+
+  async openSession(): Promise<RpcStub<any>> {
+    return this.impl.withMovedGadgetHost(
+        this.gadgetId, host => host.openMovedGatekeeperSession(this.id));
+  }
+
+  async getCreationSpec(): Promise<GatekeeperCreationSpec> {
+    let spec = (await this.#info()).creationSpec;
+    if (!spec) {
+      throw new Error("This gatekeeper has no creation spec (created before blueprint support).");
+    }
+    return spec;
   }
 }
 
@@ -10228,6 +12824,11 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         description: HookDescription): Promise<void> {
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
+
+  async getGadgetSessionContext(): Promise<AgentSpawnerSessionContext | null> {
+    if (this.caller.from !== "gadget" || this.caller.gadgetId === undefined) return null;
+    return {gadgetId: this.caller.gadgetId, ownerId: this.impl.ownerId};
+  }
 }
 
 // =======================================================================================
@@ -10242,6 +12843,7 @@ type AgentSpawnerBindingProps = {
   // resolved from this user's account. Falls back to the gadget owner for bindings
   // created before collaborator support was added.
   creatorUserId?: string,
+
 };
 
 import AGENT_SPAWNER_BINDING_TYPES from "./agent-spawner-binding.txt";
@@ -10273,7 +12875,9 @@ export class AgentSpawnerGatekeeper
 
   async startSession(approvalQueue: NativeRpcStub<ApprovalQueue>)
       : Promise<AgentSpawnerBinding> {
-    return new AgentSpawnerBindingImpl(this.ctx);
+    let context = await (approvalQueue as NativeRpcStub<AgentSpawnerApprovalQueue>)
+        .getGadgetSessionContext();
+    return new AgentSpawnerBindingImpl(this.ctx, context ?? undefined);
   }
 
   applyAction(action: number): Promise<void> {
@@ -10299,7 +12903,8 @@ export class AgentSpawnerGatekeeper
 
 @validateRpc()
 class AgentSpawnerBindingImpl extends RpcTarget implements AgentSpawnerBinding {
-  constructor(private ctx: DurableObjectState<AgentSpawnerBindingProps>) {
+  constructor(private ctx: DurableObjectState<AgentSpawnerBindingProps>,
+              private sessionContext?: AgentSpawnerSessionContext) {
     super();
   }
 
@@ -10309,16 +12914,45 @@ class AgentSpawnerBindingImpl extends RpcTarget implements AgentSpawnerBinding {
     return ns.get(id);
   }
 
+  async #getSpawnTarget() {
+    let source = this.#getOverseer();
+    let sourceGadgetId = this.sessionContext?.gadgetId;
+    if (sourceGadgetId === undefined) {
+      return {overseer: source, config: this.ctx.props.config, movedSpawnerRoute: undefined};
+    }
+    let route = await source.getMovedGadgetSpawnTarget(
+        sourceGadgetId, this.sessionContext?.ownerId, this.ctx.props.config.env);
+    if (!route) {
+      return {overseer: source, config: this.ctx.props.config, movedSpawnerRoute: undefined};
+    }
+
+    let namespace = this.ctx.exports.OverseerDurableObject;
+    let target = namespace.get(namespace.idFromString(route.workspaceId));
+    let movedSpawnerRoute: MovedSpawnerRoute = {
+      sourceWorkspaceId: route.sourceWorkspaceId,
+      sourceGadgetId: route.sourceGadgetId,
+      targetGadgetId: route.gadgetId,
+      bindingTargets: route.bindingTargets,
+    };
+    return {
+      overseer: target,
+      config: this.ctx.props.config,
+      movedSpawnerRoute,
+    };
+  }
+
   async spawn(title: string, prompt: string): Promise<void> {
     // TODO: Should we be calling authorizeObservation() here? It's not really observing anything,
     //   but you might want the audit logs? But also, the agents show up in the chat history so
     //   maybe it's not really necessary to include them in the audit log too.
-    return this.#getOverseer().spawnAgent(
-        title, prompt, this.ctx.props.config, this.ctx.props.creatorUserId);
+    let {overseer, config, movedSpawnerRoute} = await this.#getSpawnTarget();
+    return overseer.spawnAgent(
+        title, prompt, config, this.ctx.props.creatorUserId, false, movedSpawnerRoute);
   }
 
   async spawnCallable(title: string, prompt: string): Promise<Fetcher<any>> {
-    return this.#getOverseer().spawnAgent(
-        title, prompt, this.ctx.props.config, this.ctx.props.creatorUserId, true);
+    let {overseer, config, movedSpawnerRoute} = await this.#getSpawnTarget();
+    return overseer.spawnAgent(
+        title, prompt, config, this.ctx.props.creatorUserId, true, movedSpawnerRoute);
   }
 }

@@ -173,6 +173,12 @@ export type CompactionCheckpoint = {
    * reports the compacted prefix as pending when either this or such a row exists.
    */
   proposedChanges?: Uint8Array;
+
+  /** Accepted updates kept separate by Gadget code document across compaction. */
+  acceptedCodeBatches?: {update: Uint8Array, gadgetIds?: WorkpieceId[]}[];
+  /** Unaccepted updates kept separate by Gadget code document across compaction. */
+  proposedCodeBatches?: {update: Uint8Array, gadgetIds?: WorkpieceId[]}[];
+
 };
 
 /** The compaction state and policy for one call to `runAgent`. */
@@ -195,6 +201,8 @@ export type AgentGadgetInfo = {
   id: WorkpieceId;
   title: string;
   rootName: string;
+  /** Whether this Gadget has an independent source-host code document. */
+  moved?: boolean;
   /**
    * Whether this is the workspace's default gadget: the gadget that tools operate on when their
    * gadget-name parameter is omitted. Only workspaces migrated from single-gadget days
@@ -288,7 +296,11 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  */
 export interface AgentHooks {
   getChatAgentContext(chatId: number): AiChatAgentContext;
+  /** Load the source-host projections needed by this chat before its Y.Doc is built. */
+  prepareAgentCode(chatId: number): Promise<void>;
   buildYDoc(version: number | "current"): {ydoc: Y.Doc, version: number};
+  /** Construct this moved Gadget's isolated code document from the prepared host snapshot. */
+  buildAgentGadgetDoc(chatId: number, gadgetId: WorkpieceId): Y.Doc;
 
   /**
    * Summarize the workspace's gadgets for the system prompt (see AgentGadgetInfo). Gadgets still
@@ -329,7 +341,7 @@ export interface AgentHooks {
    * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
    * `addedBindings` on the "changes" message) so the pending edge gets sequence-stamped.
    */
-  addGadgetBinding(gadgetId: WorkpieceId, name: string, target: WorkpieceId, chatId: number): void;
+  addGadgetBinding(gadgetId: WorkpieceId, name: string, target: WorkpieceId, chatId: number): Promise<void>;
 
   /**
    * Prepare (seeding/naming lazily as needed) and return the chat's seed binding layer, including
@@ -918,11 +930,13 @@ type CodePreviewEntry = {
 // Description of a file-editing tool call which we may need to replay. `rootName` names the
 // Y.Doc root map holding the target workpiece's files.
 type ReplayPendingEdit = {
+  workpieceId?: WorkpieceId;
   toolName: "writeFile";
   rootName: string;
   filename: string;
   content: string;
 } | {
+  workpieceId?: WorkpieceId;
   toolName: "editFile";
   rootName: string;
   filename: string;
@@ -1006,7 +1020,8 @@ function applyPendingEditToText(content: string | null, edit: ReplayPendingEdit)
 // are inserted at the cursor position.  Each Y.Doc mutation is captured and emitted to the
 // client as a "codeUpdate" stream event so the UI can show a real-time diff preview.
 class CodePreviewManager {
-  #previewDoc?: Y.Doc;
+  #previewDocs = new Map<WorkpieceId, Y.Doc>();
+  #started = false;
   #previews = new Map<string, CodePreviewEntry>();
   #broken = false;
   #activeFile: {workpieceId: WorkpieceId, filename: string} | null = null;
@@ -1015,7 +1030,7 @@ class CodePreviewManager {
   // name of the target workpiece -- to the workpiece whose files are being edited, identifying
   // its files root in the preview doc and the target for setActiveFile/toolCallTarget events (a
   // filename alone doesn't identify a file).
-  constructor(private getBaseDoc: () => Y.Doc,
+  constructor(private getBaseDoc: (gadgetId?: WorkpieceId) => Y.Doc,
               private emit: (event: AiChatStreamEvent) => void,
               private resolveWorkpiece:
                   (workpiece?: string) => {workpieceId: WorkpieceId, rootName: string}) {}
@@ -1066,7 +1081,9 @@ class CodePreviewManager {
   }
 
   clear() {
-    this.#previewDoc = undefined;
+    for (const doc of this.#previewDocs.values()) doc.destroy();
+    this.#previewDocs.clear();
+    this.#started = false;
     this.#previews.clear();
     this.#broken = false;
     this.#activeFile = null;
@@ -1080,12 +1097,19 @@ class CodePreviewManager {
   }
 
   #ensureSession() {
-    if (this.#previewDoc) return;
-
-    let baseUpdate = Y.encodeStateAsUpdateV2(this.getBaseDoc());
-    this.#previewDoc = new Y.Doc();
-    Y.applyUpdateV2(this.#previewDoc, baseUpdate);
+    if (this.#started) return;
+    this.#started = true;
     this.emit({type: "codeReset"});
+  }
+
+  #getPreviewDoc(gadgetId: WorkpieceId): Y.Doc {
+    let doc = this.#previewDocs.get(gadgetId);
+    if (!doc) {
+      doc = new Y.Doc();
+      Y.applyUpdateV2(doc, Y.encodeStateAsUpdateV2(this.getBaseDoc(gadgetId)));
+      this.#previewDocs.set(gadgetId, doc);
+    }
+    return doc;
   }
 
   #maybeEmitActiveFile(toolCallId: string, entry: CodePreviewEntry) {
@@ -1133,7 +1157,7 @@ class CodePreviewManager {
     let prefix = entry.parser.prefixFields;
     if (!prefix || !entry.target) return;
 
-    let previewFiles = this.#previewDoc!.getMap<Y.Text>(entry.target.rootName);
+    let previewFiles = this.#getPreviewDoc(entry.target.workpieceId).getMap<Y.Text>(entry.target.rootName);
     let filename = prefix.filename as string;
     let streamValue = entry.parser.streamingValue;
 
@@ -1143,7 +1167,7 @@ class CodePreviewManager {
       if (streamValue !== "") {
         ytext.insert(0, streamValue);
       }
-      this.#mutateAndEmit(() => previewFiles.set(filename, ytext));
+      this.#mutateAndEmit(entry.target!.workpieceId, () => previewFiles.set(filename, ytext));
 
       entry.cursor = { ytext, insertPos: streamValue.length,
                        fieldLength: streamValue.length };
@@ -1162,7 +1186,7 @@ class CodePreviewManager {
     if (content.indexOf(textToReplace, pos + 1) >= 0) return;
 
     // Delete the matched text and insert replacement so far.
-    this.#mutateAndEmit(() => {
+    this.#mutateAndEmit(entry.target!.workpieceId, () => {
       ytext!.delete(pos, textToReplace.length);
       if (streamValue !== "") {
         ytext!.insert(pos, streamValue);
@@ -1179,7 +1203,7 @@ class CodePreviewManager {
     let newChars = streamValue.slice(entry.cursor!.fieldLength);
     if (newChars === "") return;
 
-    this.#mutateAndEmit(() => {
+    this.#mutateAndEmit(entry.target!.workpieceId, () => {
       entry.cursor!.ytext.insert(entry.cursor!.insertPos, newChars);
     });
     entry.cursor!.insertPos += newChars.length;
@@ -1187,17 +1211,18 @@ class CodePreviewManager {
   }
 
   // Apply a mutation to #previewDoc, capture the resulting Y.Doc update, and emit it.
-  #mutateAndEmit(fn: () => void) {
+  #mutateAndEmit(gadgetId: WorkpieceId, fn: () => void) {
+    const doc = this.#getPreviewDoc(gadgetId);
     let updates: Uint8Array[] = [];
     let handler = (update: Uint8Array) => updates.push(update);
-    this.#previewDoc!.on("updateV2", handler);
+    doc.on("updateV2", handler);
     try {
       fn();
     } finally {
-      this.#previewDoc!.off("updateV2", handler);
+      doc.off("updateV2", handler);
     }
     if (updates.length > 0) {
-      this.emit({type: "codeUpdate", update: updates.length === 1
+      this.emit({type: "codeUpdate", gadgetId, update: updates.length === 1
           ? updates[0] : Y.mergeUpdatesV2(updates)});
     }
   }
@@ -1346,6 +1371,8 @@ export async function runAgent(
     compaction: CompactionContext): Promise<CompactionCheckpoint | undefined> {
   let checkpoint = compaction.checkpoint;
 
+  await hooks.prepareAgentCode(chatId);
+
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
   // to other chats are excluded -- they belong to those chats' proposed changes). This is the
   // enumeration source of truth for which Y.Doc roots hold gadget files (roots of gadgets
@@ -1361,6 +1388,9 @@ export async function runAgent(
   let ydoc: Y.Doc | undefined;
   let versionLock = checkpoint?.observedCodeVersion;
   let capturedYdocChanges: Uint8Array[] = [];
+  let capturedGadgetIds = new Set<WorkpieceId>();
+  let movedDocs = new Map<WorkpieceId, Y.Doc>();
+  let movedUpdates = new Map<WorkpieceId, Uint8Array[]>();
   // Gadgets created this turn, awaiting attachment to the next flushed "changes" message (see
   // flushCapturedYdocChanges and the createGadget tool) -- which is what durably records, and
   // sequence-stamps, each creation. Like captured edits, buffered creations from a turn that
@@ -1397,42 +1427,67 @@ export async function runAgent(
     }
     return undefined;
   };
-  let rollingFileContents: Map<string, Map<string, string>> | undefined;
-  let getSessionYDoc = () => {
+  let rollingFileContents: Map<WorkpieceId, Map<string, string>> | undefined;
+  let getSessionYDoc = (gadgetId?: WorkpieceId): Y.Doc => {
+    const info = gadgetInfos.find(info => info.id === gadgetId);
+    if (info?.moved) {
+      let doc = movedDocs.get(info.id);
+      if (!doc) {
+        getSessionYDoc(); // Establish the target-local history version used by the chat.
+        doc = hooks.buildAgentGadgetDoc(chatId, info.id);
+        doc.on("updateV2", update => {
+          let updates = movedUpdates.get(info.id);
+          if (!updates) movedUpdates.set(info.id, updates = []);
+          updates.push(update);
+        });
+        movedDocs.set(info.id, doc);
+      }
+      return doc;
+    }
     if (!ydoc) {
-      let build = hooks.buildYDoc(versionLock === undefined ? "current" : versionLock);
+      let build = hooks.buildYDoc(
+          versionLock === undefined ? "current" : versionLock);
       versionLock = build.version;
       ydoc = build.ydoc;
 
       ydoc.on("updateV2", (update, origin) => {
         capturedYdocChanges.push(update);
       });
+      for (let info of gadgetInfos.filter(info => !info.moved)) {
+        let root = ydoc.getMap(info.rootName);
+        root.observeDeep(() => capturedGadgetIds.add(info.id));
+      }
     }
     return ydoc;
   };
-  // Rolling per-root snapshots of file contents, used to diff replayed user changes. Keyed by
-  // root name, then filename.
+  // Key by Gadget ID because independent host documents can use the same root name.
   let getRollingFileContents = () => {
     if (!rollingFileContents) {
       rollingFileContents = new Map();
       for (let info of gadgetInfos) {
         let files = new Map<string, string>();
-        for (let [filename, text] of getSessionYDoc().getMap<Y.Text>(info.rootName)) {
+        for (let [filename, text] of getSessionYDoc(info.id).getMap<Y.Text>(info.rootName)) {
           if (filename.startsWith(UI_ASSET_PREFIX)) continue;
           files.set(filename, text.toString());
         }
-        rollingFileContents.set(info.rootName, files);
+        rollingFileContents.set(info.id, files);
       }
     }
     return rollingFileContents;
   };
-  let applyReplayedChanges = (update: Uint8Array, includeDiff: boolean): string | undefined => {
-    let ydoc = getSessionYDoc();
+  let applyReplayedChanges = (update: Uint8Array, includeDiff: boolean,
+                              gadgetIds?: readonly WorkpieceId[]): string | undefined => {
+    const moved = gadgetIds?.map(id => gadgetInfos.find(info => info.id === id))
+        .filter(info => info?.moved) ?? [];
+    if (moved.length > 0 && gadgetIds?.length !== 1) {
+      throw new Error("A moved Gadget update must identify exactly one Gadget.");
+    }
+    let ydoc = getSessionYDoc(moved[0]?.id);
     let currentContents = getRollingFileContents();
 
     // Observe every gadget's files root while applying the update, collecting touched filenames
     // per root. (An update may span roots; changes to roots with no registry entry are ignored.)
-    let observed = gadgetInfos.map(info => {
+    let observed = gadgetInfos.filter(info => moved.length ? info.id === moved[0]?.id : !info.moved).map(info => {
       let files = ydoc.getMap<Y.Text>(info.rootName);
       let touchedFiles = new Set<string>();
       let observer = (events: Y.YEvent<any>[]) => {
@@ -1464,10 +1519,10 @@ export async function runAgent(
     // bare filenames.
     let diffParts: string[] = [];
     for (let {info, files, touchedFiles} of observed) {
-      let rootContents = currentContents.get(info.rootName);
+      let rootContents = currentContents.get(info.id);
       if (!rootContents) {
         rootContents = new Map();
-        currentContents.set(info.rootName, rootContents);
+        currentContents.set(info.id, rootContents);
       }
 
       // A gadget with no in-scope binding gets no diff output: the agent can't reference it, so
@@ -1655,8 +1710,16 @@ export async function runAgent(
 
   // Rebuild the code the compacted prefix left behind. Accepted and proposed updates are stored
   // separately so a later revert can drop only the proposed ones, but replay needs both.
-  if (checkpoint?.acceptedChanges) applyReplayedChanges(checkpoint.acceptedChanges, false);
-  if (checkpoint?.proposedChanges) applyReplayedChanges(checkpoint.proposedChanges, false);
+  if (checkpoint?.acceptedChanges) {
+    applyReplayedChanges(checkpoint.acceptedChanges, false);
+  }
+  if (checkpoint?.proposedChanges) {
+    applyReplayedChanges(checkpoint.proposedChanges, false);
+  }
+
+  for (const batch of [...checkpoint?.acceptedCodeBatches ?? [], ...checkpoint?.proposedCodeBatches ?? []]) {
+    applyReplayedChanges(batch.update, false, batch.gadgetIds);
+  }
 
   for (let msg of chatMessages) {
     let modelMessageStart = modelMessages.length;
@@ -1840,7 +1903,7 @@ export async function runAgent(
                   } else {
                     let {workpieceId, rootName} =
                         hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
-                    let text = getSessionYDoc().getMap<Y.Text>(rootName)
+                    let text = getSessionYDoc(workpieceId).getMap<Y.Text>(rootName)
                         .get(toolCall.input.filename);
 
                     // If we have pending edits, the replay of the readFile needs to reflect those
@@ -1852,7 +1915,7 @@ export async function runAgent(
                     // as a string. Oh well.
                     let value = text?.toString() ?? null;
                     for (let edit of pendingReplayEdits) {
-                      if (edit.rootName === rootName &&
+                      if (edit.workpieceId === workpieceId && edit.rootName === rootName &&
                           edit.filename === toolCall.input.filename) {
                         value = applyPendingEditToText(value, edit);
                       }
@@ -1872,6 +1935,7 @@ export async function runAgent(
                   pendingReplayEdits.push({
                     toolName: "writeFile",
                     rootName,
+                    workpieceId,
                     filename: toolCall.input.filename,
                     content: toolCall.input.content,
                   });
@@ -1882,8 +1946,7 @@ export async function runAgent(
                 case "editFile":
                   pendingReplayEdits.push({
                     toolName: "editFile",
-                    rootName: hooks.resolveWorkpieceRoot(
-                        resolveToolWorkpieceId(toolCall.input.workpiece)).rootName,
+                    ...hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece)),
                     filename: toolCall.input.filename,
                     textToReplace: toolCall.input.textToReplace,
                     replacement: toolCall.input.replacement,
@@ -2055,7 +2118,7 @@ export async function runAgent(
           // to apply to the session doc (and no diff), but user-authored creations/additions
           // are still surfaced as observations below.
           let diff = msg.update !== undefined
-              ? applyReplayedChanges(msg.update, msg.author.type === "user")
+              ? applyReplayedChanges(msg.update, msg.author.type === "user", msg.gadgetIds)
               : undefined;
           if (msg.author.type === "user") {
             // Surface everything the user did in this batch as one synthetic observation:
@@ -2256,14 +2319,15 @@ export async function runAgent(
   // chat into the session Y.Doc. Those are already durable chat history, not new edits from this
   // run, so don't let executeCode or end-of-turn flushing re-emit them as proposed changes.
   capturedYdocChanges = [];
+  movedUpdates.clear();
+  capturedGadgetIds.clear();
 
   // If the previous agent was aborted by a server restart, it could have left edits in the
   // log that were never actually flushed to a "changes" message. We should materialize those
   // edits into the `Y.Doc` now so that they can be flushed with the rest of the resumed turn.
   if (pendingReplayEdits.length > 0) {
-    let ydoc = getSessionYDoc();
     for (let edit of pendingReplayEdits) {
-      applyPendingEditToYdoc(ydoc, edit);
+      applyPendingEditToYdoc(getSessionYDoc(edit.workpieceId), edit);
     }
 
     pendingReplayEdits = [];
@@ -2314,7 +2378,7 @@ export async function runAgent(
   let awaitingActionDecision = false;
 
   let flushCapturedYdocChanges = () => {
-    if (capturedYdocChanges.length === 0 && pendingCreatedGadgets.length === 0 &&
+    if (capturedYdocChanges.length === 0 && movedUpdates.size === 0 && pendingCreatedGadgets.length === 0 &&
         pendingAddedBindings.length === 0) {
       return;
     }
@@ -2325,21 +2389,32 @@ export async function runAgent(
     let update = capturedYdocChanges.length > 0
         ? Y.mergeUpdatesV2(capturedYdocChanges)
         : undefined;
+    let gadgetIds = update === undefined ? [] : [...capturedGadgetIds];
+    for (let gadget of pendingCreatedGadgets) {
+      if (!gadgetIds.includes(gadget.gadgetId)) gadgetIds.push(gadget.gadgetId);
+    }
     capturedYdocChanges = [];
+    capturedGadgetIds.clear();
     let createdGadgets = pendingCreatedGadgets;
     pendingCreatedGadgets = [];
     let addedBindings = pendingAddedBindings;
     pendingAddedBindings = [];
-    hooks.addChatMessages(chatId, author, [{
-      type: "changes",
-      // Captured edits imply the session Y.Doc was built, so `versionLock` is set; stamping it
-      // records the base version the update applies to, which replay latches before rebuilding
-      // the session's code state.
-      ...(update !== undefined ? {update, observedCodeVersion: versionLock!} : {}),
-      ...(createdGadgets.length > 0 ? {createdGadgets} : {}),
-      ...(addedBindings.length > 0 ? {addedBindings} : {}),
-    }]);
-    ++nextChangeId;
+    const messages: AiChatMessageBodyWithModelData[] = [];
+    if (update !== undefined || createdGadgets.length || addedBindings.length) {
+      messages.push({type: "changes",
+        ...(update !== undefined ? {update, observedCodeVersion: versionLock!} : {}),
+        ...(gadgetIds.length ? {gadgetIds} : {}),
+        ...(createdGadgets.length ? {createdGadgets} : {}),
+        ...(addedBindings.length ? {addedBindings} : {}),
+      });
+    }
+    for (const [gadgetId, updates] of movedUpdates) {
+      messages.push({type: "changes", update: Y.mergeUpdatesV2(updates),
+        observedCodeVersion: versionLock!, gadgetIds: [gadgetId]});
+    }
+    movedUpdates.clear();
+    hooks.addChatMessages(chatId, author, messages);
+    nextChangeId += messages.length;
   };
 
   let agentContext = hooks.getChatAgentContext(chatId);
@@ -2415,7 +2490,7 @@ export async function runAgent(
           "gadget with the `createGadget` tool.";
     } else {
       let sections = gadgetInfos.map(info => {
-        let files = [...getSessionYDoc().getMap<Y.Text>(info.rootName).keys()]
+        let files = [...getSessionYDoc(info.id).getMap<Y.Text>(info.rootName).keys()]
           .filter(filename => !filename.startsWith(UI_ASSET_PREFIX));
         let envName = chatNameFor(info.id);
         let lines = [envName !== undefined
@@ -2628,7 +2703,7 @@ export async function runAgent(
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
-          let text = getSessionYDoc().getMap<Y.Text>(resolved.rootName).get(filename);
+          let text = getSessionYDoc(resolved.workpieceId).getMap<Y.Text>(resolved.rootName).get(filename);
           if (!text) {
             throw new Error("File does not exist.");
           }
@@ -2659,7 +2734,7 @@ export async function runAgent(
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
-          applyPendingEditToYdoc(getSessionYDoc(), {
+          applyPendingEditToYdoc(getSessionYDoc(resolved.workpieceId), {
             toolName: "writeFile",
             rootName: resolved.rootName,
             filename,
@@ -2707,7 +2782,7 @@ export async function runAgent(
             throw new Error("You must read a file before you can edit it.");
           }
 
-          applyPendingEditToYdoc(getSessionYDoc(), {
+          applyPendingEditToYdoc(getSessionYDoc(resolved.workpieceId), {
             toolName: "editFile",
             rootName: resolved.rootName,
             filename,
@@ -2867,7 +2942,7 @@ export async function runAgent(
           // then rides the *next* flush, whose "changes" message durably records and
           // sequence-stamps the pending edge (see addChatMessages in overseer.ts).
           flushCapturedYdocChanges();
-          hooks.addGadgetBinding(gadgetEntry.id, bindingName, sourceEntry.id, chatId);
+          await hooks.addGadgetBinding(gadgetEntry.id, bindingName, sourceEntry.id, chatId);
           pendingAddedBindings.push(
               {gadgetId: gadgetEntry.id, name: bindingName, target: sourceEntry.id});
 
@@ -2959,7 +3034,7 @@ export async function runAgent(
             // writeFile edits, they ride the chat's proposed changes and revert together with the
             // creation.
             let resolved = hooks.resolveWorkpieceRoot(created.id, true, chatId);
-            let ydoc = getSessionYDoc();
+            let ydoc = getSessionYDoc(resolved.workpieceId);
             ydoc.transact(() => {
               let root = ydoc.getMap<Y.Text>(resolved.rootName);
               for (let [filename, content] of Object.entries(blueprint.files)) {
