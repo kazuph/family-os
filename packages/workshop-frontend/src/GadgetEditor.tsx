@@ -57,6 +57,7 @@ import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
 import { useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
+import MoveGadgetDialog from './MoveGadgetDialog'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
 
@@ -718,6 +719,11 @@ export default function GadgetEditor() {
   // selection, in which case gadget-dependent views render their empty states for a frame.
   const selectedGadgetStub =
     gadget !== null && gadget.id === selectedGadgetId ? gadget.stub : null
+  const canMoveSelectedGadget = metadata !== null
+    && !metadata.owner
+    && !isUseOnly
+    && selectedGadgetStub !== null
+    && selectedGadgetSummary?.chatId === undefined
   // Only the selected chat's streaming drives this editor. Everything downstream then narrows it
   // further to the selected gadget.
   const streamingActiveFile = streamingActiveFileState?.chatId === effectiveSelectedChatId
@@ -737,7 +743,7 @@ export default function GadgetEditor() {
   // animation rate. listHooks() is the authoritative initial source; entries only trigger
   // refetches. useActionEntries replays already-received entries on mount, repopulating the ref
   // after the reset when the stub changes.
-  const hookStatesRef = useRef(new Map<number, string>())
+  const hookStatesRef = useRef(new Map<string, string>())
   const [hookSignature, setHookSignature] = useState('')
   useEffect(() => {
     hookStatesRef.current = new Map()
@@ -745,7 +751,9 @@ export default function GadgetEditor() {
   }, [overseerStub])
   useActionEntries(overseerStub, record => {
     if (record.type !== 'bindHook') return
-    hookStatesRef.current.set(record.id, `${record.hookId}:${record.enabled}`)
+    hookStatesRef.current.set(
+      `${record.sourceWorkspaceId}:${record.id}`, `${record.hookId}:${record.enabled}`,
+    )
     setHookSignature([...hookStatesRef.current.values()].join())
   })
   const [hookedGadgetIds, setHookedGadgetIds] = useState<ReadonlySet<WorkpieceId>>(NO_GADGETS)
@@ -1254,6 +1262,7 @@ export default function GadgetEditor() {
   // ── delete ────────────────────────────────────────────────────────────────────
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false)
 
   const handleDeleteConfirm = async () => {
     if (!overseer) return
@@ -1267,6 +1276,14 @@ export default function GadgetEditor() {
       setDeleteDialogOpen(false)
     }
   }
+
+  const handleMoved = useCallback((workspaceId: string, gadgetId: number) => {
+    navigate({
+      to: '/workspace/$id',
+      params: { id: workspaceId },
+      search: { w: gadgetId },
+    })
+  }, [navigate])
 
   // ── shared height tokens ──────────────────────────────────────────────────────
   const TOPBAR_H = 56   // h-14 (matches home page Header)
@@ -1461,6 +1478,16 @@ export default function GadgetEditor() {
             <Blueprint size={16} />
           </WorkshopIconButton>
 
+          {canMoveSelectedGadget && (
+            <WorkshopIconButton
+              onClick={() => setMoveDialogOpen(true)}
+              title="Move Gadget"
+              aria-label="Move Gadget"
+            >
+              <ArrowsOutSimple size={16} />
+            </WorkshopIconButton>
+          )}
+
           {!metadata.owner && (
             <WorkshopIconButton
               danger
@@ -1576,6 +1603,14 @@ export default function GadgetEditor() {
             >
               Blueprints
             </DropdownMenu.Item>
+            {canMoveSelectedGadget && (
+              <DropdownMenu.Item
+                onClick={() => setMoveDialogOpen(true)}
+                className={MENU_ITEM}
+              >
+                Move Gadget
+              </DropdownMenu.Item>
+            )}
             <DropdownMenu.Item
               disabled={!mobilePreviewActive}
               onClick={enterGadgetFullscreen}
@@ -1630,6 +1665,8 @@ export default function GadgetEditor() {
                   workspaceId={id}
                   overseer={overseer.stub}
                   selectedChatId={effectiveSelectedChatId}
+                  selectedGadgetId={selectedGadgetId}
+                  selectedGadgetIsMoved={selectedGadgetSummary?.isMoved}
                   onNavigateToChat={navigateToChat}
                   onProposedChangesChange={setProposedChanges}
                   onDraftProposedChangesChange={setDraftProposedChanges}
@@ -1839,9 +1876,10 @@ export default function GadgetEditor() {
             </div>
 
             <div className={activeTab === 'code' ? 'h-full' : 'hidden'}>
-              {overseer && selectedFilesRoot !== undefined ? (
+              {overseer && selectedFilesRoot !== undefined && selectedGadgetStub ? (
                 <GadgetCodeInterface
-                  overseer={overseer.stub}
+                  key={`${id}:${selectedGadgetId}`}
+                  gadget={selectedGadgetStub!}
                   filesRoot={selectedFilesRoot}
                   height="100%"
                   onCodeChange={() => setUiReloadTrigger(t => t + 1)}
@@ -1947,6 +1985,18 @@ export default function GadgetEditor() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDeleteConfirm}
       />
+
+      {canMoveSelectedGadget && (
+        <MoveGadgetDialog
+          open={moveDialogOpen}
+          currentWorkspaceId={id!}
+          gadget={selectedGadgetStub}
+          gadgetTitle={selectedGadgetSummary?.title ?? 'Gadget'}
+          authenticatedApi={authenticatedApi}
+          onOpenChange={setMoveDialogOpen}
+          onMoved={handleMoved}
+        />
+      )}
 
     </div>
   )

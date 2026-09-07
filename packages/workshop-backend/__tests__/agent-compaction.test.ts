@@ -455,3 +455,30 @@ describe("boundary arithmetic", () => {
     ]);
   });
 });
+
+
+it("keeps same-named roots separate across compaction, acceptance, and another checkpoint", () => {
+  const first = update("first");
+  const second = update("second");
+  const previous = {chatId: 1, compactedTo: 2, summary: "Two independent Gadgets",
+    ...buildState([
+      record(0, agent, {type: "changes", update: first, gadgetIds: [1]}),
+      record(1, agent, {type: "changes", update: second, gadgetIds: [2]}),
+    ], 2)};
+  expect(previous.proposedChanges).toBeUndefined();
+  expect(previous.proposedCodeBatches?.map(batch => batch.gadgetIds)).toEqual([[1], [2]]);
+  const accepted = {chatId: 1, compactedTo: 3, summary: "Accepted independent Gadgets",
+    ...buildCompactionState([record(2, user, {type: "merge", mergeThrough: 1, version: 2})],
+      3, initialBindings, previous)};
+  expect(accepted.proposedCodeBatches).toEqual([]);
+  expect(accepted.acceptedCodeBatches?.length).toBe(2);
+  const carried = buildCompactionState([message(3, user, "Continue")], 4, initialBindings, accepted);
+  const contents = carried.acceptedCodeBatches!.map(batch => {
+    const doc = new Y.Doc();
+    try {
+      Y.applyUpdateV2(doc, batch.update);
+      return {ids: batch.gadgetIds, text: doc.getMap<Y.Text>("root").get("file.js")!.toString()};
+    } finally { doc.destroy(); }
+  });
+  expect(contents).toEqual([{ids: [1], text: "first"}, {ids: [2], text: "second"}]);
+});

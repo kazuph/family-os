@@ -3,6 +3,7 @@ import type { RpcStub } from 'capnweb'
 import { matchesActionHistoryFilter } from '@gadgets/workshop-shared/api'
 import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { actionLogResumed, useActionEntries } from './useActions'
+import { actionKey, compareActionOrder, isStaleAction } from './actionIdentity'
 
 export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 
@@ -15,33 +16,36 @@ export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 export type HistoryViewFilter = Exclude<ActionHistoryFilter, 'pending'>
 
 type HistoryState = {
-  byId: ReadonlyMap<number, ActionLogEntry>
+  byId: ReadonlyMap<string, ActionLogEntry>
   // 'initial' = the first page failed (surfaces as status 'error'); 'more' = a loadMore failed.
   error: 'initial' | 'more' | null
 }
 
 type HistorySession = {
-  frontier: number | undefined
+  frontier: string | undefined
+  oldest: ActionLogEntry | undefined
   inFlight: boolean
   hasLoadedPage: boolean
+  pendingLive: Map<string, ActionLogEntry>
 }
 
 function createHistorySession(): HistorySession {
-  return { frontier: undefined, inFlight: false, hasLoadedPage: false }
+  return { frontier: undefined, oldest: undefined, inFlight: false, hasLoadedPage: false,
+    pendingLive: new Map() }
 }
 
 const INITIAL: HistoryState = { byId: new Map(), error: null }
 
 /**
- * Demand-loads action history (pending records included), one page at a time, newest first by id
- * (creation order). Nothing is fetched until `active` first becomes true; `loadMore()` continues
+ * Demand-loads action history (pending records included), one page at a time, newest first by
+ * creation time and host identity. Nothing is fetched until `active` first becomes true; `loadMore()` continues
  * from the server cursor, and `hasMore` is the termination signal. The filter changing resets
  * everything; so does the overseer stub changing (a reconnect hands out a fresh stub), unless
  * the shared store resumed — then the loaded window and cursor survive the swap.
  *
  * Live updates from the shared action subscription are merged in: a filter-matching record —
  * a fresh pending one or a resolution — patches in place or inserts if it falls inside the
- * loaded id window. Records below the window are dropped — they surface, read fresh, when their
+ * loaded creation-time window. Records below the window are dropped — they surface, read fresh, when their
  * page loads.
  */
 export function useActionHistory(
@@ -69,19 +73,32 @@ export function useActionHistory(
     session.inFlight = true
     setState(prev => ({ ...prev, error: null }))
 
-    overseer.listActions({ beforeId: session.frontier, filter }).then(page => {
+    overseer.listActions({ cursor: session.frontier, filter }).then(page => {
       if (sessionRef.current !== session) return
       session.inFlight = false
       session.hasLoadedPage = true
-      session.frontier = page.nextBeforeId
+      session.frontier = page.nextCursor
+      for (const record of page.entries) {
+        if (!session.oldest || compareActionOrder(record, session.oldest) < 0) session.oldest = record
+      }
+      const pendingLive = session.pendingLive
+      session.pendingLive = new Map()
       setState(prev => {
         const byId = new Map(prev.byId)
-        for (const record of page.entries) byId.set(record.id, record)
+        for (const record of page.entries) {
+          if (!isStaleAction(record, byId.get(actionKey(record)))) byId.set(actionKey(record), record)
+        }
+        for (const record of pendingLive.values()) {
+          if (session.frontier !== undefined && session.oldest &&
+              compareActionOrder(record, session.oldest) < 0) continue
+          if (!isStaleAction(record, byId.get(actionKey(record)))) byId.set(actionKey(record), record)
+        }
         return { byId, error: null }
       })
     }, (err: unknown) => {
       if (sessionRef.current !== session) return
       session.inFlight = false
+      session.pendingLive.clear()
       console.error('Failed to load action history:', err)
       setState(prev => ({ ...prev, error: first ? 'initial' : 'more' }))
     })
@@ -93,16 +110,18 @@ export function useActionHistory(
   // contract, see api.ts). Otherwise a record resolved between the two would be missed by both.
   useActionEntries(overseer, record => {
     const session = sessionRef.current
-    // Dropping records here can't lose an update: listActions snapshots and responds in one DO
-    // turn, so on the ordered RPC session an entry reflecting a post-snapshot change always
-    // arrives after the page it would race with. Anything dropped pre-first-page or below the
-    // frontier is state a loaded page already supersedes, or is read fresh when its page loads.
-    if (!session.hasLoadedPage) return
     if (!matchesActionHistoryFilter(record, filter)) return
-    if (session.frontier !== undefined && record.id < session.frontier) return
+    // Host notifications can arrive before an older page response. Keep them until the page
+    // establishes its window, including updates before the first page has finished loading.
+    if (session.inFlight && !isStaleAction(record, session.pendingLive.get(actionKey(record)))) {
+      session.pendingLive.set(actionKey(record), record)
+    }
+    if (!session.hasLoadedPage) return
+    if (session.frontier !== undefined && session.oldest && compareActionOrder(record, session.oldest) < 0) return
     setState(prev => {
+      if (isStaleAction(record, prev.byId.get(actionKey(record)))) return prev
       const byId = new Map(prev.byId)
-      byId.set(record.id, record)
+      byId.set(actionKey(record), record)
       return { ...prev, byId }
     })
   })
@@ -115,10 +134,11 @@ export function useActionHistory(
   const prevOverseerRef = useRef(overseer)
   useEffect(() => {
     if (prevOverseerRef.current === overseer) return
+    const previous = prevOverseerRef.current
     prevOverseerRef.current = overseer
-    if (actionLogResumed(overseer)) {
-      const { frontier, hasLoadedPage } = sessionRef.current
-      sessionRef.current = { frontier, inFlight: false, hasLoadedPage }
+    if (actionLogResumed(overseer, previous)) {
+      const { frontier, oldest, hasLoadedPage } = sessionRef.current
+      sessionRef.current = { frontier, oldest, inFlight: false, hasLoadedPage, pendingLive: new Map() }
       setState(prev => ({ ...prev, error: null }))
     } else {
       sessionRef.current = createHistorySession()
@@ -131,7 +151,7 @@ export function useActionHistory(
   }, [active, loadMore])
 
   const entries = useMemo(
-    () => Array.from(state.byId.values()).sort((a, b) => b.id - a.id),
+    () => Array.from(state.byId.values()).sort((a, b) => compareActionOrder(b, a)),
     [state.byId])
 
   const session = sessionRef.current

@@ -48,6 +48,7 @@
   "exports": {
     "UserDurableObject": { "type": "durable-object", "storage": "sqlite" },
     "OverseerDurableObject": { "type": "durable-object", "storage": "sqlite" },
+    "AgentSpawnerGatekeeper": { "type": "durable-object", "storage": "sqlite" },
     "AdminSettings": { "type": "durable-object", "storage": "sqlite" },
     "PendingLogin": { "type": "durable-object", "storage": "sqlite" },
     "LanguageModelGatekeeper": { "type": "durable-object", "storage": "sqlite" },

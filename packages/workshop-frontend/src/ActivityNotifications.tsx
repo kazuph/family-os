@@ -1,3 +1,4 @@
+import { actionKey, actionReference } from './actionIdentity'
 import { useState } from 'react'
 import { Popover } from '@cloudflare/kumo'
 import { ArrowRight, Pulse } from '@phosphor-icons/react'
@@ -27,7 +28,7 @@ export default function ActivityNotifications({
   onViewActivity,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
-  const [processing, setProcessing] = useState<Set<number>>(new Set())
+  const [processing, setProcessing] = useState<Set<number | string>>(new Set())
   const resolveAction = useResolveAction(overseer, setProcessing)
   const { status, pending } = useActions(overseer)
 
@@ -81,10 +82,10 @@ export default function ActivityNotifications({
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">
             {pending.slice(0, PREVIEW_LIMIT).map((action, index) => {
-              const isProcessing = processing.has(action.id)
+              const isProcessing = processing.has(actionKey(action))
               return (
                 <div
-                  key={action.id}
+                  key={actionKey(action)}
                   className={`px-3.5 py-2.5 ${index === 0 ? '' : 'border-t border-kumo-line'}`}
                 >
                   <div className="flex items-start gap-2">
@@ -109,12 +110,12 @@ export default function ActivityNotifications({
                       <ResolveButton
                         tone="deny"
                         disabled={isProcessing}
-                        onClick={() => void resolveAction(action.id, 'deny')}
+                        onClick={() => void resolveAction(actionReference(action), 'deny')}
                       />
                       <ResolveButton
                         tone="approve"
                         disabled={isProcessing}
-                        onClick={() => void resolveAction(action.id, 'approve')}
+                        onClick={() => void resolveAction(actionReference(action), 'approve')}
                       />
                     </div>
                   </div>

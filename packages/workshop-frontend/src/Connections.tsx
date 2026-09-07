@@ -21,6 +21,7 @@ import {
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
+import { actionKey } from './actionIdentity'
 import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
@@ -51,22 +52,23 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const [editValue, setEditValue] = useState('')
   const [isNewConnectionModalVisible, setIsNewConnectionModalVisible] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<{ name: string; resourceTitle: string } | null>(null)
-  const [deleteHookTarget, setDeleteHookTarget] = useState<{ id: number; title: string } | null>(null)
-  const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
+  const [deleteHookTarget, setDeleteHookTarget] = useState<{ id: number; sourceWorkspaceId: string; title: string } | null>(null)
+  const [togglingHooks, setTogglingHooks] = useState<Set<string>>(new Set())
   const [annotationTarget, setAnnotationTarget] = useState<GadgetBindingInfo | null>(null)
   const toasts = useKumoToastManager()
 
   const loadGatekeepers = async () => {
     try {
-      const [id, gadgetTitle, bindingList, hookList] = await Promise.all([
+      const [id, hostId, gadgetTitle, bindingList, hookList] = await Promise.all([
         gadget.getId(),
+        gadget.getHostGadgetId(),
         gadget.getTitle(),
         // Pass the open chat so bindings this tab added provisionally to it are listed too.
         gadget.listBindings(chatId),
         // Workspace-wide; filtered to this gadget below.
         overseer.listHooks(),
       ])
-      setGadgetInfo({ id, title: gadgetTitle })
+      setGadgetInfo({ id: hostId, title: gadgetTitle })
       setBindings(bindingList)
       // This tab shows one gadget, so drop hooks that wake a different one -- otherwise its
       // toggle/delete controls would operate on another gadget's hooks.
@@ -83,26 +85,27 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     }
   }
 
-  const handleToggleHook = async (id: number, enabled: boolean) => {
+  const handleToggleHook = async (hook: BoundHookInfo, enabled: boolean) => {
+    const key = actionKey(hook)
     // Optimistically reflect the new state.
-    setHooks((prev) => prev.map((h) => (h.id === id ? { ...h, enabled } : h)))
-    setTogglingHooks((prev) => new Set(prev).add(id))
+    setHooks((prev) => prev.map((h) => (actionKey(h) === key ? { ...h, enabled } : h)))
+    setTogglingHooks((prev) => new Set(prev).add(key))
     try {
       if (enabled) {
-        await overseer.enableHook(id)
+        await overseer.enableHook(hook.id, hook.sourceWorkspaceId)
       } else {
-        await overseer.disableHook(id)
+        await overseer.disableHook(hook.id, hook.sourceWorkspaceId)
       }
       await loadGatekeepers()
     } catch (err) {
       console.error('Failed to toggle hook:', err)
       toasts.add({ title: `Failed to ${enabled ? 'enable' : 'disable'} hook`, variant: 'error' })
       // Revert optimistic update.
-      setHooks((prev) => prev.map((h) => (h.id === id ? { ...h, enabled: !enabled } : h)))
+      setHooks((prev) => prev.map((h) => (actionKey(h) === key ? { ...h, enabled: !enabled } : h)))
     } finally {
       setTogglingHooks((prev) => {
         const next = new Set(prev)
-        next.delete(id)
+        next.delete(key)
         return next
       })
     }
@@ -111,7 +114,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const handleDeleteHookConfirm = async () => {
     if (!deleteHookTarget) return
     try {
-      await overseer.deleteHook(deleteHookTarget.id)
+      await overseer.deleteHook(deleteHookTarget.id, deleteHookTarget.sourceWorkspaceId)
       await loadGatekeepers()
     } catch (err) {
       console.error('Failed to delete hook:', err)
@@ -374,12 +377,13 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
 
             <div className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
               {hooks.map((hook, index) => {
-                const isDeleting = deleteHookTarget?.id === hook.id
+                const key = actionKey(hook)
+                const isDeleting = deleteHookTarget !== null && actionKey(deleteHookTarget) === key
                 const vendorId = bindings.find((b) => b.target === hook.gatekeeperId)?.vendorId
 
                 return (
                   <div
-                    key={hook.id}
+                    key={key}
                     className={`px-3 py-3 ${index > 0 ? 'border-t border-kumo-line' : ''} ${isDeleting ? 'bg-kumo-danger-tint/40' : ''}`}
                   >
                     {isDeleting ? (
@@ -430,13 +434,13 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                         <div className="ml-auto flex shrink-0 items-center gap-2">
                           <HookToggle
                             enabled={hook.enabled}
-                            disabled={togglingHooks.has(hook.id)}
-                            onToggle={(enabled) => handleToggleHook(hook.id, enabled)}
+                            disabled={togglingHooks.has(key)}
+                            onToggle={(enabled) => handleToggleHook(hook, enabled)}
                           />
                           <Tooltip content="Delete hook" asChild>
                             <WorkshopIconButton
                               danger
-                              onClick={() => setDeleteHookTarget({ id: hook.id, title: hook.description.title })}
+                              onClick={() => setDeleteHookTarget({ id: hook.id, sourceWorkspaceId: hook.sourceWorkspaceId, title: hook.description.title })}
                               aria-label="Delete hook"
                             >
                               <Trash size={14} />
@@ -457,7 +461,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       <GatekeeperModal
         open={isNewConnectionModalVisible}
         onClose={() => setIsNewConnectionModalVisible(false)}
-        getOverseer={() => overseer}
+        getConnectionHost={() => gadget}
         spawnerEnvCandidates={spawnerEnvCandidates}
         onCreated={async (gk) => {
           try {

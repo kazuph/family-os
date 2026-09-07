@@ -16,6 +16,14 @@ export interface AutoApprovalStorage {
   autoApproveTags: Collection<AutoApproveTagRecord>;
 }
 
+/** Return the durable key for a workspace-wide or gadget-scoped auto-approval rule. */
+export function autoApprovalRuleKey(gatekeeperId: number, tag: string,
+                                    gadgetId?: number): string {
+  return gadgetId === undefined
+      ? `${gatekeeperId}:${tag}`
+      : `gadget:${gadgetId}:${gatekeeperId}:${tag}`;
+}
+
 /**
  * Applies a single eligible pending action: invoke the gatekeeper, mark it approved, persist. The
  * caller has already validated that the record is still pending.
@@ -33,7 +41,18 @@ export class AutoApprovalDrainer {
 
   constructor(
       private storage: AutoApprovalStorage,
-      private applyPendingAction: ApplyPendingActionFn) {}
+      private applyPendingAction: ApplyPendingActionFn,
+      private getActionGadgetId: (record: ActionRecord) => number | undefined = record =>
+          record.caller.from === "gadget" ? record.caller.gadgetId : undefined,
+      private getAutoApprovalRule: (gatekeeperId: number, tag: string,
+                                    gadgetId: number | undefined) => AutoApproveTagRecord | undefined =
+          (gatekeeperId, tag, gadgetId) => {
+            if (gadgetId === undefined) {
+              return storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag));
+            }
+            return storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag, gadgetId)) ??
+                storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag));
+          }) {}
 
   async drain(gatekeeperId: number): Promise<void> {
     if (this.#draining.has(gatekeeperId)) {
@@ -68,9 +87,10 @@ export class AutoApprovalDrainer {
       if (record.type !== "action") continue;
 
       let tag = record.description.actionKind?.tag;
-      let rule = tag !== undefined
-          ? this.storage.autoApproveTags.get(`${gatekeeperId}:${tag}`)
-          : undefined;
+      let gadgetId = this.getActionGadgetId(record);
+      let rule = tag === undefined
+          ? undefined
+          : this.getAutoApprovalRule(gatekeeperId, tag, gadgetId);
       if (record.description.autoApprovable !== true || rule === undefined) {
         // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
         return;

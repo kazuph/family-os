@@ -1,7 +1,8 @@
+import { actionProcessingKey } from './actionIdentity'
 import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
-import { Overseer } from '@gadgets/workshop-shared/api'
+import { Overseer, ActionReference } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 
 /**
@@ -11,7 +12,7 @@ import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
  */
 export function useAlwaysApproveTag(
     overseer: RpcStub<Overseer>,
-    setProcessingActions: Dispatch<SetStateAction<Set<number>>>,
+    setProcessingActions: Dispatch<SetStateAction<Set<number | string>>>,
     // Invoked after a rule is successfully enabled, so other views (e.g. the Connections rule list)
     // can refresh without waiting to be re-opened.
     onEnabled?: () => void) {
@@ -21,12 +22,12 @@ export function useAlwaysApproveTag(
   // Enable auto-approval for the action's class. Returns true on success, false on failure (the
   // error is surfaced via a toast) so the caller can decide whether to dismiss a confirm dialog.
   const alwaysApproveTag = useCallback(
-      async (actionId: number, gatekeeperId: number,
-             actionKind: ActionKind): Promise<boolean> => {
-    setProcessingActions(prev => new Set(prev).add(actionId))
+      async (actionId: number | ActionReference, gatekeeperId: number,
+             actionKind: ActionKind, sourceWorkspaceId?: string): Promise<boolean> => {
+    setProcessingActions(prev => new Set(prev).add(actionProcessingKey(actionId)))
     try {
-      await overseer.setAutoApprovedActionKind(gatekeeperId, actionKind)
-      setEnabledTags(prev => new Set(prev).add(`${gatekeeperId}:${actionKind.tag}`))
+      await overseer.setAutoApprovedActionKind(gatekeeperId, actionKind, sourceWorkspaceId)
+      setEnabledTags(prev => new Set(prev).add(`${sourceWorkspaceId ?? ""}:${gatekeeperId}:${actionKind.tag}`))
       onEnabled?.()
       return true
     } catch (err) {
@@ -36,14 +37,14 @@ export function useAlwaysApproveTag(
     } finally {
       setProcessingActions(prev => {
         const next = new Set(prev)
-        next.delete(actionId)
+        next.delete(actionProcessingKey(actionId))
         return next
       })
     }
   }, [overseer, setProcessingActions, toasts, onEnabled])
 
   const isTagAutoApproved = useCallback(
-      (gatekeeperId: number, tag: string) => enabledTags.has(`${gatekeeperId}:${tag}`),
+      (gatekeeperId: number, tag: string, sourceWorkspaceId?: string) => enabledTags.has(`${sourceWorkspaceId ?? ""}:${gatekeeperId}:${tag}`),
       [enabledTags])
 
   return { alwaysApproveTag, isTagAutoApproved }

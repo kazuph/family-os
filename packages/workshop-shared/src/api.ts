@@ -1679,9 +1679,24 @@ export interface CodeSubscriber {
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
+/** Stable reference to an action on the workspace that owns its gatekeeper capability. */
+export type ActionReference = {
+  sourceWorkspaceId: string;
+  actionId: number;
+};
+
+/** Opaque pagination cursor returned by listActions(). */
+export type ActionHistoryCursor = string;
+
 export type ActionLogEntry = {
   /** Sequential ID number for the action. Counts up from when the workspace was created. */
   id: number;
+
+  /** The workspace whose action store owns this entry and its gatekeeper capability. */
+  sourceWorkspaceId: string;
+
+  /** Host-local change sequence, used to reject stale action notifications and replay snapshots. */
+  sourceVersion?: number;
 
   /**
    * Which gatekeeper produced this action? Omitted if the log entry came from a non-gatekeeper
@@ -1732,6 +1747,9 @@ export type ActionLogEntry = {
 
 export type BoundHookInfo = {
   id: number;
+
+  /** The workspace whose hook store owns this hook and its gatekeeper capability. */
+  sourceWorkspaceId: string;
 
   /** The gatekeeper that delivers this hook. */
   gatekeeperId: WorkpieceId;
@@ -1784,9 +1802,10 @@ export type AgentSpawnerConfig = {
 
 /**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
- * workspace. Workspace-level concerns live here: the gadget registry, code sync (one Yjs doc for
- * the whole workspace), chats, actions/hooks, sharing, and blueprint listing. Per-gadget
- * operations live on the GadgetClient sub-capability (see createGadget()/getGadget()).
+ * workspace. Workspace-level concerns live here: the gadget registry, chats, actions/hooks,
+ * sharing, and blueprint listing. Code synchronization and other operations scoped to one Gadget
+ * live on the GadgetClient sub-capability (see createGadget()/getGadget()); the implementation may
+ * persist all Gadget roots in one workspace Yjs document without widening that capability.
  */
 export interface Overseer extends RpcTarget {
   /** Get metadata describing this workspace. */
@@ -1917,24 +1936,23 @@ export interface Overseer extends RpcTarget {
    * creation position; `filter: "pending"` pages only the currently-pending records — the query
    * half of the query-for-state/subscribe-for-deltas contract (see subscribeToActions()).
    *
-   * Page size is a server constant. Pages are full until the last: absence of `nextBeforeId`
-   * means the history is exhausted; otherwise it is the id of the last returned entry, to pass
-   * as `beforeId` for the next-older page.
+   * Page size is a server constant. The returned cursor is opaque and must be passed back
+   * unchanged to fetch the next older page.
    */
-  listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
+  listActions(options?: {cursor?: ActionHistoryCursor, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage>;
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
    * approval.
    */
-  approveAction(id: number): Promise<void>;
+  approveAction(id: number | ActionReference): Promise<void>;
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
    * be approved in the future.
    */
-  rejectAction(id: number): Promise<void>;
+  rejectAction(id: number | ActionReference): Promise<void>;
 
   /**
    * List information about bound hooks (which could wake up a gadget asynchronously).
@@ -1945,13 +1963,13 @@ export interface Overseer extends RpcTarget {
   listHooks(): Promise<BoundHookInfo[]>;
 
   /** Enable the hook with the given ID. Callbacks will begin flowing. */
-  enableHook(id: number): Promise<void>;
+  enableHook(id: number, sourceWorkspaceId?: string): Promise<void>;
 
   /** Disable the hook with the given ID. Callbacks will stop. */
-  disableHook(id: number): Promise<void>;
+  disableHook(id: number, sourceWorkspaceId?: string): Promise<void>;
 
   /** Permanently delete the hook. Implies disabling it. */
-  deleteHook(id: number): Promise<void>;
+  deleteHook(id: number, sourceWorkspaceId?: string): Promise<void>;
 
   /**
    * Enable auto-approval of actions carrying the given `actionKind` (the
@@ -1959,19 +1977,30 @@ export interface Overseer extends RpcTarget {
    * with that kind's tag whose author marked them `autoApprovable` are then applied automatically
    * without manual approval, and any matching action(s) already pending are applied immediately.
    *
-   * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
-   * no matter which gadget invokes it.
+   * Without `sourceWorkspaceId`, the rule is workspace-wide for the current workspace, so an
+   * action kind is approved no matter which local gadget invokes it. When `sourceWorkspaceId` is
+   * supplied for a moved gadget, the rule is namespaced to the moved gadget(s) leased from that
+   * source workspace; it does not approve the same gatekeeper or action kind for any other gadget
+   * in either workspace.
    */
-  setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
+  setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind,
+                           sourceWorkspaceId?: string): Promise<void>;
 
   /**
    * Remove the auto-approval rule for `tag` on the given gatekeeper; matching actions then
-   * require manual approval again.
+   * require manual approval again. With `sourceWorkspaceId`, only the namespaced rule for the
+   * moved gadget(s) from that source workspace is removed; without it, the current workspace's
+   * workspace-wide rule is removed.
    */
-  removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void>;
+  removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string,
+                              sourceWorkspaceId?: string): Promise<void>;
 
   /** List the currently-enabled auto-approval rules. */
-  listAutoApprovedActionKinds(): Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>>;
+  listAutoApprovedActionKinds(): Promise<Array<{
+    sourceWorkspaceId: string;
+    gatekeeperId: WorkpieceId;
+    actionKind: ActionKind;
+  }>>;
 
   /**
    * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
@@ -2371,6 +2400,9 @@ export type AiChatHistoryPage = {
      * changes without loading the messages that recorded them.
      */
     proposedChanges?: Uint8Array;
+
+    /** Pending code updates separated by Gadget so moved-host documents are never merged. */
+    proposedCodeBatches?: {update: Uint8Array, gadgetIds?: WorkpieceId[]}[];
   };
 };
 
@@ -2408,11 +2440,8 @@ export type ActionHistoryPage = {
   /** Matching records, descending id (creation order, newest first). */
   entries: ActionLogEntry[];
 
-  /**
-   * Id of the last returned entry; pass as `beforeId` for the next-older page. Absent when the
-   * page reached the start of the history.
-   */
-  nextBeforeId?: number;
+  /** Opaque cursor for the next older page. Absent when the history is exhausted. */
+  nextCursor?: ActionHistoryCursor;
 };
 
 export type AiChatAuthorInfo = {
@@ -2518,6 +2547,12 @@ export type AiChatMessageBody = {
    * checked against it.
    */
   observedCodeVersion?: number;
+
+  /**
+   * Gadget roots touched by this batch. Present for new batches so a moved Gadget can send only
+   * its own accepted update back to the fixed source host; older history may omit this field.
+   */
+  gadgetIds?: WorkpieceId[];
 
   /**
    * Gadgets created as part of this batch of changes (by the agent's `createGadget` tool, or by
@@ -3188,6 +3223,8 @@ export type AiChatStreamEvent = {
   type: "codeReset";
 } | {
   type: "codeUpdate";
+  /** The Gadget whose isolated code document receives this preview update. */
+  gadgetId?: WorkpieceId;
   update: Uint8Array;
 };
 
@@ -3233,7 +3270,8 @@ export interface AiChatSubscriber {
    * stored draft updates for a chat so newly-joined clients can reconstruct the editable branch
    * state without a separate fetch.
    */
-  draftUpdate(chatId: number, timestamp: Date, author: AiChatAuthorInfo, update: Uint8Array): void;
+  draftUpdate(chatId: number, timestamp: Date, author: AiChatAuthorInfo, update: Uint8Array,
+      gadgetIds?: WorkpieceId[]): void;
 
   /** Indicates that all persisted live-draft updates for the given chat were cleared. */
   draftCleared(chatId: number): void;
@@ -3295,6 +3333,9 @@ export type WorkpieceSummary = {
    */
   filesRoot?: string;
 
+  /** Whether this Gadget's code and runtime are hosted in its original workspace. */
+  isMoved?: boolean;
+
   /**
    * If present, this workpiece exists only in the context of the given chat. The UI should display
    * it only while the given chat is open.
@@ -3350,6 +3391,8 @@ export type GadgetBindingInfo = {
  * gatekeeper's getAutoApprovableActions(); `alreadyEnabled` reports whether a matching rule exists.
  */
 export type PreApprovableAction = {
+  /** The workspace whose gatekeeper owns this catalog entry and rule. */
+  sourceWorkspaceId: string;
   gatekeeperId: WorkpieceId;
   resourceTitle: string;
   actionKind: ActionKind;
@@ -3667,12 +3710,60 @@ export type GadgetExportFormat = {
   fileExtension: string;
 };
 
+/** The target workspace and workpiece created by moving a Gadget. */
+export type MovedGadgetLocation = {
+  /** The workspace now listing the moved Gadget. */
+  workspaceId: string;
+
+  /** The Gadget's ID in the target workspace. */
+  gadgetId: WorkpieceId;
+};
+
 /**
  * Capability representing one gadget workpiece within a workspace. Obtained from
- * Overseer.createGadget() or Overseer.getGadget(). Workspace-level concerns (code sync, chats,
- * sharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.
+ * Overseer.createGadget() or Overseer.getGadget(). Workspace-level concerns (chats, sharing,
+ * actions, and blueprint listing) stay on Overseer; code synchronization and the other Gadget
+ * operations are scoped to this capability, even though the persisted Yjs roots share a workspace.
  */
 export interface GadgetClient extends WorkpieceClient {
+  /** Move this Gadget to another workspace owned by the same account. */
+  moveToWorkspace(targetWorkspaceId: string): Promise<MovedGadgetLocation>;
+
+  /** Subscribe to the Yjs code stream used to edit this Gadget's files root. */
+  subscribeToCode(
+      subscriber: RpcStub<CodeSubscriber>, fromVersion?: number): Promise<RpcStub<{}>>;
+
+  /** Send a Yjs update for this Gadget's files root to its host, optionally as a chat draft. */
+  updateCode(update: Uint8Array, chatId?: number): Promise<void>;
+
+  /**
+   * Get a gatekeeper that belongs to this Gadget's bindings or was created for this Gadget.
+   * Other workspace connections are not addressable through this capability.
+   */
+  getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>>;
+
+  /**
+   * Create a resource connection scoped to this Gadget. The returned connection can be looked up
+   * again with getGatekeeperById().
+   */
+  newGatekeeper(accountId: number, resourceUrl: string): Promise<GatekeeperClient<any> | null>;
+
+  /** Create an AI-model connection scoped to this Gadget. */
+  newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>>;
+
+  /**
+   * Return this Gadget's ID in its persistent host, the same ID namespace as listBindings().
+   * Use this ID for the Gadget itself in newAgentSpawnerGatekeeper().env.
+   */
+  getHostGadgetId(): Promise<WorkpieceId>;
+
+  /**
+   * Create an agent-spawner connection scoped to this Gadget. Unlike the workspace-level
+   * method, env may contain only getHostGadgetId() and gatekeepers addressable through this
+   * Gadget's getGatekeeperById(). All env IDs are in the host's namespace, including after moves.
+   */
+  newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
+
   /**
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
    *
@@ -3781,6 +3872,18 @@ export interface GadgetClient extends WorkpieceClient {
  * gatekeeper may be bound by several gadgets under different names.
  */
 export interface GatekeeperClient<Session extends RpcCompatible<Session>> extends WorkpieceClient {
+  /** Get the gatekeeper workpiece ID, stable within its workspace. */
+  getId(): Promise<WorkpieceId>;
+
+  /** Get the gatekeeper's display title in this workspace. */
+  getTitle(): Promise<string>;
+
+  /** Change only this workspace's display title for the gatekeeper. */
+  setTitle(title: string): Promise<void>;
+
+  /** Remove this gatekeeper connection from the workspace. */
+  remove(): Promise<void>;
+
   /** Get the resource description, including the schema of its RPC interface. */
   describe(): Promise<ResourceDescription>;
 

@@ -1,8 +1,9 @@
+import { actionKey, actionReference, actionProcessingKey } from './actionIdentity'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
+import { ActionLogEntry, ActionReference, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
@@ -159,11 +160,12 @@ export default function Activity({
 }: ActivityProps) {
   const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<HistoryViewFilter>('all')
-  const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
-  const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
-  const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
+  const [processingActions, setProcessingActions] = useState<Set<number | string>>(new Set())
+  const [togglingHooks, setTogglingHooks] = useState<Set<string>>(new Set())
+  const [expandedActionId, setExpandedActionId] = useState<string | null>(null)
   const [confirmAutoApprove, setConfirmAutoApprove] = useState<{
-    actionId: number
+    actionId: ActionReference
+    sourceWorkspaceId: string
     gatekeeperId: number
     resourceTitle: string
     actionKind: ActionKind
@@ -188,18 +190,19 @@ export default function Activity({
 
   const resolveAction = useResolveAction(overseer, setProcessingActions)
 
-  const handleToggleHook = async (hookId: number, enabled: boolean) => {
-    setTogglingHooks(previous => new Set(previous).add(hookId))
+  const handleToggleHook = async (sourceWorkspaceId: string, hookId: number, enabled: boolean) => {
+    const key = `${sourceWorkspaceId}:${hookId}`
+    setTogglingHooks(previous => new Set(previous).add(key))
     try {
-      if (enabled) await overseer.enableHook(hookId)
-      else await overseer.disableHook(hookId)
+      if (enabled) await overseer.enableHook(hookId, sourceWorkspaceId)
+      else await overseer.disableHook(hookId, sourceWorkspaceId)
     } catch (error) {
       console.error('Failed to toggle hook:', error)
       toasts.add({ title: `Failed to ${enabled ? 'enable' : 'disable'} hook`, variant: 'error' })
     } finally {
       setTogglingHooks(previous => {
         const next = new Set(previous)
-        next.delete(hookId)
+        next.delete(key)
         return next
       })
     }
@@ -208,7 +211,7 @@ export default function Activity({
   const { alwaysApproveTag, isTagAutoApproved } =
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange)
 
-  const toggleExpanded = (id: number) => {
+  const toggleExpanded = (id: string) => {
     setExpandedActionId(previous => (previous === id ? null : id))
   }
 
@@ -229,7 +232,8 @@ export default function Activity({
                 record.description.actionKind !== undefined &&
                 record.description.autoApprovable === true
                   ? {
-                      actionId: record.id,
+                      actionId: actionReference(record),
+                      sourceWorkspaceId: record.sourceWorkspaceId,
                       gatekeeperId: record.gatekeeperId,
                       resourceTitle: record.resourceTitle,
                       actionKind: record.description.actionKind,
@@ -238,16 +242,16 @@ export default function Activity({
                   : undefined
               return (
                 <ReviewRequest
-                  key={record.id}
+                  key={actionKey(record)}
                   record={record}
-                  expanded={expandedActionId === record.id}
-                  processing={processingActions.has(record.id)}
-                  onToggle={() => toggleExpanded(record.id)}
-                  onApprove={() => void resolveAction(record.id, 'approve')}
-                  onReject={() => void resolveAction(record.id, 'deny')}
+                  expanded={expandedActionId === actionKey(record)}
+                  processing={processingActions.has(actionKey(record))}
+                  onToggle={() => toggleExpanded(actionKey(record))}
+                  onApprove={() => void resolveAction(actionReference(record), 'approve')}
+                  onReject={() => void resolveAction(actionReference(record), 'deny')}
                   onAlwaysApprove={
                     autoApproveTarget &&
-                    !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
+                    !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag, autoApproveTarget.sourceWorkspaceId)
                       ? () => setConfirmAutoApprove(autoApproveTarget)
                       : undefined
                   }
@@ -313,20 +317,20 @@ export default function Activity({
             // Keyed by the group's oldest record: live inserts land at the front of a group, so
             // keying by the first would remount the section (dropping focus) on every insert.
             // Day labels can repeat (see historyGroups), so the label alone can't be the key.
-            <section key={group.records.at(-1)!.id}>
+            <section key={actionKey(group.records.at(-1)!)}>
               <h3 className="sticky top-0 m-0 border-b border-kumo-line bg-kumo-base/90 px-5 py-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive backdrop-blur-sm">
                 {group.label}
               </h3>
               {group.records.map(record => (
                 <HistoryRow
-                  key={record.id}
+                  key={actionKey(record)}
                   record={record}
-                  expanded={expandedActionId === record.id}
-                  onToggle={() => toggleExpanded(record.id)}
+                  expanded={expandedActionId === actionKey(record)}
+                  onToggle={() => toggleExpanded(actionKey(record))}
                   togglingHook={record.type === 'bindHook' && record.hookId !== undefined
-                    ? togglingHooks.has(record.hookId)
+                    ? togglingHooks.has(`${record.sourceWorkspaceId}:${record.hookId}`)
                     : false}
-                  onToggleHook={handleToggleHook}
+                  onToggleHook={(hookId, enabled) => handleToggleHook(record.sourceWorkspaceId, hookId, enabled)}
                 />
               ))}
             </section>
@@ -436,11 +440,11 @@ export default function Activity({
           open
           actionLabel={confirmAutoApprove.actionLabel}
           resourceTitle={confirmAutoApprove.resourceTitle}
-          isProcessing={processingActions.has(confirmAutoApprove.actionId)}
+          isProcessing={processingActions.has(actionProcessingKey(confirmAutoApprove.actionId))}
           onOpenChange={open => { if (!open) setConfirmAutoApprove(null) }}
           onConfirm={async () => {
-            const { actionId, gatekeeperId, actionKind } = confirmAutoApprove
-            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind)) {
+            const { actionId, gatekeeperId, actionKind, sourceWorkspaceId } = confirmAutoApprove
+            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind, sourceWorkspaceId)) {
               setConfirmAutoApprove(null)
             }
           }}

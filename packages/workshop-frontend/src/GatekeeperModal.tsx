@@ -38,14 +38,17 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 
+type ConnectionHost = Pick<RpcStub<Overseer>,
+  'newAiModelGatekeeper' | 'newAgentSpawnerGatekeeper' | 'newGatekeeper'>
+
 export interface GatekeeperModalProps {
   open: boolean
   onClose: () => void
   /**
-   * Returns an overseer stub. Called only when actually creating a gatekeeper. This allows
-   * the Home page to lazily provision a gadget on first use.
+   * Returns the workspace or Gadget that will own the new connection. Called only when
+   * creating it, so Home can lazily provision a workspace and moved Gadgets retain their host.
    */
-  getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>
+  getConnectionHost: () => Promise<ConnectionHost> | ConnectionHost
   /**
    * Called after the gatekeeper is successfully created. The caller decides what to do with
    * the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this callback
@@ -185,7 +188,7 @@ function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
 }
 
 export default function GatekeeperModal({
-  open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
+  open, onClose, getConnectionHost, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceUrlPattern,
 }: GatekeeperModalProps) {
   const { authenticatedApi } = useAuthenticatedApi()
@@ -652,8 +655,8 @@ export default function GatekeeperModal({
     let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
     let transferred = false
     try {
-      const overseer = await getOverseer()
-      gatekeeper = await overseer.newAiModelGatekeeper(selectedModelId)
+      const connectionHost = await getConnectionHost()
+      gatekeeper = await connectionHost.newAiModelGatekeeper(selectedModelId)
       if (gatekeeper) {
         await onCreated(gatekeeper)
         transferred = true
@@ -689,8 +692,8 @@ export default function GatekeeperModal({
     let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
     let transferred = false
     try {
-      const overseer = await getOverseer()
-      gatekeeper = await overseer.newAgentSpawnerGatekeeper(config)
+      const connectionHost = await getConnectionHost()
+      gatekeeper = await connectionHost.newAgentSpawnerGatekeeper(config)
       if (gatekeeper) {
         await onCreated(gatekeeper)
         transferred = true
@@ -722,8 +725,8 @@ export default function GatekeeperModal({
       }
       const resourceUrl = await configuratorCollectResourceUrlRef.current?.()
       if (!resourceUrl) throw new Error('Configurator did not provide a resource URL.')
-      const overseer = await getOverseer()
-      gatekeeper = await overseer.newGatekeeper(selectedAccountId, resourceUrl)
+      const connectionHost = await getConnectionHost()
+      gatekeeper = await connectionHost.newGatekeeper(selectedAccountId, resourceUrl)
       if (gatekeeper) {
         await onCreated(gatekeeper)
         transferred = true
