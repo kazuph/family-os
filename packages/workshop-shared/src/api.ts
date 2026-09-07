@@ -3751,7 +3751,17 @@ export interface GadgetClient extends WorkpieceClient {
   /** Create an AI-model connection scoped to this Gadget. */
   newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>>;
 
-  /** Create an agent-spawner connection scoped to this Gadget. */
+  /**
+   * Return this Gadget's ID in its persistent host, the same ID namespace as listBindings().
+   * Use this ID for the Gadget itself in newAgentSpawnerGatekeeper().env.
+   */
+  getHostGadgetId(): Promise<WorkpieceId>;
+
+  /**
+   * Create an agent-spawner connection scoped to this Gadget. Unlike the workspace-level
+   * method, env may contain only getHostGadgetId() and gatekeepers addressable through this
+   * Gadget's getGatekeeperById(). All env IDs are in the host's namespace, including after moves.
+   */
   newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
 
   /**

@@ -562,6 +562,9 @@ it.each([false, true])("keeps moved auto-approval separate from a shared source 
       await source.rejectAction(pending.entries[0].id);
     }
     await target.removeAutoApprovedActionKind(gatekeeperId, "append", sourceId);
+    expect(await target.listAutoApprovedActionKinds()).toEqual([]);
+    expect((await target.listPreApprovableActions()).find(action =>
+      action.gatekeeperId === gatekeeperId && action.actionKind.tag === "append")?.alreadyEnabled).toBe(false);
     await privateSession.append("private after target disable");
     await movedSession.append("moved disabled");
     await expect.poll(states).toEqual([
@@ -701,5 +704,121 @@ it("compacts independent moved manual drafts without mixing same-named roots on 
       expect((await local.getUiBundle()).jsCode).toBe('export const value = "LOCAL";');
     }
     for (const doc of docs) doc.destroy();
+  });
+});
+
+it("retains unbound gadget connections on source retirement and destroys removed connections", async () => {
+  let sourceId!: string, targetId!: string;
+  let movedId!: WorkpieceId, connectionId!: WorkpieceId;
+  await withAuthenticatedApi(async (api, disconnected) => {
+    using source = await api.newGadget();
+    using target = await api.newGadget();
+    sourceId = (await source.getMetadata()).id;
+    targetId = (await target.getMetadata()).id;
+    using _existingTarget = await target.createGadget("Existing target", undefined, "EXISTING");
+    using gadget = await source.createGadget("Connection retention", undefined, "CONNECTIONS");
+    using connection = await gadget.newAgentSpawnerGatekeeper({displayName: "Retained connection", modelId: null, env: {}});
+    connectionId = await connection.getId();
+    movedId = (await gadget.moveToWorkspace(targetId)).gadgetId;
+    expect(movedId).toBe(connectionId);
+    await disconnected;
+  });
+  await withAuthenticatedApi(async (api, disconnected) => {
+    using source = await api.openGadget(sourceId);
+    using target = await api.openGadget(targetId);
+    using gadget = await target.getGadget(movedId);
+    const nativeSource = exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(sourceId));
+    const ownerId = exports.UserDurableObject.idFromName(FAMILY_ACCESS_ADULT.email).toString();
+    await runInDurableObject(nativeSource, async instance => {
+      using session = new RpcStub(await instance.open(
+          ownerId, FAMILY_ACCESS_ADULT.email, new NativeRpcStub(() => {})));
+      expect((await rejection(session.getGatekeeperById(connectionId))).message).toContain("No such gatekeeper");
+      expect((await rejection(instance["impl"].startGatekeeperSession(
+          {type: "gatekeeper", id: connectionId}, {from: "user"}))).message).toContain("No such gatekeeper");
+    });
+    using connection = await gadget.getGatekeeperById(connectionId);
+    expect(await connection.getTitle()).toBe("Retained connection");
+    const hostGadgetId = await gadget.getHostGadgetId();
+    expect(hostGadgetId).not.toBe(connectionId);
+    using spawner = await gadget.newAgentSpawnerGatekeeper({displayName: "After move spawner", modelId: null,
+      env: {SELF: hostGadgetId, CONNECTION: connectionId}});
+    expect(await spawner.getCreationSpec()).toMatchObject({type: "agentSpawner", config: {
+      env: {SELF: hostGadgetId, CONNECTION: connectionId},
+    }});
+    using spawnerSession = await spawner.openSession();
+    await spawnerSession.spawn("Host IDs remain distinct", "Do not run an AI model.");
+    expect((await target.listChats()).some(chat => chat.title === "Host IDs remain distinct")).toBe(true);
+    await gadget.bind("BEFORE", connectionId);
+    await gadget.renameBinding("BEFORE", "AFTER");
+    const nativeTarget = exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(targetId));
+    await runInDurableObject(nativeTarget, async instance => {
+      expect(instance["impl"].storage.gadgets.get(movedId)?.bindings.AFTER.resourceTitle)
+          .toBe("Retained connection");
+    });
+    await gadget.unbind("AFTER");
+    await source.deleteSelf();
+    await disconnected;
+  });
+  await withAuthenticatedApi(async api => {
+    using target = await api.openGadget(targetId);
+    using gadget = await target.getGadget(movedId);
+    using connection = await gadget.getGatekeeperById(connectionId);
+    expect(await connection.getTitle()).toBe("Retained connection");
+    await connection.remove();
+    const nativeSource = exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(sourceId));
+    await runInDurableObject(nativeSource, async instance => {
+      expect(instance["impl"].storage.gatekeepers.get(connectionId)).toBeUndefined();
+    });
+  });
+});
+
+it("keeps a moved auto-approval opt-out after reclaim without changing other gadget rules", async () => {
+  let sourceId!: string, targetId!: string;
+  let sourceGadgetId!: WorkpieceId, targetGadgetId!: WorkpieceId;
+  let privateId!: WorkpieceId, gatekeeperId!: WorkpieceId;
+  await withAuthenticatedApi(async (api, disconnected) => {
+    using source = await api.newGadget();
+    using target = await api.newGadget();
+    sourceId = (await source.getMetadata()).id;
+    targetId = (await target.getMetadata()).id;
+    using moving = await source.createGadget("Return approval", undefined, "RETURNING");
+    using privateGadget = await source.createGadget("Private approval", undefined, "PRIVATE");
+    sourceGadgetId = await moving.getId();
+    privateId = await privateGadget.getId();
+    const native = exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(sourceId));
+    gatekeeperId = await runInDurableObject(native, async instance => {
+      const impl = instance["impl"];
+      const provider = (impl.env as Cloudflare.Env & {LOCAL_ACTION_PROVIDER: Service<ActionProviderService>}).LOCAL_ACTION_PROVIDER;
+      const connection = await impl.addGatekeeper(await provider.getClass());
+      return connection.getId();
+    });
+    await moving.bind("QUEUE", gatekeeperId);
+    await privateGadget.bind("QUEUE", gatekeeperId);
+    await source.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"});
+    targetGadgetId = (await moving.moveToWorkspace(targetId)).gadgetId;
+    await disconnected;
+  });
+  await withAuthenticatedApi(async (api, disconnected) => {
+    using _hostWorkspace = await api.openGadget(sourceId);
+    using target = await api.openGadget(targetId);
+    await target.removeAutoApprovedActionKind(gatekeeperId, "append", sourceId);
+    using moved = await target.getGadget(targetGadgetId);
+    await moved.moveToWorkspace(sourceId);
+    await disconnected;
+  });
+  await withAuthenticatedApi(async api => {
+    using source = await api.openGadget(sourceId);
+    const native = exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(sourceId));
+    using privateSession = await native.startGatekeeperSession({type: "gatekeeper", id: gatekeeperId}, {from: "gadget", gadgetId: privateId});
+    using returnedSession = await native.startGatekeeperSession({type: "gatekeeper", id: gatekeeperId}, {from: "gadget", gadgetId: sourceGadgetId});
+    const states = () => runInDurableObject(native, async instance => {
+      return (await instance["impl"].getGatekeeperFacet(gatekeeperId).fetch("https://local-action-provider.invalid/state")).json();
+    });
+    await privateSession.append("private stays enabled");
+    await expect.poll(states).toEqual([{value: "private stays enabled", state: "applied"}]);
+    await returnedSession.append("returned stays disabled");
+    await expect.poll(states).toEqual([{value: "private stays enabled", state: "applied"}, {value: "returned stays disabled", state: "pending"}]);
+    await source.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"});
+    await expect.poll(states).toEqual([{value: "private stays enabled", state: "applied"}, {value: "returned stays disabled", state: "applied"}]);
   });
 });

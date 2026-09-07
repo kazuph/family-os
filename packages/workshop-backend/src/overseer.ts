@@ -760,6 +760,8 @@ export type AutoApproveTagRecord = {
   gatekeeperId: WorkpieceId;
   /** The moved source Gadget this rule serves; absent means the legacy workspace-wide rule. */
   gadgetId?: WorkpieceId;
+  /** An explicit scoped opt-out survives a return to a workspace with a global opt-in. */
+  disabled?: boolean;
   /**
    * The action kind (stable tag + display label, from ActionDescription.actionKind), captured when
    * the rule was enabled so the rule can be listed without showing the raw machine tag.
@@ -2122,6 +2124,27 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.put(gadget);
   }
 
+  localGatekeeperIds(): Set<WorkpieceId> {
+    let useByLocalGadget = new Set<WorkpieceId>();
+    let useByLeasedGadget = new Set<WorkpieceId>();
+    for (let gadget of this.storage.gadgets.list()) {
+      let isLeased = gadget.move?.state === "leased";
+      let isLocal = !gadget.pending && !gadget.movePending && !gadget.movedFrom && !isLeased;
+      let used = isLocal ? useByLocalGadget : isLeased ? useByLeasedGadget : undefined;
+      if (!used) continue;
+      for (let edge of Object.values(gadget.bindings)) {
+        if (!edge.pending) used.add(edge.target);
+      }
+      for (let id of gadget.createdGatekeeperIds ?? []) used.add(id);
+    }
+
+    // Keep the legacy workspace-wide capability for every connection except one that belongs
+    // exclusively to a leased Gadget. Unbound connections remain addressable exactly as before.
+    return new Set([...this.storage.gatekeepers.list()]
+        .map(gatekeeper => gatekeeper.id)
+        .filter(id => useByLocalGadget.has(id) || !useByLeasedGadget.has(id)));
+  }
+
   gadgetCanAccessGatekeeper(gadgetId: WorkpieceId, gatekeeperId: WorkpieceId): boolean {
     let gadget = this.getGadgetRecord(gadgetId);
     if (this.visibleBindings(gadget).some(([, edge]) => edge.target === gatekeeperId)) return true;
@@ -2385,6 +2408,7 @@ class OverseerImpl implements AgentHooks {
     let boundGatekeepers = new Set<WorkpieceId>();
     for (let gadget of leased) {
       for (let edge of Object.values(gadget.bindings)) boundGatekeepers.add(edge.target);
+      for (let id of gadget.createdGatekeeperIds ?? []) boundGatekeepers.add(id);
     }
 
     for (let hook of Array.from(this.storage.boundHooks.list())) {
@@ -3985,13 +4009,13 @@ class OverseerImpl implements AgentHooks {
 
   getAutoApprovalRule(gatekeeperId: WorkpieceId, tag: string,
                       gadgetId?: WorkpieceId): AutoApproveTagRecord | undefined {
+    let scoped = gadgetId === undefined ? undefined : this.storage.autoApproveTags.get(
+        autoApprovalRuleKey(gatekeeperId, tag, gadgetId));
+    if (scoped) return scoped.disabled ? undefined : scoped;
     if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.move?.state === "leased") {
-      return this.storage.autoApproveTags.get(
-          autoApprovalRuleKey(gatekeeperId, tag, gadgetId));
+      return undefined;
     }
-    return (gadgetId === undefined ? undefined : this.storage.autoApproveTags.get(
-        autoApprovalRuleKey(gatekeeperId, tag, gadgetId))) ??
-        this.storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag));
+    return this.storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag));
   }
 
   // Blocks other messages and agent turns for this chat until the returned object is disposed.
@@ -4115,6 +4139,11 @@ class OverseerImpl implements AgentHooks {
       }
 
       case "gatekeeper": {
+        if (!this.localGatekeeperIds().has(target.id) &&
+            !("gadgetId" in caller && caller.gadgetId !== undefined &&
+              this.gadgetCanAccessGatekeeper(caller.gadgetId, target.id))) {
+          throw new Error(`No such gatekeeper id: ${target.id}`);
+        }
         let client = new GatekeeperClientImpl<any>(
             this, target.id, this.getGatekeeperFacet(target.id), caller);
         return client.openSession();
@@ -8327,7 +8356,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     return [...this.impl.storage.autoApproveTags.list()]
-        .filter(rule => rule.gadgetId !== undefined && gadgetIds.has(rule.gadgetId) &&
+        .filter(rule => !rule.disabled && rule.gadgetId !== undefined && gadgetIds.has(rule.gadgetId) &&
                         boundIds.has(rule.gatekeeperId))
         .map(rule => ({sourceWorkspaceId: this.impl.ctx.id.toString(),
           gatekeeperId: rule.gatekeeperId, actionKind: rule.actionKind}));
@@ -8357,7 +8386,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a moved Gadget.`);
     }
     for (let gadgetId of gadgetIds) {
-      this.impl.storage.autoApproveTags.delete(autoApprovalRuleKey(gatekeeperId, tag, gadgetId));
+      let rule = this.impl.storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag, gadgetId))
+          ?? this.impl.storage.autoApproveTags.get(autoApprovalRuleKey(gatekeeperId, tag));
+      if (rule) this.impl.storage.autoApproveTags.put({...rule, gadgetId, disabled: true});
     }
   }
 
@@ -8386,8 +8417,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             vendorId: gk.creationSpec?.type === "gatekeeper" ? gk.creationSpec.vendorId : undefined,
             actionKind,
             alreadyEnabled: [...gadgetIds].some(gadgetId =>
-                this.impl.storage.autoApproveTags.get(
-                    autoApprovalRuleKey(gk.id, actionKind.tag, gadgetId)) !== undefined),
+                this.impl.getAutoApprovalRule(gk.id, actionKind.tag, gadgetId) !== undefined),
           }));
         });
     return (await Promise.all(perGatekeeper)).flat();
@@ -9723,26 +9753,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         .map(gadget => gadget.id)]);
   }
 
-  #localGatekeeperIds(): Set<WorkpieceId> {
-    let useByLocalGadget = new Set<WorkpieceId>();
-    let useByLeasedGadget = new Set<WorkpieceId>();
-    for (let gadget of this.impl.storage.gadgets.list()) {
-      let isLeased = gadget.move?.state === "leased";
-      let isLocal = !gadget.pending && !gadget.movePending && !gadget.movedFrom && !isLeased;
-      let used = isLocal ? useByLocalGadget : isLeased ? useByLeasedGadget : undefined;
-      if (!used) continue;
-      for (let edge of Object.values(gadget.bindings)) {
-        if (!edge.pending) used.add(edge.target);
-      }
-      for (let id of gadget.createdGatekeeperIds ?? []) used.add(id);
-    }
-
-    // Keep the legacy workspace-wide capability for every connection except one that belongs
-    // exclusively to a leased Gadget. Unbound connections remain addressable exactly as before.
-    return new Set([...this.impl.storage.gatekeepers.list()]
-        .map(gatekeeper => gatekeeper.id)
-        .filter(id => useByLocalGadget.has(id) || !useByLeasedGadget.has(id)));
-  }
 
   #movedGadgetLeases(): Map<string, MovedGadgetActionLease[]> {
     let result = new Map<string, MovedGadgetActionLease[]>();
@@ -10121,7 +10131,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async getGatekeeperById(id: number): Promise<GatekeeperClient<any>> {
     let gatekeeper = this.impl.storage.gatekeepers.get(id)?.id;
-    if (gatekeeper === undefined) {
+    if (gatekeeper === undefined || !this.impl.localGatekeeperIds().has(id)) {
       throw new Error(`No such gatekeeper id: ${id}`);
     }
     return new GatekeeperClientImpl(this.impl, id, this.impl.getGatekeeperFacet(id));
@@ -10503,7 +10513,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           this.impl.ownerId!, gatekeeperId, actionKind, this.clientUserId);
       return;
     }
-    if (!this.#localGatekeeperIds().has(gatekeeperId)) {
+    if (!this.impl.localGatekeeperIds().has(gatekeeperId)) {
       throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a local Gadget.`);
     }
     let gatekeeper = this.impl.storage.gatekeepers.get(gatekeeperId);
@@ -10517,6 +10527,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       actionKind,
       enabledBy: profile,
     });
+    this.#clearLocalScopedAutoApproval(gatekeeperId, actionKind.tag);
     // Apply the currently-visible pending action(s) with this tag right away.
     this.impl.ctx.waitUntil(this.impl.drainAutoApprovals(gatekeeperId));
   }
@@ -10531,10 +10542,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           this.impl.ownerId!, gatekeeperId, tag);
       return;
     }
-    if (!this.#localGatekeeperIds().has(gatekeeperId)) {
+    if (!this.impl.localGatekeeperIds().has(gatekeeperId)) {
       throw new Error(`Gatekeeper ${gatekeeperId} is not connected to a local Gadget.`);
     }
     this.impl.storage.autoApproveTags.delete(autoApprovalRuleKey(gatekeeperId, tag));
+    this.#clearLocalScopedAutoApproval(gatekeeperId, tag);
+  }
+
+  #clearLocalScopedAutoApproval(gatekeeperId: WorkpieceId, tag: string): void {
+    let local = this.#localActionGadgetIds();
+    for (let rule of Array.from(this.impl.storage.autoApproveTags.list())) {
+      if (rule.gatekeeperId === gatekeeperId && rule.actionKind.tag === tag &&
+          rule.gadgetId !== undefined && local.has(rule.gadgetId)) {
+        this.impl.storage.autoApproveTags.delete(autoApprovalRuleKey(gatekeeperId, tag, rule.gadgetId));
+      }
+    }
   }
 
   // List the enabled auto-approval rules.
@@ -10542,7 +10564,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       : Promise<Array<{
         sourceWorkspaceId: string; gatekeeperId: WorkpieceId; actionKind: ActionKind;
       }>> {
-    let localGatekeepers = this.#localGatekeeperIds();
+    let localGatekeepers = this.impl.localGatekeeperIds();
     let local = [...this.impl.storage.autoApproveTags.list()]
         .filter(rule => rule.gadgetId === undefined && localGatekeepers.has(rule.gatekeeperId))
         .map(rule => ({
@@ -10559,7 +10581,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
     // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
-    let boundIds = this.#localGatekeeperIds();
+    let boundIds = this.impl.localGatekeeperIds();
 
     // TODO: a single gatekeeper failing (e.g. a rejected RPC) currently fails the whole catalog,
     // since we let getAutoApprovableActions() reject. Eventually we should isolate per-gatekeeper
@@ -11968,6 +11990,8 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       let previous = record.bindings[binding.name];
       next[binding.name] = {
         target: binding.target,
+        resourceTitle: binding.resourceTitle,
+        vendorId: binding.vendorId,
         ...(previous?.blueprintAnnotation
             ? {blueprintAnnotation: previous.blueprintAnnotation} : {}),
       };
@@ -12125,17 +12149,18 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     return result;
   }
 
+  async getHostGadgetId(): Promise<WorkpieceId> {
+    let hostId = await this.#withMovedHost(host => host.getId());
+    if (hostId !== undefined) return hostId;
+    this.#assertLocalAccess();
+    return this.id;
+  }
+
   async newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
     using host = await this.#getMovedHost();
     if (host) {
-      let sourceGadgetId = await host.getId();
-      let sourceConfig: AgentSpawnerConfig = {
-        ...config,
-        env: Object.fromEntries(Object.entries(config.env).map(([name, target]) =>
-            [name, target === this.id ? sourceGadgetId : target])),
-      };
       let creationSpec: GatekeeperCreationSpec = {
-        type: "agentSpawner", config: sourceConfig,
+        type: "agentSpawner", config,
       };
       if (config.modelId) {
         let chatMeta = await retryOnDoReset(
@@ -12151,7 +12176,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       let result = new MovedGatekeeperClientImpl(
           this.impl, this.id,
           (await host.createAgentSpawnerForMovedGadget(
-              sourceConfig, creationSpec, this.clientUserId)).id);
+              config, creationSpec, this.clientUserId)).id);
       await this.#recordConnectionCreated(result, "agent_spawner");
       return result;
     }
@@ -12159,16 +12184,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     this.#assertLocalAccess();
     for (let [name, target] of Object.entries(config.env)) {
       validateBindingName(name);
-      let gadget = this.impl.storage.gadgets.get(target);
-      if (gadget) {
-        if (gadget.pending) {
-          throw new Error(`Agent spawner env entry "${name}" references gadget ${target}, ` +
-              `which is still pending in a chat.`);
-        }
-      } else if (!this.impl.storage.gatekeepers.get(target)) {
-        throw new Error(`Agent spawner env entry "${name}" references workpiece ${target}, ` +
-            `which does not exist.`);
-      }
+      if (target !== this.id) this.impl.assertGadgetGatekeeperAccess(this.id, target);
     }
     let props: AgentSpawnerBindingProps = {
       overseerId: this.impl.ctx.id.toString(), config, creatorUserId: this.clientUserId,
@@ -12295,28 +12311,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   async removeMovedGatekeeper(id: WorkpieceId): Promise<void> {
     this.#assertMovedHost();
     this.impl.assertGadgetGatekeeperAccess(this.id, id);
-    let gadget = this.impl.getGadgetRecord(this.id);
-    let changed = false;
-    for (let [name, edge] of Object.entries(gadget.bindings)) {
-      if (edge.target !== id) continue;
-      delete gadget.bindings[name];
-      changed = true;
-    }
-    if (gadget.createdGatekeeperIds?.includes(id)) {
-      gadget.createdGatekeeperIds = gadget.createdGatekeeperIds.filter(gatekeeperId =>
-        gatekeeperId !== id);
-      changed = true;
-    }
-    if (changed) {
-      this.impl.storage.gadgets.put(gadget);
-      this.impl.bumpVersion([this.id]);
-    }
-    for (let rule of Array.from(this.impl.storage.autoApproveTags.list())) {
-      if (rule.gadgetId === this.id && rule.gatekeeperId === id) {
-        this.impl.storage.autoApproveTags.delete(
-            autoApprovalRuleKey(id, rule.actionKind.tag, this.id));
-      }
-    }
+    this.impl.removeGatekeeper(id);
   }
 
   async createGatekeeperForMovedGadget(cls: GatekeeperClass, creationSpec: GatekeeperCreationSpec)
@@ -12734,6 +12729,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   async newGatekeeper(_accountId: number, _resourceUrl: string)
       : Promise<GatekeeperClient<any> | null> { this.#deny(); }
   async newAiModelGatekeeper(_modelId: string): Promise<GatekeeperClient<any>> { this.#deny(); }
+  async getHostGadgetId(): Promise<WorkpieceId> { this.#deny(); }
   async newAgentSpawnerGatekeeper(_config: AgentSpawnerConfig)
       : Promise<GatekeeperClient<any>> { this.#deny(); }
 

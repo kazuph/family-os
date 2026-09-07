@@ -246,7 +246,7 @@ describe("Gadget moves", () => {
       modelId: null,
       env: {SELF: sourceGadgetId, OTHER: otherGadgetId},
     };
-    using connection = await sourceGadget.newAgentSpawnerGatekeeper(config);
+    using connection = await sourceWorkspace.newAgentSpawnerGatekeeper(config);
     let connectionId = await connection.getId();
     await sourceGadget.bind("AGENT_SPAWNER", connectionId);
     await otherGadget.bind("SHARED_SPAWNER", connectionId);
