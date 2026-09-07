@@ -59,15 +59,16 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
 
   const loadGatekeepers = async () => {
     try {
-      const [id, gadgetTitle, bindingList, hookList] = await Promise.all([
+      const [id, hostId, gadgetTitle, bindingList, hookList] = await Promise.all([
         gadget.getId(),
+        gadget.getHostGadgetId(),
         gadget.getTitle(),
         // Pass the open chat so bindings this tab added provisionally to it are listed too.
         gadget.listBindings(chatId),
         // Workspace-wide; filtered to this gadget below.
         overseer.listHooks(),
       ])
-      setGadgetInfo({ id, title: gadgetTitle })
+      setGadgetInfo({ id: hostId, title: gadgetTitle })
       setBindings(bindingList)
       // This tab shows one gadget, so drop hooks that wake a different one -- otherwise its
       // toggle/delete controls would operate on another gadget's hooks.
