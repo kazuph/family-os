@@ -271,7 +271,6 @@ export default function GadgetCodeInterface({ gadget, filesRoot, height = '100%'
   const isReadyRef = useRef(false)
 
   // Subscription stub for cleanup
-  const subscriptionRef = useRef<RpcStub<{}> | null>(null)
 
   // When the selected workpiece changes, the previous root's file selection and per-turn state
   // are meaningless; reset so the auto-select effect picks a file from the new root.
@@ -679,6 +678,8 @@ export default function GadgetCodeInterface({ gadget, filesRoot, height = '100%'
 
   // Subscribe to code updates from server
   useEffect(() => {
+    let disposed = false
+    let subscription: RpcStub<{}> | null = null
     const ydoc = ydocRef.current
     const isInitialLoad = serverVersionRef.current === 0
 
@@ -711,13 +712,18 @@ export default function GadgetCodeInterface({ gadget, filesRoot, height = '100%'
           subscriberImpl,
           serverVersionRef.current
         )
-        subscriptionRef.current = subscriptionStub
+        if (disposed) {
+          subscriptionStub[Symbol.dispose]()
+          return
+        }
+        subscription = subscriptionStub
 
         // If this is a reconnection, the user can continue editing immediately
         if (!isInitialLoad) {
           setIsReady(true)
         }
       } catch (error) {
+        if (disposed) return
         console.error('Failed to subscribe to code updates:', error)
         // Only show error if we've never successfully loaded (never reached ready state)
         if (!isReadyRef.current) {
@@ -731,11 +737,9 @@ export default function GadgetCodeInterface({ gadget, filesRoot, height = '100%'
     subscribe()
 
     return () => {
-      // Cleanup: dispose subscription stub
-      if (subscriptionRef.current) {
-        subscriptionRef.current[Symbol.dispose]()
-        subscriptionRef.current = null
-      }
+      disposed = true
+      subscription?.[Symbol.dispose]()
+      subscription = null
       subscriberImpl.disable();
     }
   }, [gadget])

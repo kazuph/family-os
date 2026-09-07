@@ -4,6 +4,11 @@ export function actionKey(record: Pick<ActionLogEntry, 'sourceWorkspaceId' | 'id
   return `${record.sourceWorkspaceId}:${record.id}`
 }
 
+/** Compare updates to the same action; unversioned local entries preserve arrival ordering. */
+export function isStaleAction(incoming: ActionLogEntry, current?: ActionLogEntry): boolean {
+  return current !== undefined && (incoming.sourceVersion ?? 0) < (current.sourceVersion ?? 0)
+}
+
 export function actionReference(record: Pick<ActionLogEntry, 'sourceWorkspaceId' | 'id'>): ActionReference {
   return { sourceWorkspaceId: record.sourceWorkspaceId, actionId: record.id }
 }

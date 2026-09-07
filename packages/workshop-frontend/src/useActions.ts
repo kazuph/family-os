@@ -1,4 +1,4 @@
-import { actionKey, compareActionOrder } from './actionIdentity'
+import { actionKey, compareActionOrder, isStaleAction } from './actionIdentity'
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { ActionLogEntry, ActionsSubscriber, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
@@ -146,6 +146,8 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   class ActionsSubscriberImpl extends RpcTarget implements ActionsSubscriber {
     entry(record: ActionLogEntry): void {
       if (store.generation !== generation) return
+      if (isStaleAction(record, store.stagedEntries.get(actionKey(record))) ||
+          isStaleAction(record, store.stagedPending.get(actionKey(record)))) return
       trackChange(store, record)
       store.stagedEntries.set(actionKey(record), record)
       let pendingChanged: boolean
@@ -174,6 +176,11 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
 
   const fail = (error: unknown) => {
     if (store.generation !== generation) return
+    // A failed load cannot settle this generation. Keep its gathered records for the error UI,
+    // but fence late deliveries and release every host until a new subscription is opened.
+    store.generation++
+    store.subscription?.[Symbol.dispose]()
+    store.subscription = null
     console.error('Failed to load pending actions:', error)
     commit(store, 'error')
   }
@@ -185,11 +192,8 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
     : overseer.subscribeToActions(subscriber)
 
 
-  // One page in flight at a time. Records created mid-paging are live-only (their ids are above
-  // page 1's snapshot bound), so the fold only has to resolve one conflict class: a page's stale
-  // copy of a record the subscription already delivered — the subscription's copy (in any state)
-  // is newer by definition, so a record resolved live is never re-marked pending by a page that
-  // predates the resolution.
+  // One page in flight at a time. Moved-host notifications and pages use different RPC sessions,
+  // so prefer the higher host revision. Unversioned local records preserve live-wins ordering.
   ;(async () => {
     const sub = await subscribed
     if (store.generation !== generation) {
@@ -203,7 +207,11 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
       if (store.generation !== generation) return
       for (const record of page.entries) {
         trackChange(store, record)
-        if (!store.stagedEntries.has(actionKey(record))) store.stagedPending.set(actionKey(record), record)
+        const live = store.stagedEntries.get(actionKey(record))
+        if (!live || isStaleAction(live, record)) {
+          store.stagedPending.set(actionKey(record), record)
+          if (live) store.stagedEntries.set(actionKey(record), record)
+        }
       }
       cursor = page.nextCursor
       scheduleNotify(store)

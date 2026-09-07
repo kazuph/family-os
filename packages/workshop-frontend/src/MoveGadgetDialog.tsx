@@ -56,7 +56,6 @@ export default function MoveGadgetDialog({
         next.unshift({ id: internalWorkspaceId, title: INTERNAL_WORKSPACE_TITLE })
       }
       setTargets(next)
-      setTargetId(next[0]?.id ?? '')
     }).catch(error => {
       if (!cancelled) {
         console.error('Failed to load move destinations:', error)
@@ -120,6 +119,7 @@ export default function MoveGadgetDialog({
             disabled={loading || moving}
             className="mt-2 h-10 w-full rounded-lg border border-kumo-line bg-kumo-base px-3 text-[13px] text-kumo-default"
           >
+            <option value="" disabled>移動先を選択してください</option>
             {targets.map(target => (
               <option key={target.id} value={target.id}>{target.title}</option>
             ))}

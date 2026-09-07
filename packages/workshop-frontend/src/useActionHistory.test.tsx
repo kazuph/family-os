@@ -272,13 +272,14 @@ describe('useActionHistory', () => {
       expect(latest.entries.map(e => e.id)).toEqual([30])
     })
 
-    it('drops updates until a page has loaded', async () => {
+    it('buffers updates while the first page is loading', async () => {
       const server = makeOverseer()
       await render(server.overseer, 'all', true)
       await server.emit(entry(50))  // arrives while the first page is in flight
+      expect(latest.entries).toEqual([])
       await server.resolvePage({ entries: [entry(30)] })
 
-      expect(latest.entries.map(e => e.id)).toEqual([30])
+      expect(latest.entries.map(e => e.id)).toEqual([50, 30])
     })
   })
 })
