@@ -12088,7 +12088,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     let creationSpec: GatekeeperCreationSpec = {
       type: "gatekeeper", vendorId, resourceUrl, typeUrlPattern,
     };
-    let host = await this.#getMovedHost();
+    using host = await this.#getMovedHost();
     let result = host
         ? new MovedGatekeeperClientImpl(
             this.impl, this.id,
@@ -12100,7 +12100,6 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
             return created;
           })();
     await this.#recordConnectionCreated(result, "gatekeeper", vendorId);
-    host?.[Symbol.dispose]();
     return result;
   }
 
@@ -12111,7 +12110,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     let initiator: AiChatAuthorInfo = {
       type: "gadget", id: chatMeta.profile.id, name: this.impl.getGadgetRecord(this.id).title,
     };
-    let host = await this.#getMovedHost();
+    using host = await this.#getMovedHost();
     let result = host
         ? new MovedGatekeeperClientImpl(
             this.impl, this.id,
@@ -12123,12 +12122,11 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
             return created;
           })();
     await this.#recordConnectionCreated(result, "ai_model");
-    host?.[Symbol.dispose]();
     return result;
   }
 
   async newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
-    let host = await this.#getMovedHost();
+    using host = await this.#getMovedHost();
     if (host) {
       let sourceGadgetId = await host.getId();
       let sourceConfig: AgentSpawnerConfig = {
@@ -12155,7 +12153,6 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
           (await host.createAgentSpawnerForMovedGadget(
               sourceConfig, creationSpec, this.clientUserId)).id);
       await this.#recordConnectionCreated(result, "agent_spawner");
-      host[Symbol.dispose]();
       return result;
     }
 
