@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple, List, UploadSimple } from '@phosphor-icons/react'
-import { Overseer, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
+import { GadgetClient, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
 import { RpcStub, RpcTarget } from 'capnweb'
 import * as Y from 'yjs'
 import FileSidebar from './FileSidebar'
@@ -55,10 +55,9 @@ class CodeSubscriberImpl extends RpcTarget implements CodeSubscriber {
 }
 
 interface GadgetCodeInterfaceProps {
-  overseer: RpcStub<Overseer>
-  // Name of the Y.Doc root map holding the selected workpiece's files (see
-  // WorkpieceSummary.filesRoot). The Yjs doc is shared by the whole workspace; this selects which
-  // workpiece's files the editor shows.
+  gadget: RpcStub<GadgetClient>
+  // Name of the selected Gadget's scoped Y.Doc root (see WorkpieceSummary.filesRoot). The server
+  // capability only sends this Gadget's root; it must never be treated as a workspace-wide doc.
   filesRoot: string
   height?: string | number
   onCodeChange?: () => void
@@ -139,14 +138,13 @@ type QueuedCodeUpdate = {
   update: Uint8Array
 }
 
-export default function GadgetCodeInterface({ overseer, filesRoot, height = '100%', onCodeChange, selectedChatId = null, proposedChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
+export default function GadgetCodeInterface({ gadget, filesRoot, height = '100%', onCodeChange, selectedChatId = null, proposedChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
   const toasts = useKumoToastManager()
   const branchMode = selectedChatId !== null
 
-  // Yjs document and files map - persistent across reconnections. The doc holds the whole
-  // workspace (sync is whole-doc; updates may span workpieces); `filesRoot` selects the current
-  // workpiece's file map within it. Y.Doc.getMap() returns the same instance for the same name,
-  // so re-pointing the ref on every render is cheap and idempotent.
+  // Keep the scoped document and queued offline edits across reconnects for this Gadget. The
+  // parent editor remounts this component when workspace or Gadget identity changes, so these refs
+  // can never be reused for another host/root.
   const ydocRef = useRef<Y.Doc>(new Y.Doc())
   const filesMapRef = useRef<Y.Map<Y.Text>>(ydocRef.current.getMap(filesRoot))
   filesMapRef.current = ydocRef.current.getMap(filesRoot)
@@ -261,9 +259,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     wasAgentActiveRef.current = isAgentActive
   }, [isAgentActive, selectedChatId])
 
-  // Keep a ref to the current overseer so operations always use the latest stub
-  const currentOverseerRef = useRef(overseer)
-  currentOverseerRef.current = overseer
+  // Keep a ref to the current Gadget so operations always use the latest host capability.
+  const currentGadgetRef = useRef(gadget)
+  currentGadgetRef.current = gadget
 
   // Keep a ref to the current sender so editable-doc listeners don't need to
   // re-register just because the component rendered again.
@@ -652,7 +650,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
         }
 
         try {
-          await currentOverseerRef.current.updateCode(
+          await currentGadgetRef.current.updateCode(
             outgoingUpdate,
             currentTarget ?? undefined,
           )
@@ -709,7 +707,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
         }
 
         // Subscribe from the last known version (0 for initial load)
-        const subscriptionStub = await currentOverseerRef.current.subscribeToCode(
+        const subscriptionStub = await currentGadgetRef.current.subscribeToCode(
           subscriberImpl,
           serverVersionRef.current
         )
@@ -740,7 +738,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       }
       subscriberImpl.disable();
     }
-  }, [overseer])
+  }, [gadget])
 
   // Set up committed-doc observer to send local changes to server in mainline mode.
   useEffect(() => {
@@ -763,7 +761,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     return () => {
       ydoc.off('updateV2', updateHandler)
     }
-  }, [branchMode, overseer, onCodeChange])
+  }, [branchMode, gadget, onCodeChange])
 
   // Handle file selection
   const handleFileSelect = (filename: string) => {
@@ -902,7 +900,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
         ydoc.on('updateV2', listener)
         ydoc.transact(mutate, 'archive-import')
         ydoc.off('updateV2', listener)
-        if (updates.length > 0) await overseer.updateCode(Y.mergeUpdatesV2(updates))
+        if (updates.length > 0) await gadget.updateCode(Y.mergeUpdatesV2(updates))
       }
 
       for (const [name, content] of imported) {
@@ -933,7 +931,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       setImportingArchive(false)
       if (archiveInputRef.current) archiveInputRef.current.value = ''
     }
-  }, [branchMode, filesRoot, importingArchive, onCodeChange, overseer, toasts])
+  }, [branchMode, filesRoot, importingArchive, onCodeChange, gadget, toasts])
 
   // Determine if we're in diff mode
   const isDiffMode = branchMode || (streamingProposedChanges !== undefined && streamingYdocRef.current !== null)

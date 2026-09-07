@@ -219,6 +219,7 @@ type DraftUpdateEntry = {
   timestamp: Date;
   author: AiChatAuthorInfo;
   update: Uint8Array;
+  gadgetIds?: WorkpieceId[];
 };
 
 type DraftChatState = {
@@ -3752,7 +3753,7 @@ export const ChatInput = ({
       <GatekeeperModal
         open={attachModalOpen}
         onClose={() => setAttachModalOpen(false)}
-        getOverseer={getOverseer}
+        getConnectionHost={getOverseer}
         onCreated={handleAttachCreated}
       />
     </div>
@@ -3771,7 +3772,7 @@ interface MessageState {
   // The accumulated unmerged/unreverted changes (for the proposed changes view). An entry's
   // `update` is absent for batches that record only gadget creations/binding additions; such
   // batches still count as proposed changes (they are accepted and reverted like code edits).
-  activeChanges: { sequence: number; update?: Uint8Array }[];
+  activeChanges: { sequence: number; update?: Uint8Array; gadgetIds?: WorkpieceId[] }[];
 }
 
 type ChatDisplayEntry =
@@ -4279,7 +4280,7 @@ export function computeMessageStates(
   const revertTimestamps = new Map<number, Date>();
 
   // Track active updates as we scan (for proposed changes computation)
-  let updates: { sequence: number; update?: Uint8Array }[] = [];
+  let updates: { sequence: number; update?: Uint8Array; gadgetIds?: WorkpieceId[] }[] = [];
 
   // The boundary carries the still-proposed pre-boundary changes merged into one update. Fold it
   // in at the last pre-boundary sequence, so it counts as proposed and a later merge or revert
@@ -4296,9 +4297,15 @@ export function computeMessageStates(
     updates.push({ sequence: compacted.to - 1, update: compacted.proposedChanges });
   }
 
+  if (compacted && (messages.length === 0 || messages[0].sequence >= compacted.to)) {
+    for (const batch of compacted.proposedCodeBatches ?? []) {
+      updates.push({sequence: compacted.to - 1, ...batch});
+    }
+  }
+
   for (let msg of messages) {
     if (msg.type === "changes") {
-      updates.push({ sequence: msg.sequence, update: msg.update });
+      updates.push({ sequence: msg.sequence, update: msg.update, gadgetIds: msg.gadgetIds });
       changeStatus.set(msg.sequence, "pending");
     } else if (msg.type === "merge") {
       // Mark changes as merged and drop from active set
@@ -4370,6 +4377,8 @@ interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
   selectedChatId: number | null;
+  selectedGadgetId?: WorkpieceId | null;
+  selectedGadgetIsMoved?: boolean;
   onNavigateToChat: (
     chatId: number | null,
     options?: { replace?: boolean },
@@ -4493,7 +4502,7 @@ type ProvisionalChatState = {
   compacting: boolean;
   toolCalls: ProvisionalToolCallState[];
   toolCallsById: Map<string, ProvisionalToolCallState>;
-  codeUpdates: Uint8Array[];
+  codeUpdates: {update: Uint8Array, gadgetId?: WorkpieceId}[];
   activeEditingFile: ActiveFileTarget | null | undefined;
 };
 
@@ -4564,6 +4573,8 @@ function ChatInterface({
   workspaceId,
   overseer,
   selectedChatId,
+  selectedGadgetId,
+  selectedGadgetIsMoved = false,
   onNavigateToChat,
   onProposedChangesChange,
   onDraftProposedChangesChange,
@@ -4648,7 +4659,7 @@ function ChatInterface({
   );
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
   const [expandedCompactions, setExpandedCompactions] = useState<Set<number>>(new Set());
-  const [processingActions, setProcessingActions] = useState<Set<number>>(
+  const [processingActions, setProcessingActions] = useState<Set<number | string>>(
     new Set(),
   );
   // Connection-request (agent requestConnection) accept flow. When set, the GatekeeperModal opens
@@ -5058,10 +5069,13 @@ function ChatInterface({
       return undefined;
     }
     return {
-      updates: currentDraftState.entries.map((entry) => entry.update),
+      updates: currentDraftState.entries
+          .filter(entry => selectedGadgetId == null || (entry.gadgetIds
+            ? entry.gadgetIds.includes(selectedGadgetId) : !selectedGadgetIsMoved))
+          .map(entry => entry.update),
       count: currentDraftChangesCount,
     };
-  }, [currentDraftChangesCount, currentDraftState, draftChangesVersion, selectedChatId]);
+  }, [currentDraftChangesCount, currentDraftState, draftChangesVersion, selectedChatId, selectedGadgetId, selectedGadgetIsMoved]);
   const currentStreamingState = useMemo(():
     | StreamingProposedChanges
     | undefined => {
@@ -5069,10 +5083,12 @@ function ChatInterface({
       return undefined;
     }
     return {
-      updates: currentStreamingChanges,
+      updates: currentStreamingChanges.filter(entry => selectedGadgetId == null ||
+          (entry.gadgetId === undefined ? !selectedGadgetIsMoved : entry.gadgetId === selectedGadgetId))
+          .map(entry => entry.update),
       count: currentStreamingChangesCount,
     };
-  }, [selectedChatId, currentStreamingChanges, currentStreamingChangesCount]);
+  }, [selectedChatId, currentStreamingChanges, currentStreamingChangesCount, selectedGadgetId, selectedGadgetIsMoved]);
 
   const isCompacting = currentProvisionalState?.compacting === true;
 
@@ -5216,6 +5232,8 @@ function ChatInterface({
     }
 
     const updatePayloads = activeChanges
+      .filter(entry => selectedGadgetId == null || (entry.gadgetIds
+        ? entry.gadgetIds.includes(selectedGadgetId) : !selectedGadgetIsMoved))
       .map((c) => c.update)
       .filter((u): u is Uint8Array => u !== undefined);
 
@@ -5233,6 +5251,8 @@ function ChatInterface({
     currentChatMetadata?.hasProposedChanges,
     proposedChangesVersion,
     selectedChatId,
+    selectedGadgetId,
+    selectedGadgetIsMoved,
     onProposedChangesChange,
   ]);
 
@@ -5331,6 +5351,7 @@ function ChatInterface({
       timestamp: Date,
       author: AiChatAuthorInfo,
       update: Uint8Array,
+      gadgetIds?: WorkpieceId[],
     ) {
       let draft = getOrCreateDraftChatState(draftRef.current, chatId);
       let existingIndex = draft.entries.findIndex(
@@ -5338,9 +5359,9 @@ function ChatInterface({
       );
 
       if (existingIndex >= 0) {
-        draft.entries[existingIndex] = { timestamp, author, update };
+        draft.entries[existingIndex] = { timestamp, author, update, gadgetIds };
       } else {
-        draft.entries.push({ timestamp, author, update });
+        draft.entries.push({ timestamp, author, update, gadgetIds });
         draft.entries.sort(
           (left, right) => left.timestamp.getTime() - right.timestamp.getTime(),
         );
@@ -5505,7 +5526,7 @@ function ChatInterface({
           provisional.codeUpdates = [];
           break;
         case "codeUpdate":
-          provisional.codeUpdates.push(event.update);
+          provisional.codeUpdates.push({update: event.update, gadgetId: event.gadgetId});
           break;
       }
 
@@ -5589,6 +5610,7 @@ function ChatInterface({
 
   // Patch cached chat messages on action upserts.
   useActionEntries(overseer, (record) => {
+    if (record.sourceWorkspaceId !== workspaceId) return;
     if (applyActionLogUpdateToCachedMessages(record)) scheduleUpdate();
   });
   // On a resumed reconnect the subscription replays the gap, so the entries above cover cached
@@ -6080,7 +6102,7 @@ function ChatInterface({
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
 
   const resolveAction = useResolveAction(overseer, setProcessingActions, (actionId, state) => {
-    if (applyOptimisticActionState(actionId, state)) forceUpdate();
+    if (typeof actionId === "number" && applyOptimisticActionState(actionId, state)) forceUpdate();
   });
 
   // Handle enabling/disabling a bound hook from the chat thread.
@@ -8146,7 +8168,7 @@ function ChatInterface({
       <GatekeeperModal
         open={connectionAccept !== null}
         onClose={() => setConnectionAccept(null)}
-        getOverseer={getOverseer}
+        getConnectionHost={getOverseer}
         onCreated={handleConnectionCreated}
         initialVendorId={connectionAccept?.vendorId}
         initialResourceUrl={connectionAccept?.resourceUrl}

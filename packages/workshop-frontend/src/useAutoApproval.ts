@@ -5,6 +5,7 @@ import type { Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 
 export interface AutoApprovalEntry {
+  sourceWorkspaceId: string
   gatekeeperId: number
   resourceTitle: string
   vendorId?: string
@@ -14,14 +15,14 @@ export interface AutoApprovalEntry {
   orphaned: boolean
 }
 
-export function autoApprovalKey(entry: { gatekeeperId: number; actionKind: ActionKind }): string {
-  return `${entry.gatekeeperId}:${entry.actionKind.tag}`
+export function autoApprovalKey(entry: { sourceWorkspaceId: string; gatekeeperId: number; actionKind: ActionKind }): string {
+  return `${entry.sourceWorkspaceId}:${entry.gatekeeperId}:${entry.actionKind.tag}`
 }
 
 export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
   const toasts = useKumoToastManager()
   const [catalog, setCatalog] = useState<PreApprovableAction[]>([])
-  const [rules, setRules] = useState<Array<{ gatekeeperId: number; actionKind: ActionKind }>>([])
+  const [rules, setRules] = useState<Array<{ sourceWorkspaceId: string; gatekeeperId: number; actionKind: ActionKind }>>([])
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
   const [pending, setPending] = useState<Set<string>>(new Set())
@@ -74,6 +75,7 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
     const byKey = new Map<string, AutoApprovalEntry>()
     for (const action of catalog) {
       byKey.set(autoApprovalKey(action), {
+        sourceWorkspaceId: action.sourceWorkspaceId,
         gatekeeperId: action.gatekeeperId,
         resourceTitle: action.resourceTitle,
         vendorId: action.vendorId,
@@ -88,6 +90,7 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
       if (known) known.enabled = true
       else {
         byKey.set(key, {
+          sourceWorkspaceId: rule.sourceWorkspaceId,
           gatekeeperId: rule.gatekeeperId,
           resourceTitle: '',
           actionKind: rule.actionKind,
@@ -106,11 +109,11 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
     setCatalog(previous => previous.map(action =>
       autoApprovalKey(action) === key ? { ...action, alreadyEnabled: enabled } : action))
     setRules(previous => enabled
-      ? [...previous, { gatekeeperId: entry.gatekeeperId, actionKind: entry.actionKind }]
+      ? [...previous, { sourceWorkspaceId: entry.sourceWorkspaceId, gatekeeperId: entry.gatekeeperId, actionKind: entry.actionKind }]
       : previous.filter(rule => autoApprovalKey(rule) !== key))
     try {
-      if (enabled) await overseer.setAutoApprovedActionKind(entry.gatekeeperId, entry.actionKind)
-      else await overseer.removeAutoApprovedActionKind(entry.gatekeeperId, entry.actionKind.tag)
+      if (enabled) await overseer.setAutoApprovedActionKind(entry.gatekeeperId, entry.actionKind, entry.sourceWorkspaceId)
+      else await overseer.removeAutoApprovedActionKind(entry.gatekeeperId, entry.actionKind.tag, entry.sourceWorkspaceId)
     } catch (err) {
       console.error('Failed to update auto-approval rule:', err)
       toasts.add({

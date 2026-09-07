@@ -49,10 +49,10 @@ describe('useActionHistory', () => {
     expect(latest.hasMore).toBe(false)
 
     await render(server.overseer, 'all', true)
-    expect(server.listCalls).toEqual([{ beforeId: undefined, filter: 'all' }])
+    expect(server.listCalls).toEqual([{ cursor: undefined, filter: 'all' }])
     expect(latest.status).toBe('loading')
 
-    await server.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
+    await server.resolvePage({ entries: [entry(30), entry(20)], nextCursor: "page-before-10" })
     expect(latest.status).toBe('ready')
     expect(latest.entries.map(e => e.id)).toEqual([30, 20])
     expect(latest.hasMore).toBe(true)
@@ -69,12 +69,12 @@ describe('useActionHistory', () => {
     act(() => latest.loadMore())
     expect(server.listCalls).toHaveLength(1)
 
-    await server.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
+    await server.resolvePage({ entries: [entry(30), entry(20)], nextCursor: "page-before-10" })
     act(() => latest.loadMore())
     act(() => latest.loadMore())
     expect(latest.isLoadingMore).toBe(true)
     expect(server.listCalls).toHaveLength(2)
-    expect(server.listCalls[1]).toEqual({ beforeId: 10, filter: 'all' })
+    expect(server.listCalls[1]).toEqual({ cursor: "page-before-10", filter: 'all' })
 
     await server.resolvePage({ entries: [entry(20), entry(5)] })
     expect(latest.entries.map(e => e.id)).toEqual([30, 20, 5])
@@ -88,14 +88,14 @@ describe('useActionHistory', () => {
   it('keeps hasMore after an empty page that carries a cursor', async () => {
     const server = makeOverseer()
     await render(server.overseer, 'all', true)
-    await server.resolvePage({ entries: [], nextBeforeId: 400 })
+    await server.resolvePage({ entries: [], nextCursor: "page-before-400" })
 
     expect(latest.status).toBe('ready')
     expect(latest.entries).toEqual([])
     expect(latest.hasMore).toBe(true)
 
     act(() => latest.loadMore())
-    expect(server.listCalls[1]).toEqual({ beforeId: 400, filter: 'all' })
+    expect(server.listCalls[1]).toEqual({ cursor: "page-before-400", filter: 'all' })
   })
 
   it('resets on filter change and ignores the stale in-flight page', async () => {
@@ -105,7 +105,7 @@ describe('useActionHistory', () => {
     await render(server.overseer, 'action', true)
     expect(latest.entries).toEqual([])
     expect(latest.status).toBe('loading')
-    expect(server.listCalls[1]).toEqual({ beforeId: undefined, filter: 'action' })
+    expect(server.listCalls[1]).toEqual({ cursor: undefined, filter: 'action' })
 
     await server.resolvePage({ entries: [entry(30)] })
     expect(latest.entries).toEqual([])
@@ -119,13 +119,13 @@ describe('useActionHistory', () => {
   it('resets and refetches when an unlinked stub changes', async () => {
     const first = makeOverseer()
     await render(first.overseer, 'all', true)
-    await first.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+    await first.resolvePage({ entries: [entry(30)], nextCursor: "page-before-10" })
     act(() => latest.loadMore())  // leave a second fetch in flight on the old stub
 
     const second = makeOverseer()
     await render(second.overseer, 'all', true)
     expect(latest.entries).toEqual([])
-    expect(second.listCalls).toEqual([{ beforeId: undefined, filter: 'all' }])
+    expect(second.listCalls).toEqual([{ cursor: undefined, filter: 'all' }])
 
     // The abandoned stub's in-flight page must not leak into the new session.
     await first.resolvePage({ entries: [entry(9)] })
@@ -143,7 +143,7 @@ describe('useActionHistory', () => {
     // Settle the shared store so the swap resumes; a pending record sets its watermark.
     await first.resolveSubscription()
     await first.resolvePendingQuery({ entries: [pendingEntry(1)] })
-    await first.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
+    await first.resolvePage({ entries: [entry(30), entry(20)], nextCursor: "page-before-10" })
 
     const second = makeOverseer()
     linkActionLog(second.overseer, 'ws-hist-resume')
@@ -159,7 +159,7 @@ describe('useActionHistory', () => {
 
     // loadMore continues from the preserved frontier on the new stub.
     act(() => latest.loadMore())
-    expect(second.listCalls).toEqual([{ beforeId: 10, filter: 'all' }])
+    expect(second.listCalls).toEqual([{ cursor: "page-before-10", filter: 'all' }])
     await second.resolvePage({ entries: [entry(5)] })
     expect(latest.entries.map(e => e.id)).toEqual([30, 20, 5])
     expect(latest.hasMore).toBe(false)
@@ -171,7 +171,7 @@ describe('useActionHistory', () => {
     await render(first.overseer, 'all', true)
     await first.resolveSubscription()
     await first.resolvePendingQuery({ entries: [pendingEntry(1)] })
-    await first.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+    await first.resolvePage({ entries: [entry(30)], nextCursor: "page-before-10" })
     act(() => latest.loadMore())  // leave a second fetch in flight on the old stub
 
     const second = makeOverseer()
@@ -183,7 +183,7 @@ describe('useActionHistory', () => {
     expect(latest.isLoadingMore).toBe(false)
 
     act(() => latest.loadMore())
-    expect(second.listCalls).toEqual([{ beforeId: 10, filter: 'all' }])
+    expect(second.listCalls).toEqual([{ cursor: "page-before-10", filter: 'all' }])
   })
 
   it('recovers from a failed first load on retry', async () => {
@@ -196,7 +196,7 @@ describe('useActionHistory', () => {
 
     act(() => latest.loadMore())
     expect(latest.status).toBe('loading')
-    expect(server.listCalls[1]).toEqual({ beforeId: undefined, filter: 'all' })
+    expect(server.listCalls[1]).toEqual({ cursor: undefined, filter: 'all' })
     await server.resolvePage({ entries: [entry(30)] })
     expect(latest.status).toBe('ready')
     expect(latest.entries.map(e => e.id)).toEqual([30])
@@ -207,7 +207,7 @@ describe('useActionHistory', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const server = makeOverseer()
     await render(server.overseer, 'all', true)
-    await server.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+    await server.resolvePage({ entries: [entry(30)], nextCursor: "page-before-10" })
 
     act(() => latest.loadMore())
     await server.rejectPage(new Error('nope'))
@@ -219,7 +219,7 @@ describe('useActionHistory', () => {
 
     act(() => latest.loadMore())
     expect(latest.loadMoreFailed).toBe(false)  // cleared as soon as the retry starts
-    expect(server.listCalls[2]).toEqual({ beforeId: 10, filter: 'all' })
+    expect(server.listCalls[2]).toEqual({ cursor: "page-before-10", filter: 'all' })
     await server.resolvePage({ entries: [entry(5)] })
     expect(latest.loadMoreFailed).toBe(false)
     expect(latest.entries.map(e => e.id)).toEqual([30, 5])
@@ -231,7 +231,7 @@ describe('useActionHistory', () => {
     it('patches a loaded record in place', async () => {
       const server = makeOverseer()
       await render(server.overseer, 'all', true)
-      await server.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+      await server.resolvePage({ entries: [entry(30)], nextCursor: "page-before-10" })
 
       await server.emit(entry(30, { state: 'rejected' }))
       expect(latest.entries.map(e => [e.id, e.state])).toEqual([[30, 'rejected']])
@@ -240,7 +240,7 @@ describe('useActionHistory', () => {
     it('inserts new and in-window resolutions, ordered by id', async () => {
       const server = makeOverseer()
       await render(server.overseer, 'all', true)
-      await server.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
+      await server.resolvePage({ entries: [entry(30), entry(20)], nextCursor: "page-before-10" })
 
       await server.emit(entry(40))  // newly resolved, above the window
       await server.emit(entry(25))  // old pending resolved inside the window
@@ -250,7 +250,7 @@ describe('useActionHistory', () => {
     it('inserts a new pending record and patches its resolution in place', async () => {
       const server = makeOverseer()
       await render(server.overseer, 'all', true)
-      await server.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+      await server.resolvePage({ entries: [entry(30)], nextCursor: "page-before-10" })
 
       await server.emit(pendingEntry(40))
       expect(latest.entries.map(e => [e.id, e.state]))
@@ -264,7 +264,7 @@ describe('useActionHistory', () => {
     it('drops records below the loaded window and filter mismatches', async () => {
       const server = makeOverseer()
       await render(server.overseer, 'action', true)
-      await server.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+      await server.resolvePage({ entries: [entry(30)], nextCursor: "page-before-10" })
 
       await server.emit(entry(5))                                          // below the window
       await server.emit(pendingEntry(35, { type: 'observation' }))         // filter mismatch

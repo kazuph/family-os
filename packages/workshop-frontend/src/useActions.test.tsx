@@ -31,12 +31,13 @@ describe('useActions', () => {
     const server = makeOverseer()
     await view.render(<Probe overseer={server.overseer} />)
 
-    // Subscribe-first is what lets the pages be a complete snapshot: capnweb e-order registers
-    // the subscriber server-side before the first page reads.
+    expect(server.ops).toEqual(['subscribe'])
+    expect(server.pendingQueryCalls).toHaveLength(0)
+    await server.resolveSubscription()
     expect(server.ops).toEqual(['subscribe', 'listPending'])
     // Single argument: the legacy full replay (startAfter) must not be requested.
     expect(server.subscribeCalls).toEqual([[expect.anything()]])
-    expect(server.pendingQueryCalls).toEqual([{ filter: 'pending', beforeId: undefined }])
+    expect(server.pendingQueryCalls).toEqual([{ filter: 'pending', cursor: undefined }])
   })
 
   it('stays checking until the last pending page loads', async () => {
@@ -46,11 +47,11 @@ describe('useActions', () => {
     await server.resolveSubscription()
     expect(latest.status).toBe('checking')  // the subscription alone doesn't settle
 
-    await server.resolvePendingQuery({ entries: [entry(1)], nextBeforeId: 1 })
+    await server.resolvePendingQuery({ entries: [entry(1)], nextCursor: "page-before-1" })
     expect(latest.status).toBe('checking')
     flushFrames()
     expect(latest.pending.map(e => e.id)).toEqual([1])  // counts accumulate mid-paging
-    expect(server.pendingQueryCalls[1]).toEqual({ filter: 'pending', beforeId: 1 })
+    expect(server.pendingQueryCalls[1]).toEqual({ filter: 'pending', cursor: "page-before-1" })
 
     await server.resolvePendingQuery({ entries: [entry(0)] })
     expect(latest.status).toBe('ready')  // settles synchronously, no frame needed
@@ -120,7 +121,7 @@ describe('useActions', () => {
 
     view.unmount()
 
-    await server.resolvePendingQuery({ entries: [entry(1)], nextBeforeId: 1 })
+    await server.resolvePendingQuery({ entries: [entry(1)], nextCursor: "page-before-1" })
     expect(server.pendingQueryCalls).toHaveLength(1)
   })
 
@@ -135,7 +136,7 @@ describe('useActions', () => {
     const second = makeOverseer()
     await view.render(<Probe overseer={second.overseer} />)
     expect(second.subscribeCalls).toHaveLength(1)
-    expect(second.pendingQueryCalls).toHaveLength(1)
+    expect(second.pendingQueryCalls).toHaveLength(0)
     expect(actionLogResumed(second.overseer)).toBe(false)
     expect(latest.status).toBe('checking')
     expect(latest.pending).toEqual([])
@@ -154,7 +155,7 @@ describe('useActions', () => {
     const second = makeOverseer()
     linkActionLog(second.overseer, 'ws-resume')
     await view.render(<Probe overseer={second.overseer} />)
-    expect(second.ops).toEqual(['subscribe', 'listPending'])
+    expect(second.ops).toEqual(['subscribe'])
     expect(second.subscribeCalls).toEqual([[expect.anything(), appliedAt]])
     expect(actionLogResumed(second.overseer)).toBe(true)
 
@@ -177,7 +178,7 @@ describe('useActions', () => {
     const second = makeOverseer()
     linkActionLog(second.overseer, 'ws-unsettled')
     await view.render(<Probe overseer={second.overseer} />)
-    expect(second.ops).toEqual(['subscribe', 'listPending'])
+    expect(second.ops).toEqual(['subscribe'])
     expect(second.subscribeCalls).toEqual([[expect.anything()]])
     expect(latest.pending).toEqual([])
   })
@@ -186,8 +187,9 @@ describe('useActions', () => {
     const first = makeOverseer()
     linkActionLog(first.overseer, 'ws-inflight')
     await view.render(<Probe overseer={first.overseer} />)
-    await first.resolvePendingQuery({ entries: [entry(1)] })
-    expect(latest.status).toBe('ready')  // pages drained, but the replay may be undelivered
+    await first.emit(entry(1))
+    expect(first.pendingQueryCalls).toHaveLength(0)
+    expect(latest.status).toBe('checking')
 
     const second = makeOverseer()
     linkActionLog(second.overseer, 'ws-inflight')
@@ -207,7 +209,7 @@ describe('useActions', () => {
     const second = makeOverseer()
     linkActionLog(second.overseer, 'ws-errored')
     await view.render(<Probe overseer={second.overseer} />)
-    expect(second.ops).toEqual(['subscribe', 'listPending'])
+    expect(second.ops).toEqual(['subscribe'])
     expect(second.subscribeCalls).toEqual([[expect.anything()]])
   })
 
@@ -240,17 +242,15 @@ describe('useActions', () => {
     expect(latest.status).toBe('error')
   })
 
-  it('stays error when the pages drain after the subscribe call already failed', async () => {
+  it('does not page when registration on a host fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const server = makeOverseer()
     await view.render(<Probe overseer={server.overseer} />)
 
     await server.rejectSubscription(new Error('DO overloaded'))
-    await server.resolvePendingQuery({ entries: [entry(1)] })
-
-    // The successful pages fold, but a dead live stream must not present as settled.
+    expect(server.pendingQueryCalls).toHaveLength(0)
     expect(latest.status).toBe('error')
-    expect(latest.pending.map(e => e.id)).toEqual([1])
+    expect(latest.pending).toEqual([])
   })
 
   it('reports error but keeps gathered pendings when a later page fails', async () => {
@@ -260,7 +260,7 @@ describe('useActions', () => {
     await server.resolveSubscription()
 
     await server.emit(entry(1))
-    await server.resolvePendingQuery({ entries: [entry(3)], nextBeforeId: 3 })
+    await server.resolvePendingQuery({ entries: [entry(3)], nextCursor: "page-before-3" })
     await server.rejectPendingQuery(new Error('DO overloaded'))
 
     expect(latest.status).toBe('error')
@@ -269,16 +269,15 @@ describe('useActions', () => {
     expect(latest.status).toBe('error')
   })
 
-  it('downgrades ready to error when the subscribe call fails after the pages drained',
+  it('keeps replayed entries when host registration later fails',
       async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const server = makeOverseer()
     await view.render(<Probe overseer={server.overseer} />)
 
-    // The pages can drain before the subscribe call's return trip fails; a store with a dead
-    // live stream must not present as settled.
-    await server.resolvePendingQuery({ entries: [entry(2)] })
-    expect(latest.status).toBe('ready')
+    await server.emit(entry(2))
+    expect(latest.status).toBe('checking')
+    expect(server.pendingQueryCalls).toHaveLength(0)
 
     await server.rejectSubscription(new Error('broken tube'))
     expect(latest.status).toBe('error')

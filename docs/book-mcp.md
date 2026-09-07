@@ -35,20 +35,25 @@ is no long-lived shared secret on disk, and the agent reaches exactly the books 
 which account's books it means. Use this for unattended jobs where no human is present.
 
 Before reading or writing, the backend resolves the owning account, verifies that it owns the
-requested workspace, and verifies that the workspace's default Gadget has output id `book`. The
+requested workspace, and verifies that the selected Gadget has output id `book`. The
 endpoint never accepts an application-supplied email as authentication, and it cannot edit
 `client.js`, `server.js`, or other executable files. The writable paths are `content/toc.json` and
 Markdown files under `content/` only.
 
 ## Tools
 
-- `book.list`: list the owner's book workspaces.
+- `book.list`: list every book owned by the account, including books moved into another workspace.
 - `book.read_files`: read all book content or selected content paths.
 - `book.put_files`: add or replace the table of contents and Markdown chapter files.
 - `book.read_progress`: read the Gadget's persisted chapter completion map.
 
 `ownerEmail` is optional on every tool. Omit it when signed in as a person; a service token must
 supply it.
+
+Use the `workspaceId` and `gadgetId` returned by `book.list` for reads, writes, and progress.
+When a workspace contains one book, `gadgetId` may be omitted. When it contains multiple books,
+`gadgetId` is required; an ambiguous request is rejected without editing any book. After a move,
+list the books again to obtain the destination IDs. The moved book keeps its existing storage.
 
 `book.put_files` persists overrides in the book Gadget's own SQLite storage. The reader fetches the
 current table of contents and chapters when it opens, so edits survive reload without rebuilding the

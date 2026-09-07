@@ -30,6 +30,7 @@ export function flushFrames() {
 export function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
   return {
     id,
+    sourceWorkspaceId: "test-workspace",
     resourceTitle: `Resource ${id}`,
     createdAt: new Date(1700000000000 + id * 60_000),
     state: 'pending',

@@ -33,6 +33,27 @@ const LOADED = new Uint8Array([4, 5, 6]);
 const OLDER = new Uint8Array([7, 8, 9]);
 
 describe("computeMessageStates compaction seeding", () => {
+  it("preserves each moved gadget identity through compaction, acceptance, and reversion", () => {
+    const compacted: CompactionBoundary = {
+      to: 10,
+      summary: "Two moved gadgets",
+      proposedCodeBatches: [
+        {update: PRE_BOUNDARY, gadgetIds: [1]},
+        {update: OLDER, gadgetIds: [2]},
+      ],
+    };
+    const later = message(10, {type: "changes", update: LOADED, gadgetIds: [1]});
+    expect(computeMessageStates([later], compacted).activeChanges).toEqual([
+      {sequence: 9, update: PRE_BOUNDARY, gadgetIds: [1]},
+      {sequence: 9, update: OLDER, gadgetIds: [2]},
+      {sequence: 10, update: LOADED, gadgetIds: [1]},
+    ]);
+    expect(computeMessageStates([later, merge(11, 9)], compacted).activeChanges)
+        .toEqual([{sequence: 10, update: LOADED, gadgetIds: [1]}]);
+    expect(computeMessageStates([later, revert(11, 9)], compacted).activeChanges)
+        .toEqual([]);
+  });
+
   it("counts the boundary's proposed changes as one entry below the oldest loaded message", () => {
     const { activeChanges } = computeMessageStates(
       [changes(10, LOADED)],
