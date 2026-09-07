@@ -508,6 +508,7 @@ it.each([false, true])("keeps moved auto-approval separate from a shared source 
   let sourceId!: string;
   let targetId!: string;
   let sourceGadgetId!: WorkpieceId;
+  let targetGadgetId!: WorkpieceId;
   let privateId!: WorkpieceId;
   let gatekeeperId!: WorkpieceId;
   await withAuthenticatedApi(async (api, disconnected) => {
@@ -531,7 +532,7 @@ it.each([false, true])("keeps moved auto-approval separate from a shared source 
     await moving.bind("QUEUE", gatekeeperId);
     await privateGadget.bind("QUEUE", gatekeeperId);
     if (existingRule) await source.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"});
-    await moving.moveToWorkspace(targetId);
+    targetGadgetId = (await moving.moveToWorkspace(targetId)).gadgetId;
     await disconnected;
   });
   await withAuthenticatedApi(async api => {
@@ -606,6 +607,11 @@ it.each([false, true])("keeps moved auto-approval separate from a shared source 
       {value: "moved disabled", state: "applied"},
       {value: "moved after source deletion", state: "applied"},
     ]);
+    using moved = await target.getGadget(targetGadgetId);
+    using connection = await moved.getGatekeeperById(gatekeeperId);
+    await connection.remove();
+    expect(await target.listAutoApprovedActionKinds()).toEqual([]);
+    expect((await target.listPreApprovableActions()).some(action => action.gatekeeperId === gatekeeperId)).toBe(false);
   });
 });
 
@@ -768,11 +774,13 @@ it("retains unbound gadget connections on source retirement and destroys removed
     const nativeSource = exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(sourceId));
     await runInDurableObject(nativeSource, async instance => {
       expect(instance["impl"].storage.gatekeepers.get(connectionId)).toBeUndefined();
+      expect([...instance["impl"].storage.gadgets.list()].some(record =>
+        record.createdGatekeeperIds?.includes(connectionId))).toBe(false);
     });
   });
 });
 
-it("keeps a moved auto-approval opt-out after reclaim without changing other gadget rules", async () => {
+it.each([true, false])("keeps moved approval choices visible and revocable after reclaim (source enabled: %s)", async initialEnabled => {
   let sourceId!: string, targetId!: string;
   let sourceGadgetId!: WorkpieceId, targetGadgetId!: WorkpieceId;
   let privateId!: WorkpieceId, gatekeeperId!: WorkpieceId;
@@ -794,14 +802,15 @@ it("keeps a moved auto-approval opt-out after reclaim without changing other gad
     });
     await moving.bind("QUEUE", gatekeeperId);
     await privateGadget.bind("QUEUE", gatekeeperId);
-    await source.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"});
+    if (initialEnabled) await source.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"});
     targetGadgetId = (await moving.moveToWorkspace(targetId)).gadgetId;
     await disconnected;
   });
   await withAuthenticatedApi(async (api, disconnected) => {
     using _hostWorkspace = await api.openGadget(sourceId);
     using target = await api.openGadget(targetId);
-    await target.removeAutoApprovedActionKind(gatekeeperId, "append", sourceId);
+    if (initialEnabled) await target.removeAutoApprovedActionKind(gatekeeperId, "append", sourceId);
+    else await target.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"}, sourceId);
     using moved = await target.getGadget(targetGadgetId);
     await moved.moveToWorkspace(sourceId);
     await disconnected;
@@ -814,11 +823,38 @@ it("keeps a moved auto-approval opt-out after reclaim without changing other gad
     const states = () => runInDurableObject(native, async instance => {
       return (await instance["impl"].getGatekeeperFacet(gatekeeperId).fetch("https://local-action-provider.invalid/state")).json();
     });
-    await privateSession.append("private stays enabled");
-    await expect.poll(states).toEqual([{value: "private stays enabled", state: "applied"}]);
-    await returnedSession.append("returned stays disabled");
-    await expect.poll(states).toEqual([{value: "private stays enabled", state: "applied"}, {value: "returned stays disabled", state: "pending"}]);
+    const enabled = await source.listAutoApprovedActionKinds();
+    expect(enabled.filter(rule => rule.gatekeeperId === gatekeeperId && rule.actionKind.tag === "append")).toHaveLength(1);
+    expect((await source.listPreApprovableActions()).find(action =>
+      action.gatekeeperId === gatekeeperId && action.actionKind.tag === "append")?.alreadyEnabled).toBe(true);
+    // Queue the enabled caller first; a manual action intentionally blocks later actions.
+    const choices = initialEnabled ? ["private choice", "returned choice"] : ["returned choice", "private choice"];
+    if (initialEnabled) {
+      await privateSession.append(choices[0]);
+      await returnedSession.append(choices[1]);
+    } else {
+      await returnedSession.append(choices[0]);
+      await privateSession.append(choices[1]);
+    }
+    await expect.poll(states).toEqual([
+      {value: choices[0], state: "applied"},
+      {value: choices[1], state: "pending"},
+    ]);
+    await source.removeAutoApprovedActionKind(gatekeeperId, "append");
+    expect(await source.listAutoApprovedActionKinds()).toEqual([]);
+    expect((await source.listPreApprovableActions()).find(action =>
+      action.gatekeeperId === gatekeeperId && action.actionKind.tag === "append")?.alreadyEnabled).toBe(false);
+    await returnedSession.append("after disabling");
+    await expect.poll(states).toEqual([
+      {value: choices[0], state: "applied"},
+      {value: choices[1], state: "pending"},
+      {value: "after disabling", state: "pending"},
+    ]);
     await source.setAutoApprovedActionKind(gatekeeperId, {tag: "append", label: "Append"});
-    await expect.poll(states).toEqual([{value: "private stays enabled", state: "applied"}, {value: "returned stays disabled", state: "applied"}]);
+    await expect.poll(states).toEqual([
+      {value: choices[0], state: "applied"},
+      {value: choices[1], state: "applied"},
+      {value: "after disabling", state: "applied"},
+    ]);
   });
 });

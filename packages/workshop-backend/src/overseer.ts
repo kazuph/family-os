@@ -4110,15 +4110,23 @@ class OverseerImpl implements AgentHooks {
       let names = Object.entries(gadget.bindings)
           .filter(([, edge]) => edge.target === id)
           .map(([name]) => name);
-      if (names.length > 0) {
+      if (names.length > 0 || gadget.createdGatekeeperIds?.includes(id)) {
         for (let name of names) {
           delete gadget.bindings[name];
+        }
+        if (gadget.createdGatekeeperIds) {
+          gadget.createdGatekeeperIds = gadget.createdGatekeeperIds.filter(target => target !== id);
         }
         this.storage.gadgets.put(gadget);
         this.bumpVersion([gadget.id]);
       }
     }
 
+    for (let rule of Array.from(this.storage.autoApproveTags.list())) {
+      if (rule.gatekeeperId === id) {
+        this.storage.autoApproveTags.delete(autoApprovalRuleKey(id, rule.actionKind.tag, rule.gadgetId));
+      }
+    }
     this.ctx.facets.delete(`gatekeeper${id}`);
     this.storage.gatekeepers.delete(id);
   }
@@ -10565,8 +10573,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         sourceWorkspaceId: string; gatekeeperId: WorkpieceId; actionKind: ActionKind;
       }>> {
     let localGatekeepers = this.impl.localGatekeeperIds();
-    let local = [...this.impl.storage.autoApproveTags.list()]
-        .filter(rule => rule.gadgetId === undefined && localGatekeepers.has(rule.gatekeeperId))
+    let localGadgets = this.#localActionGadgetIds();
+    let localRules = [...this.impl.storage.autoApproveTags.list()]
+        .filter(rule => !rule.disabled && localGadgets.has(rule.gadgetId) &&
+            localGatekeepers.has(rule.gatekeeperId));
+    let local = [...new Map(localRules.map(rule =>
+        [autoApprovalRuleKey(rule.gatekeeperId, rule.actionKind.tag), rule])).values()]
         .map(rule => ({
       sourceWorkspaceId: this.impl.ctx.id.toString(),
       gatekeeperId: rule.gatekeeperId,
@@ -10582,6 +10594,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
     // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
     let boundIds = this.impl.localGatekeeperIds();
+    let localGadgets = this.#localActionGadgetIds();
 
     // TODO: a single gatekeeper failing (e.g. a rejected RPC) currently fails the whole catalog,
     // since we let getAutoApprovableActions() reject. Eventually we should isolate per-gatekeeper
@@ -10602,9 +10615,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         resourceTitle: gk.resourceTitle || "(title unavailable)",
         vendorId: gk.creationSpec?.type === "gatekeeper" ? gk.creationSpec.vendorId : undefined,
         actionKind,
-        alreadyEnabled:
-            this.impl.storage.autoApproveTags.get(
-                autoApprovalRuleKey(gk.id, actionKind.tag)) !== undefined,
+        alreadyEnabled: [...localGadgets].some(gadgetId =>
+            this.impl.getAutoApprovalRule(gk.id, actionKind.tag, gadgetId) !== undefined),
       }));
     });
 
