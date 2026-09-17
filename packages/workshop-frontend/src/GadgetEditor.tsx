@@ -1353,6 +1353,7 @@ export default function GadgetEditor() {
         metadata={metadata}
         authenticatedApi={authenticatedApi}
         currentUserId={userInfo?.id ?? null}
+        workspaceId={id}
       />
     )
   }
@@ -1856,6 +1857,7 @@ export default function GadgetEditor() {
                   reloadTrigger={uiReloadTrigger}
                   isVisible={activeTab === 'app' && !previewMode}
                   chatId={previewChatId}
+                  workspaceId={id}
                   onConsoleLog={handleClientConsoleLog}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                 />
@@ -1948,6 +1950,7 @@ export default function GadgetEditor() {
               reloadTrigger={uiReloadTrigger}
               isVisible={true}
               chatId={previewChatId}
+              workspaceId={id}
               onConsoleLog={handleClientConsoleLog}
             />
           )}

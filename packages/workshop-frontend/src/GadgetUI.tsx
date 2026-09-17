@@ -8,6 +8,15 @@ import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
 // the whole module and embed it. We can import the module using ?raw to get a string of the
 // content.
 import CAPNWEB_BUNDLE from 'capnweb?raw'
+import {
+  buildEgressGuardJs,
+  buildEgressScope,
+  buildSandboxCsp,
+  isValidHostEntry,
+  loadApprovedHosts,
+  saveApprovedHosts,
+  type EgressScope,
+} from './gadgetEgress'
 
 let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 
@@ -100,15 +109,15 @@ window.addEventListener('unhandledrejection', (event) => {
 
 `);
 
-const createSandboxedHtml = (jsCode: string): string => {
+const createSandboxedHtml = (jsCode: string, approvedHosts: readonly string[] = []): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
+  <meta http-equiv="Content-Security-Policy" content="${buildSandboxCsp(approvedHosts)}">
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(buildEgressGuardJs(approvedHosts) + jsCode)}"></script>
 </body>
 </html>`.trim()
 }
@@ -119,6 +128,10 @@ interface GadgetUIProps {
   reloadTrigger?: number
   isVisible?: boolean
   chatId?: number
+  // Workspace id for namespacing per-gadget egress approvals. Gadget ids
+  // restart at zero in every workspace, so approvals must never be keyed by
+  // gadget id alone. Absent means approvals stay ephemeral (not persisted).
+  workspaceId?: string
   onConsoleLog?: (log: ConsoleLogEvent) => void
   // Fires when the user presses Escape while the gadget iframe has focus. Sandboxed iframes
   // capture keydown events, so we forward Escape explicitly from inside the iframe.
@@ -134,8 +147,16 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, workspaceId, onConsoleLog, onIframeEscape }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
+  // Per-gadget external-reference approvals (generic egress approval, preview
+  // only). The server worker stays fully blocked; this only relaxes the
+  // browser iframe for the gadget the user explicitly approved.
+  const [egressAllowed, setEgressAllowed] = useState<string[]>([])
+  const [egressPending, setEgressPending] = useState<{host: string, kind: string, method: string}[]>([])
+  const egressAllowedRef = useRef<string[]>([])
+  const egressScopeRef = useRef<EgressScope>(buildEgressScope(null, null))
+  const bundleRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasLoaded, setHasLoaded] = useState(false)
@@ -200,6 +221,32 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const reloadIframe = (reason: unknown) => {
     resetConnection(reason)
     setIframeGeneration(generation => generation + 1)
+  }
+
+  const applyEgressAllowed = (next: string[]) => {
+    egressAllowedRef.current = next
+    setEgressAllowed(next)
+    saveApprovedHosts(egressScopeRef.current, next)
+    if (bundleRef.current) {
+      setSandboxedHtml(createSandboxedHtml(bundleRef.current, next))
+    }
+  }
+
+  const approveEgressHost = (host: string) => {
+    if (!isValidHostEntry(host) || egressAllowedRef.current.includes(host)) return
+    applyEgressAllowed([...egressAllowedRef.current, host])
+    setEgressPending(prev => prev.filter(p => p.host !== host))
+    reloadIframe(new Error('Egress approval granted.'))
+  }
+
+  const revokeEgressHost = (host: string) => {
+    if (!egressAllowedRef.current.includes(host)) return
+    applyEgressAllowed(egressAllowedRef.current.filter(h => h !== host))
+    reloadIframe(new Error('Egress approval revoked.'))
+  }
+
+  const dismissEgressPending = (host: string) => {
+    setEgressPending(prev => prev.filter(p => p.host !== host))
   }
 
   useEffect(() => {
@@ -291,10 +338,28 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
+        // Resolve the per-gadget approval scope. The gadget id restarts at
+        // zero in every workspace, so the workspace id is always part of a
+        // persistent scope. When the id is unreachable the scope is
+        // ephemeral: approvals last only for this load (fail closed).
+        let scope: EgressScope = buildEgressScope(null, null)
+        try {
+          scope = buildEgressScope(workspaceId ?? null, await gadget.getId())
+        } catch {
+          scope = buildEgressScope(null, null)
+        }
+        if (!isCurrent()) return
+        const approved = loadApprovedHosts(scope)
+        egressScopeRef.current = scope
+        egressAllowedRef.current = approved
+        setEgressAllowed(approved)
+        setEgressPending([])
         if (bundle) {
-          const html = createSandboxedHtml(bundle.jsCode)
+          bundleRef.current = bundle.jsCode
+          const html = createSandboxedHtml(bundle.jsCode, approved)
           setSandboxedHtml(html)
         } else {
+          bundleRef.current = null
           setSandboxedHtml(null)
         }
         setHasLoaded(true)
@@ -383,6 +448,19 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         })
       } else if (event.data?.type === 'escape') {
         onIframeEscapeRef.current?.()
+      } else if (event.data?.type === 'egress-blocked') {
+        // Runtime detection of a blocked external reference. The notice carries
+        // host, kind, and method only -- never the full URL -- and approvals
+        // stay scoped to this gadget.
+        const host = typeof event.data.host === 'string' ? event.data.host : ''
+        if (host && isValidHostEntry(host) && !egressAllowedRef.current.includes(host)) {
+          const kind = String(event.data.kind ?? 'other').slice(0, 32)
+          const method = String(event.data.method ?? 'GET').slice(0, 32)
+          setEgressPending(prev => {
+            if (prev.some(p => p.host === host) || prev.length >= 20) return prev
+            return [...prev, {host, kind, method}]
+          })
+        }
       }
     }
 
@@ -487,7 +565,64 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }
 
   return (
-    <div style={{ height, width: '100%' }}>
+    <div style={{ height, width: '100%', display: 'flex', flexDirection: 'column' }}>
+      {egressPending.length > 0 && (
+        <div style={{
+          padding: '8px 12px',
+          background: '#fff8e6',
+          borderBottom: '1px solid #e8d9a8',
+          fontSize: '12px',
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: '4px' }}>
+            このガジェットが外部への取得を求めています
+          </div>
+          <div style={{ color: '#6d7680', marginBottom: '4px' }}>
+            許可すると、このホストからのスクリプト・画像・通信（取得のみ、GET/HEAD）がこのガジェットだけに許可されます
+          </div>
+          {egressPending.map(p => (
+            <div key={p.host} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 0' }}>
+              <span style={{ fontFamily: 'monospace' }}>{p.host}</span>
+              <span style={{ color: '#6d7680' }}>{p.kind} {p.method}</span>
+              <button
+                onClick={() => approveEgressHost(p.host)}
+                style={{ border: '1px solid #182028', borderRadius: '8px', padding: '3px 10px', cursor: 'pointer', background: '#182028', color: '#fff' }}
+              >
+                許可する
+              </button>
+              <button
+                onClick={() => dismissEgressPending(p.host)}
+                style={{ border: '1px solid #e2e6e1', borderRadius: '8px', padding: '3px 10px', cursor: 'pointer', background: '#fff' }}
+              >
+                却下
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {egressAllowed.length > 0 && (
+        <div style={{
+          padding: '4px 12px',
+          background: '#f8f9f7',
+          borderBottom: '1px solid #e2e6e1',
+          fontSize: '11px',
+          color: '#6d7680',
+          display: 'flex',
+          gap: '8px',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+        }}>
+          <span>外部許可: {egressAllowed.join(', ')}</span>
+          {egressAllowed.map(h => (
+            <button
+              key={h}
+              onClick={() => revokeEgressHost(h)}
+              style={{ border: '1px solid #e2e6e1', borderRadius: '8px', padding: '1px 8px', cursor: 'pointer', background: '#fff' }}
+            >
+              {h}を取り消し
+            </button>
+          ))}
+        </div>
+      )}
       <iframe
         key={`${reloadTrigger}:${iframeGeneration}`}
         ref={iframeRef}
@@ -495,7 +630,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         style={{
           display: 'block',
           width: '100%',
-          height: '100%',
+          flex: 1,
+          minHeight: 0,
           border: 'none'
         }}
         sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"

@@ -39,6 +39,7 @@ type Props = {
   metadata: GadgetMetadata
   authenticatedApi: RpcStub<AuthenticatedApi>
   currentUserId: string | null
+  workspaceId?: string
 }
 
 // Matches the top bar height used by the full editor (and the home page header).
@@ -53,6 +54,7 @@ export default function GadgetUseView({
   metadata,
   authenticatedApi,
   currentUserId,
+  workspaceId,
 }: Props) {
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-kumo-base">
@@ -152,6 +154,7 @@ export default function GadgetUseView({
             gadget={gadget}
             height="100%"
             isVisible={true}
+            workspaceId={workspaceId}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">
