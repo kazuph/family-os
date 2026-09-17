@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sniffPastedImageMimeType } from "./ChatInterface";
+import { sniffPastedImageMimeType } from "./chatAttachment";
 
 describe("sniffPastedImageMimeType", () => {
   it("identifies PNG screenshots", () => {
@@ -19,13 +19,17 @@ describe("sniffPastedImageMimeType", () => {
     ]))).toBe("image/webp");
   });
 
-  it("identifies GIF bytes", () => {
+  it("identifies GIF87a and GIF89a bytes", () => {
+    expect(sniffPastedImageMimeType(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x37, 0x61])))
+      .toBe("image/gif");
     expect(sniffPastedImageMimeType(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])))
       .toBe("image/gif");
   });
 
-  it("returns undefined for non-image or truncated headers", () => {
+  it("returns undefined for non-image, truncated, or malformed headers", () => {
     expect(sniffPastedImageMimeType(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])))
+      .toBeUndefined();
+    expect(sniffPastedImageMimeType(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x00, 0x00])))
       .toBeUndefined();
     expect(sniffPastedImageMimeType(new Uint8Array([0x89, 0x50]))).toBeUndefined();
     expect(sniffPastedImageMimeType(new Uint8Array([]))).toBeUndefined();

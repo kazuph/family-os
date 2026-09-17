@@ -60,6 +60,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import * as Y from "yjs";
 import styles from "./ChatInterface.module.css";
+import { sniffPastedImageMimeType } from "./chatAttachment";
 import { modelPickerGroups, modelPickerLabel } from "./model-picker";
 import {
   getStoredSelectedModel,
@@ -407,39 +408,6 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Failed to encode image.")), type, quality);
   });
-}
-
-/**
- * Sniff the magic number of a clipboard paste arriving without a MIME type (empty File.type),
- * which the upload would otherwise reject as octet-stream. Returns the image MIME type so
- * screenshots still take the image pipeline; unrecognized bytes yield undefined and stay a
- * generic file.
- */
-export function sniffPastedImageMimeType(header: Uint8Array): string | undefined {
-  if (
-    header.length >= 8 && header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e &&
-    header[3] === 0x47 && header[4] === 0x0d && header[5] === 0x0a && header[6] === 0x1a &&
-    header[7] === 0x0a
-  ) {
-    return "image/png";
-  }
-  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
-    return "image/jpeg";
-  }
-  if (
-    header.length >= 12 && header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 &&
-    header[3] === 0x46 && header[8] === 0x57 && header[9] === 0x45 && header[10] === 0x42 &&
-    header[11] === 0x50
-  ) {
-    return "image/webp";
-  }
-  if (
-    header.length >= 6 && header[0] === 0x47 && header[1] === 0x49 && header[2] === 0x46 &&
-    header[3] === 0x38
-  ) {
-    return "image/gif";
-  }
-  return undefined;
 }
 
 async function prepareChatAttachment(file: File): Promise<{blob: Blob, mimeType: string}> {
@@ -1919,6 +1887,10 @@ const ToolGroupRow = memo(function ToolGroupRow({
   );
 });
 
+function focusOnMount(el: HTMLInputElement | null): void {
+  if (el) el.focus();
+}
+
 function modelGroupKindLabel(kind: string): string {
   if (kind === "recommended") return familyLabel("Recommended", "おすすめ");
   if (kind === "alpha") return familyLabel("Alpha / experimental", "Alpha・試験モデル");
@@ -3336,6 +3308,9 @@ export const ChatInput = ({
   } else {
     composerPlaceholder = familyLabel("Ask a follow-up…", familyUi.askFollowUp);
   }
+  useEffect(() => {
+    if (autoFocus) composerTextareaRef.current?.focus();
+  }, [autoFocus]);
 
   return (
     // isolation: isolate contains z-indexes used inside the composer (the
@@ -6966,10 +6941,15 @@ function ChatInterface({
                     </Tooltip>
                   ) : null;
                   return (
-                  <button
-                    type="button"
-                    disabled={isRenaming}
+                  // biome-ignore lint/a11y/noStaticElementInteractions: the row wraps the rename input and the row-action menu while renaming, so a button element or button role would nest interactives; keyboard activation is still handled below.
+                  <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
+                    onKeyDown={isRenaming ? undefined : (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onNavigateToChat(chat.id);
+                      }
+                    }}
                     className={`group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-[background-color] duration-150 ease-out ${
                       isRenaming
                         ? "cursor-default bg-kumo-base ring-1 ring-kumo-ring/40"
@@ -6995,9 +6975,7 @@ function ChatInterface({
                               }
                             }}
                             onBlur={() => handleSaveListRename(chat.id)}
-                            ref={(el) => {
-                              if (el) el.focus();
-                            }}
+                            ref={focusOnMount}
                             spellCheck={false}
                             autoCapitalize="off"
                             autoCorrect="off"
@@ -7071,7 +7049,7 @@ function ChatInterface({
                         </DropdownMenu.Content>
                       </DropdownMenu>
                     )}
-                  </button>
+                  </div>
                   );
                 })()}
               </div>
@@ -7346,7 +7324,7 @@ function ChatInterface({
 
                         return (
                           <div key={entry.key} className={`${entryTopClass} mb-4 max-w-[860px]`}>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3" aria-label="Context compacted">
                               <span className="h-px flex-1 bg-kumo-line" aria-hidden="true" />
                               <button
                                 type="button"
