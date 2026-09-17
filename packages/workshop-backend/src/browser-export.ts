@@ -34,14 +34,6 @@ export type GadgetBrowserEngine = "chromium" | "kitesurf";
 export type GadgetUiVerificationOptions = {
   locationHash?: string;
   waitForSelector?: string;
-  /**
-   * External hosts the rendered document may load over https (bare hostname
-   * or `*.suffix` wildcard). Absent means the current lockdown: embedded
-   * `data:`/`blob:` payloads only. Interactive preview approvals are passed
-   * through here so verification renders what the user approved; the gadget
-   * worker itself stays fully blocked (`globalOutbound: null`).
-   */
-  allowedHosts?: string[];
 };
 
 /** Browser-observed state returned after rendering a Gadget UI. */
@@ -78,51 +70,11 @@ delete globalThis.__workshopExportRuntime;
 // TODO: CSP and request interception do not cover WebRTC/STUN. The same gap exists for Gadgets
 // running inside an iframe in the user's browser. We should close the gap in both places. For now,
 // extending the same gap to remotely-rendered gadgets is acceptable.
-const EXPORT_DOCUMENT_BASE_CSP = "default-src 'none'; frame-src 'none'; " +
+const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; " +
   `script-src data: ${new URL(EXPORT_DOCUMENT_URL).origin}; ` +
   "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
-// TODO(gadget-egress-approval): persist per-gadget approvals in the overseer
-// so verification/export automatically render what the user approved in the
-// interactive preview, instead of threading `allowedHosts` through callers.
-/**
- * Verification/export document policy with caller-approved hosts added.
- * Host entries are bare hostnames or `*.suffix` wildcards; anything else is
- * dropped so an approval can never widen beyond https GET-shaped loads.
- */
-function buildExportCsp(allowedHosts: readonly string[] = []): string {
-  const valid = allowedHosts.filter(host =>
-    /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(host));
-  if (valid.length === 0) return EXPORT_DOCUMENT_BASE_CSP;
-  const sources = valid.map(host => `https://${host}`).join(' ');
-  return EXPORT_DOCUMENT_BASE_CSP
-    .replace('img-src data: blob:;', `img-src data: blob: ${sources};`)
-    .replace("connect-src 'none';", `connect-src ${sources};`)
-    .replace("style-src data: 'unsafe-inline';", `style-src data: 'unsafe-inline' ${sources};`)
-    .replace(`script-src data: ${new URL(EXPORT_DOCUMENT_URL).origin};`,
-      `script-src data: ${new URL(EXPORT_DOCUMENT_URL).origin} ${sources};`);
-}
-/** Whether a verification/export subrequest targets an approved host. */
-function isAllowedExportUrl(url: string, allowedHosts: readonly string[]): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  if (parsed.protocol !== 'https:') return false;
-  const host = parsed.hostname.toLowerCase();
-  return allowedHosts.some(entry => {
-    const candidate = entry.toLowerCase();
-    if (candidate.startsWith('*.')) {
-      const suffix = candidate.slice(2);
-      return host.length > suffix.length && host.endsWith(suffix) &&
-        host[host.length - suffix.length - 1] === '.';
-    }
-    return host === candidate;
-  });
-}
 const STATIC_HTML_CSP = "default-src 'none'; frame-src 'none'; script-src 'none'; " +
   "style-src data: 'unsafe-inline'; img-src data:; media-src data:; font-src data:; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';";
@@ -316,8 +268,6 @@ async function openRenderedGadget(
     let page = await deadline.race(browser.newPage());
     observePage?.(page);
     await deadline.race(page.setRequestInterception(true));
-    const allowedHosts = (options.allowedHosts ?? []).filter(host =>
-      /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(host));
     page.on("request", request => {
       let url = request.url();
       if (url === EXPORT_DOCUMENT_URL && request.isNavigationRequest() &&
@@ -325,7 +275,7 @@ async function openRenderedGadget(
         void request.respond({
           status: 200,
           contentType: "text/html",
-          headers: {"Content-Security-Policy": buildExportCsp(allowedHosts)},
+          headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
           body: makeExportHtml(formatId),
         });
       } else if (url === EXPORT_CLIENT_URL) {
@@ -336,9 +286,6 @@ async function openRenderedGadget(
           body: EXPORT_CLIENT_PREFIX + clientCode,
         });
       } else if (url === "about:blank" || url.startsWith("data:") || url.startsWith("blob:")) {
-        void request.continue();
-      } else if ((request.method() === "GET" || request.method() === "HEAD") &&
-          isAllowedExportUrl(url, allowedHosts)) {
         void request.continue();
       } else {
         void request.abort();

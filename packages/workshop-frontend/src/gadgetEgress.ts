@@ -27,10 +27,41 @@ export function storageKey(gadgetKey: string): string {
  * Whether a raw approval entry is a bare hostname or a `*.suffix` wildcard.
  * URLs, paths, ports, bare `*`, and empty strings are rejected so an approval
  * can never smuggle in more authority than "this host, fetched without
- * credentials from an opaque origin".
+ * credentials from an opaque origin". Wildcards must cover a full domain
+ * (`*.example.com`), never a bare public suffix (`*.com`).
  */
 export function isValidHostEntry(entry: string): boolean {
-  return /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(entry)
+  if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(entry)) return false
+  if (entry.startsWith('*.') && entry.split('.').length < 3) return false
+  return true
+}
+
+export type EgressScope =
+  | {persistent: true, key: string}
+  | {persistent: false, key: string}
+
+/**
+ * Build the storage scope for one gadget's approvals. The gadget id restarts
+ * at zero in every workspace, so the workspace id is always part of a
+ * persistent key -- without it approvals would leak into the same-numbered
+ * gadget of another workspace sharing this origin's storage. When either
+ * identifier is missing the scope is ephemeral: nothing is loaded or saved
+ * (fail closed to the current lockdown).
+ */
+export function buildEgressScope(
+  workspaceId: string | null | undefined,
+  gadgetId: string | number | null | undefined,
+): EgressScope {
+  if (workspaceId && (gadgetId === 0 || gadgetId)) {
+    return {persistent: true, key: `${STORAGE_PREFIX}workspace:${workspaceId}:gadget:${gadgetId}`}
+  }
+  let nonce = ''
+  try {
+    nonce = globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2)
+  } catch {
+    nonce = String(Math.random()).slice(2)
+  }
+  return {persistent: false, key: `${STORAGE_PREFIX}session:${nonce}`}
 }
 
 /** Whether `host` is covered by the allowlist (exact or `*.suffix` match). */
@@ -90,10 +121,14 @@ export function shouldAllowEgress(
   return hostMatchesAllowlist(parsed.hostname, approvedHosts)
 }
 
+// TODO(gadget-egress-approval): persist approvals in the overseer (per-gadget,
+// owner-authorized, with cleanup on gadget removal) so preview and verification
+// share one source of truth instead of this browser-local bridge.
 /** Approved hosts kept for one gadget; empty when nothing was approved. */
-export function loadApprovedHosts(gadgetKey: string): string[] {
+export function loadApprovedHosts(scope: EgressScope): string[] {
+  if (!scope.persistent) return []
   try {
-    const raw = globalThis.localStorage?.getItem(storageKey(gadgetKey))
+    const raw = globalThis.localStorage?.getItem(scope.key)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -105,10 +140,11 @@ export function loadApprovedHosts(gadgetKey: string): string[] {
 }
 
 /** Persist one gadget's approved hosts, dropping anything malformed. */
-export function saveApprovedHosts(gadgetKey: string, hosts: readonly string[]): void {
+export function saveApprovedHosts(scope: EgressScope, hosts: readonly string[]): void {
+  if (!scope.persistent) return
   try {
     globalThis.localStorage?.setItem(
-      storageKey(gadgetKey), JSON.stringify(hosts.filter(isValidHostEntry)))
+      scope.key, JSON.stringify(hosts.filter(isValidHostEntry)))
   } catch {
     // Storage is best-effort (private mode, SSR); the approval simply will
     // not survive a reload, which fails closed to the current lockdown.
@@ -178,6 +214,17 @@ export function buildEgressGuardJs(approvedHosts: readonly string[]): string {
     }
     throw new Error('Blocked: this gadget has not approved external access.');
   };
+  // sendBeacon is always a POST, so it never satisfies the GET/HEAD-only
+  // rule: block it and report like any other egress attempt.
+  try {
+    const __egressBeacon = Navigator.prototype.sendBeacon;
+    Navigator.prototype.sendBeacon = function (url, data) {
+      if (__egressCheck(String(url), 'POST', 'beacon')) {
+        return __egressBeacon.call(this, url, data);
+      }
+      return false;
+    };
+  } catch {}
   document.addEventListener('securitypolicyviolation', (event) => {
     try {
       const blocked = String(event.blockedURI || '');

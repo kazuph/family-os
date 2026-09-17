@@ -10,10 +10,12 @@ import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
 import CAPNWEB_BUNDLE from 'capnweb?raw'
 import {
   buildEgressGuardJs,
+  buildEgressScope,
   buildSandboxCsp,
   isValidHostEntry,
   loadApprovedHosts,
   saveApprovedHosts,
+  type EgressScope,
 } from './gadgetEgress'
 
 let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
@@ -126,6 +128,10 @@ interface GadgetUIProps {
   reloadTrigger?: number
   isVisible?: boolean
   chatId?: number
+  // Workspace id for namespacing per-gadget egress approvals. Gadget ids
+  // restart at zero in every workspace, so approvals must never be keyed by
+  // gadget id alone. Absent means approvals stay ephemeral (not persisted).
+  workspaceId?: string
   onConsoleLog?: (log: ConsoleLogEvent) => void
   // Fires when the user presses Escape while the gadget iframe has focus. Sandboxed iframes
   // capture keydown events, so we forward Escape explicitly from inside the iframe.
@@ -141,7 +147,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, workspaceId, onConsoleLog, onIframeEscape }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   // Per-gadget external-reference approvals (generic egress approval, preview
   // only). The server worker stays fully blocked; this only relaxes the
@@ -149,7 +155,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const [egressAllowed, setEgressAllowed] = useState<string[]>([])
   const [egressPending, setEgressPending] = useState<{host: string, kind: string, method: string}[]>([])
   const egressAllowedRef = useRef<string[]>([])
-  const egressKeyRef = useRef<string | null>(null)
+  const egressScopeRef = useRef<EgressScope>(buildEgressScope(null, null))
   const bundleRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -220,7 +226,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const applyEgressAllowed = (next: string[]) => {
     egressAllowedRef.current = next
     setEgressAllowed(next)
-    if (egressKeyRef.current) saveApprovedHosts(egressKeyRef.current, next)
+    saveApprovedHosts(egressScopeRef.current, next)
     if (bundleRef.current) {
       setSandboxedHtml(createSandboxedHtml(bundleRef.current, next))
     }
@@ -332,17 +338,19 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
-        // Resolve the per-gadget approval key: the gadget id when reachable,
-        // otherwise the chat scope. Approvals never cross gadgets.
-        let key: string | null = null
+        // Resolve the per-gadget approval scope. The gadget id restarts at
+        // zero in every workspace, so the workspace id is always part of a
+        // persistent scope. When the id is unreachable the scope is
+        // ephemeral: approvals last only for this load (fail closed).
+        let scope: EgressScope = buildEgressScope(null, null)
         try {
-          key = `gadget:${await gadget.getId()}`
+          scope = buildEgressScope(workspaceId ?? null, await gadget.getId())
         } catch {
-          key = `chat:${chatId ?? 'default'}`
+          scope = buildEgressScope(null, null)
         }
         if (!isCurrent()) return
-        const approved = key ? loadApprovedHosts(key) : []
-        egressKeyRef.current = key
+        const approved = loadApprovedHosts(scope)
+        egressScopeRef.current = scope
         egressAllowedRef.current = approved
         setEgressAllowed(approved)
         setEgressPending([])
@@ -446,8 +454,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         // stay scoped to this gadget.
         const host = typeof event.data.host === 'string' ? event.data.host : ''
         if (host && isValidHostEntry(host) && !egressAllowedRef.current.includes(host)) {
-          const kind = String(event.data.kind ?? 'other')
-          const method = String(event.data.method ?? 'GET')
+          const kind = String(event.data.kind ?? 'other').slice(0, 32)
+          const method = String(event.data.method ?? 'GET').slice(0, 32)
           setEgressPending(prev => {
             if (prev.some(p => p.host === host) || prev.length >= 20) return prev
             return [...prev, {host, kind, method}]
@@ -566,7 +574,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           fontSize: '12px',
         }}>
           <div style={{ fontWeight: 700, marginBottom: '4px' }}>
-            このガジェットが外部への取得を求めています（このガジェットだけ・GET/HEADのみ）
+            このガジェットが外部への取得を求めています
+          </div>
+          <div style={{ color: '#6d7680', marginBottom: '4px' }}>
+            許可すると、このホストからのスクリプト・画像・通信（取得のみ、GET/HEAD）がこのガジェットだけに許可されます
           </div>
           {egressPending.map(p => (
             <div key={p.host} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 0' }}>
@@ -588,7 +599,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           ))}
         </div>
       )}
-      {egressPending.length === 0 && egressAllowed.length > 0 && (
+      {egressAllowed.length > 0 && (
         <div style={{
           padding: '4px 12px',
           background: '#f8f9f7',
