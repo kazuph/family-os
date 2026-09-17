@@ -16,12 +16,19 @@ describe('gadget egress approval', () => {
   it('keeps the current lockdown CSP when nothing is approved', () => {
     expect(buildSandboxCsp([])).toBe(BASE_SANDBOX_CSP)
     expect(BASE_SANDBOX_CSP).toContain("connect-src 'none'")
+    // Embedded workers always pass: blob:/data: worker creation must never
+    // depend on a network approval.
+    expect(BASE_SANDBOX_CSP).toContain('worker-src blob: data:')
+    expect(BASE_SANDBOX_CSP).toContain('child-src blob: data:')
+    expect(BASE_SANDBOX_CSP).toContain("'wasm-unsafe-eval'")
   })
 
-  it('adds approved hosts to script, style, image, and connect sources only', () => {
+  it('adds approved hosts to script, style, image, worker, and connect sources only', () => {
     const csp = buildSandboxCsp(['unpkg.com', '*.tile.openstreetmap.org'])
-    expect(csp).toContain("script-src data: 'unsafe-inline' https://unpkg.com https://*.tile.openstreetmap.org")
+    expect(csp).toContain("script-src data: blob: 'unsafe-inline' 'wasm-unsafe-eval' https://unpkg.com https://*.tile.openstreetmap.org")
     expect(csp).toContain('https://*.tile.openstreetmap.org')
+    expect(csp).toContain('worker-src blob: data: https://unpkg.com https://*.tile.openstreetmap.org')
+    expect(csp).toContain('child-src blob: data:')
     expect(csp).not.toContain("connect-src 'none'")
     // Never opens frames, objects, or form targets, even with approvals.
     expect(csp).toContain("frame-src 'none'")
@@ -68,6 +75,27 @@ describe('gadget egress approval', () => {
     // Ephemeral scopes never persist: approvals last only for the load.
     saveApprovedHosts(ephemeral, ['unpkg.com'])
     expect(loadApprovedHosts(ephemeral)).toEqual([])
+  })
+
+  it('lets MapLibre-style blob workers run once the CDN and tile hosts are approved', () => {
+    // Acceptance mapping for the MapLibre + OpenFreeMap case: the library
+    // script comes from unpkg, vector tiles from the tile host, and the
+    // library spawns its worker from an internal blob: URL. The policy must
+    // allow all three without a per-provider code change.
+    const approved = ['unpkg.com', 'tiles.openfreemap.org']
+    const csp = buildSandboxCsp(approved)
+    expect(csp).toContain('https://unpkg.com')
+    expect(csp).toContain('connect-src https://unpkg.com https://tiles.openfreemap.org')
+    expect(csp).toContain('worker-src blob:')
+    expect(shouldAllowEgress('https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js', 'GET', approved)).toBe(true)
+    expect(shouldAllowEgress('https://tiles.openfreemap.org/styles/bright', 'GET', approved)).toBe(true)
+    expect(shouldAllowEgress('blob:null/00000000-0000-0000-0000-000000000000', 'GET', [])).toBe(true)
+  })
+
+  it('classifies worker-src violations as worker loads in the egress guard', () => {
+    const guard = buildEgressGuardJs(['unpkg.com'])
+    expect(guard).toContain("'worker'")
+    expect(guard).toContain('child')
   })
 
   it('covers the Kagoshima HTML external set once approved (CSP plus guard)', () => {

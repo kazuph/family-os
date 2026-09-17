@@ -9,10 +9,20 @@
 // Server-side execution is intentionally untouched: the gadget worker keeps
 // `globalOutbound: null`, so this only ever relaxes the browser preview.
 
-/** Document policy served to the sandboxed iframe when nothing is approved. */
+/**
+ * Document policy served to the sandboxed iframe when nothing is approved.
+ *
+ * This is a Preview Runtime policy, not an allowlist of providers: embedded
+ * `data:`/`blob:` execution (including `blob:` Web Workers, which MapLibre,
+ * Monaco, PDF.js, and other worker-based libraries create internally) is
+ * always permitted, while network access stays fail-closed until the user
+ * approves a host. The security boundary is the opaque iframe origin plus
+ * the RPC bridge -- never the list of approved hosts.
+ */
 export const BASE_SANDBOX_CSP =
-  "default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; " +
-  "style-src data: 'unsafe-inline'; img-src data:; media-src data:; " +
+  "default-src 'none'; frame-src 'none'; script-src data: blob: 'unsafe-inline' 'wasm-unsafe-eval'; " +
+  "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
+  "worker-src blob: data:; child-src blob: data:; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';"
 
 /** localStorage namespace for per-gadget approvals (browser preview only). */
@@ -81,8 +91,11 @@ export function hostMatchesAllowlist(host: string, allowlist: readonly string[])
 
 /**
  * Rebuild the sandboxed-iframe document policy with approved hosts added to
- * the script, style, image, media, font, and connection sources. Frames,
- * objects, and form targets stay closed however many hosts are approved.
+ * the script, style, image, media, font, worker, and connection sources.
+ * Frames, objects, and form targets stay closed however many hosts are
+ * approved. `blob:`/`data:` workers are always allowed (see
+ * BASE_SANDBOX_CSP): worker-based libraries must keep working without a
+ * per-provider policy change.
  */
 export function buildSandboxCsp(approvedHosts: readonly string[]): string {
   const valid = approvedHosts.filter(isValidHostEntry)
@@ -90,11 +103,13 @@ export function buildSandboxCsp(approvedHosts: readonly string[]): string {
   const sources = valid.map(host => `https://${host}`).join(' ')
   return (
     "default-src 'none'; frame-src 'none'; " +
-    `script-src data: 'unsafe-inline' ${sources}; ` +
+    `script-src data: blob: 'unsafe-inline' 'wasm-unsafe-eval' ${sources}; ` +
     `style-src data: 'unsafe-inline' ${sources}; ` +
     `img-src data: blob: ${sources}; ` +
     `media-src data: blob: ${sources}; ` +
     `font-src data: ${sources}; ` +
+    `worker-src blob: data: ${sources}; ` +
+    `child-src blob: data:; ` +
     "object-src 'none'; base-uri 'none'; form-action 'none'; " +
     `connect-src ${sources};`
   )
@@ -236,7 +251,8 @@ export function buildEgressGuardJs(approvedHosts: readonly string[]): string {
         : directive.startsWith('style') ? 'style'
         : directive.startsWith('connect') ? 'fetch'
         : directive.startsWith('font') ? 'font'
-        : directive.startsWith('media') ? 'media' : 'other';
+        : directive.startsWith('media') ? 'media'
+        : directive.startsWith('worker') || directive.startsWith('child') ? 'worker' : 'other';
       __egressReport(url.hostname, kind, 'GET');
     } catch {}
   });
