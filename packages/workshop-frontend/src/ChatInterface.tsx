@@ -409,12 +409,50 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
   });
 }
 
+/**
+ * Sniff the magic number of a clipboard paste arriving without a MIME type (empty File.type),
+ * which the upload would otherwise reject as octet-stream. Returns the image MIME type so
+ * screenshots still take the image pipeline; unrecognized bytes yield undefined and stay a
+ * generic file.
+ */
+export function sniffPastedImageMimeType(header: Uint8Array): string | undefined {
+  if (
+    header.length >= 8 && header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e &&
+    header[3] === 0x47 && header[4] === 0x0d && header[5] === 0x0a && header[6] === 0x1a &&
+    header[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    header.length >= 12 && header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 &&
+    header[3] === 0x46 && header[8] === 0x57 && header[9] === 0x45 && header[10] === 0x42 &&
+    header[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (
+    header.length >= 6 && header[0] === 0x47 && header[1] === 0x49 && header[2] === 0x46 &&
+    header[3] === 0x38
+  ) {
+    return "image/gif";
+  }
+  return undefined;
+}
+
 async function prepareChatAttachment(file: File): Promise<{blob: Blob, mimeType: string}> {
-  if (!file.type.startsWith("image/")) {
+  let sourceType = file.type;
+  if (!sourceType) {
+    const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    sourceType = sniffPastedImageMimeType(header) ?? "";
+  }
+  if (!sourceType.startsWith("image/")) {
     if (file.size > MAX_CHAT_ATTACHMENT_BYTES) {
       throw new Error(`Attachments must be ${formatAttachmentSize(MAX_CHAT_ATTACHMENT_BYTES)} or smaller.`);
     }
-    return { blob: file, mimeType: file.type || "application/octet-stream" };
+    return { blob: file, mimeType: sourceType || "application/octet-stream" };
   }
   if (file.size > MAX_CHAT_ATTACHMENT_SOURCE_IMAGE_BYTES) {
     throw new Error(`Images must be ${formatAttachmentSize(MAX_CHAT_ATTACHMENT_SOURCE_IMAGE_BYTES)} or smaller before resizing.`);
@@ -422,9 +460,9 @@ async function prepareChatAttachment(file: File): Promise<{blob: Blob, mimeType:
 
   const bitmap = await createImageBitmap(file);
   try {
-    const supportedOriginalType = file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/webp";
+    const supportedOriginalType = sourceType === "image/jpeg" || sourceType === "image/png" || sourceType === "image/webp";
     if (supportedOriginalType && file.size <= MAX_CHAT_ATTACHMENT_BYTES && Math.max(bitmap.width, bitmap.height) <= CHAT_ATTACHMENT_IMAGE_MAX_EDGE) {
-      return { blob: file, mimeType: file.type };
+      return { blob: file, mimeType: sourceType };
     }
 
     const scale = Math.min(1, CHAT_ATTACHMENT_IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
@@ -440,7 +478,7 @@ async function prepareChatAttachment(file: File): Promise<{blob: Blob, mimeType:
     // Preserve supported source formats when resizing. In particular, converting PNG to JPEG would
     // discard transparency, and changing PNG/WebP encoding would make the original filename
     // extension inconsistent with the uploaded MIME type.
-    const outputMimeType = supportedOriginalType ? file.type : "image/jpeg";
+    const outputMimeType = supportedOriginalType ? sourceType : "image/jpeg";
     const quality = outputMimeType === "image/png" ? undefined : 0.85;
     const blob = await canvasToBlob(canvas, outputMimeType, quality);
     if (blob.size > MAX_CHAT_ATTACHMENT_BYTES) {
