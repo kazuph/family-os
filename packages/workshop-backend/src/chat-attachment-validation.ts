@@ -39,8 +39,14 @@ const isTextImageOrPdfMime = (mimeType: string) =>
 // image part and are bridged to a provider's native document input where one exists: Gemini takes
 // application/pdf inline data as-is, and Anthropic/OpenAI payloads are rewritten in flight (see
 // chat-attachment-pdf.ts). Workers AI and Ollama chat endpoints have no document input at all.
+//
+// OpenCode Go is routed through pi like every other provider, so uploads stay equally permissive:
+// whether one of its models takes images is decided per model at replay time (see
+// imageContentForModel / handle.model.input), where a text-only model degrades an image to an
+// omission marker instead of failing. Rejecting images for the whole provider would break pasting
+// screenshots onto image-capable Go models outright.
 const ATTACHMENT_SUPPORT_BY_PROVIDER = {
-  "opencode-go": isTextLikeAttachmentMimeType,
+  "opencode-go": isTextImageOrPdfMime,
   anthropic: isTextImageOrPdfMime,
   openai: isTextImageOrPdfMime,
   google: isTextImageOrPdfMime,
