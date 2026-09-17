@@ -107,6 +107,26 @@ window.addEventListener('unhandledrejection', (event) => {
   }, '*');
 });
 
+// Preview runtime handshake: tell the host the runtime booted, so the host
+// can distinguish "still loading" from "crashed before first paint" and
+// avoid leaving a blank screen without an explanation.
+try {
+  window.parent.postMessage({ type: 'preview:ready' }, '*');
+} catch {}
+
+// Host-driven resize: the Gadget Host posts {type:'preview:resize'} when the
+// gadget layout changes. Re-dispatch as a window resize so map and chart
+// libraries (Leaflet/MapLibre invalidateSize, ResizeObserver users) redraw.
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent) return;
+  const data = event.data;
+  if (data && data.type === 'preview:resize') {
+    try {
+      window.dispatchEvent(new Event('resize'));
+    } catch {}
+  }
+});
+
 `);
 
 const createSandboxedHtml = (jsCode: string, approvedHosts: readonly string[] = []): string => {
@@ -141,6 +161,11 @@ interface GadgetUIProps {
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
 // budget: the point at which we conclude the reply is never coming.
 const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
+// How long to wait for the preview runtime's `preview:ready` handshake
+// before concluding the bundle crashed during boot (not just slow network).
+// The iframe stays mounted so console errors keep flowing; a banner above it
+// explains the failure instead of leaving a blank screen.
+const PREVIEW_READY_TIMEOUT_MS = 15_000
 const RECONNECT_TIMEOUT_MS = 5_000
 
 export default function GadgetUI(props: GadgetUIProps) {
@@ -154,6 +179,17 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // browser iframe for the gadget the user explicitly approved.
   const [egressAllowed, setEgressAllowed] = useState<string[]>([])
   const [egressPending, setEgressPending] = useState<{host: string, kind: string, method: string}[]>([])
+  // Preview runtime lifecycle (blank-screen prevention). `preview:ready`
+  // arrives from inside the iframe once the runtime boots; when it never
+  // arrives the host shows a classified error banner instead of silence.
+  const [previewReady, setPreviewReady] = useState(false)
+  const [previewTimedOut, setPreviewTimedOut] = useState(false)
+  // Hosts blocked for `worker` loads (CSP worker-src/child-src). Surfaced
+  // with the required directive so a MapLibre-style blob-worker failure is
+  // diagnosable instead of buried in the console.
+  const [workerBlocked, setWorkerBlocked] = useState<string[]>([])
+  const previewReadyRef = useRef(false)
+  const containerRef = useRef<HTMLDivElement>(null)
   const egressAllowedRef = useRef<string[]>([])
   const egressScopeRef = useRef<EgressScope>(buildEgressScope(null, null))
   const bundleRef = useRef<string | null>(null)
@@ -220,6 +256,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
   const reloadIframe = (reason: unknown) => {
     resetConnection(reason)
+    previewReadyRef.current = false
+    setPreviewReady(false)
+    setPreviewTimedOut(false)
+    setWorkerBlocked([])
     setIframeGeneration(generation => generation + 1)
   }
 
@@ -404,6 +444,12 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const port = event.ports[0]
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
+        // A new iframe document is booting: the previous runtime's readiness
+        // no longer applies.
+        previewReadyRef.current = false
+        setPreviewReady(false)
+        setPreviewTimedOut(false)
+        setWorkerBlocked([])
         const generation = connectionGenerationRef.current
         handshakePendingRef.current = generation
         const isCurrent = () => !cancelled &&
@@ -440,6 +486,13 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
+      } else if (event.data?.type === 'preview:ready') {
+        // Runtime boot handshake (blank-screen prevention). The RPC
+        // handshake above may still be in flight; readiness only means the
+        // preview document's own script started.
+        previewReadyRef.current = true
+        setPreviewReady(true)
+        setPreviewTimedOut(false)
       } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
         onConsoleLogRef.current({
           timestamp: new Date(),
@@ -456,6 +509,12 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (host && isValidHostEntry(host) && !egressAllowedRef.current.includes(host)) {
           const kind = String(event.data.kind ?? 'other').slice(0, 32)
           const method = String(event.data.method ?? 'GET').slice(0, 32)
+          if (kind === 'worker') {
+            // A worker load (classic worker URL, not a blob:) was refused by
+            // policy. Blob workers always pass, so this means an unapproved
+            // host: surface the required fix, not just a console line.
+            setWorkerBlocked(prev => prev.includes(host) ? prev : [...prev, host])
+          }
           setEgressPending(prev => {
             if (prev.some(p => p.host === host) || prev.length >= 20) return prev
             return [...prev, {host, kind, method}]
@@ -471,6 +530,45 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       resetConnection(new Error('Gadget RPC session was closed.'))
     }
   }, [])
+
+  // Preview boot watchdog: a fresh document (new bundle or new generation)
+  // must report `preview:ready` in time, otherwise the host shows a
+  // classified failure banner instead of a silent blank iframe.
+  useEffect(() => {
+    if (!sandboxedHtml || previewReady) return
+    const timeout = setTimeout(() => {
+      if (!previewReadyRef.current) setPreviewTimedOut(true)
+    }, PREVIEW_READY_TIMEOUT_MS)
+    return () => clearTimeout(timeout)
+  }, [sandboxedHtml, iframeGeneration, previewReady])
+
+  // Notify the preview document when the gadget layout changes so
+  // window-resize listeners (maps, charts) redraw. Guarded for test
+  // environments without ResizeObserver.
+  useEffect(() => {
+    const container = containerRef.current
+    const Observer = globalThis.ResizeObserver as typeof ResizeObserver | undefined
+    if (!container || typeof Observer === 'undefined') return
+    let frame = 0
+    const observer = new Observer(() => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        try {
+          const rect = container.getBoundingClientRect()
+          iframeRef.current?.contentWindow?.postMessage({
+            type: 'preview:resize',
+            width: rect.width,
+            height: rect.height,
+          }, '*')
+        } catch {}
+      })
+    })
+    observer.observe(container)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [sandboxedHtml])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
@@ -565,7 +663,53 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }
 
   return (
-    <div style={{ height, width: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div ref={containerRef} style={{ height, width: '100%', display: 'flex', flexDirection: 'column' }}>
+      {previewTimedOut && !previewReady && (
+        <div style={{
+          padding: '8px 12px',
+          background: '#fdecec',
+          borderBottom: '1px solid #f3c2c2',
+          fontSize: '12px',
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: '4px' }}>
+            Preview の起動に失敗しました
+          </div>
+          <div style={{ color: '#6d7680', marginBottom: '6px' }}>
+            ガジェットのスクリプトが起動確認を返しませんでした。コンソールに実行時エラーの詳細が出ているはずです。
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => reloadIframe(new Error('Preview restart requested.'))}
+              style={{ border: '1px solid #182028', borderRadius: '8px', padding: '3px 10px', cursor: 'pointer', background: '#182028', color: '#fff' }}
+            >
+              再読み込み
+            </button>
+            <button
+              onClick={() => setPreviewTimedOut(false)}
+              style={{ border: '1px solid #e2e6e1', borderRadius: '8px', padding: '3px 10px', cursor: 'pointer', background: '#fff' }}
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+      {workerBlocked.length > 0 && (
+        <div style={{
+          padding: '8px 12px',
+          background: '#fdecec',
+          borderBottom: '1px solid #f3c2c2',
+          fontSize: '12px',
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: '4px' }}>
+            Web Worker の起動がポリシーにより拒否されました
+          </div>
+          <div style={{ color: '#6d7680', marginBottom: '4px' }}>
+            ブロック中: <span style={{ fontFamily: 'monospace' }}>{workerBlocked.join(', ')}</span>
+            ／必要: <span style={{ fontFamily: 'monospace' }}>worker-src blob:</span>
+            （blob: 由来の Worker は常に許可されます。外部 URL の Worker は下の外部取得の許可で対応できます）
+          </div>
+        </div>
+      )}
       {egressPending.length > 0 && (
         <div style={{
           padding: '8px 12px',
@@ -627,6 +771,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         key={`${reloadTrigger}:${iframeGeneration}`}
         ref={iframeRef}
         srcDoc={sandboxedHtml}
+        allow="fullscreen"
         style={{
           display: 'block',
           width: '100%',
@@ -634,7 +779,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           minHeight: 0,
           border: 'none'
         }}
-        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads"
         title="Gadget UI"
       />
     </div>
