@@ -14,6 +14,7 @@ export type ModelSuggestion = GatewayModel
 // server offers whatever its operator pulled. Total over AiModelProvider, so a provider added there
 // does not compile until it is decided here.
 const MODELS_DEV_PROVIDER_IDS: Record<AiModelProvider, string | null> = {
+  'opencode-go': 'opencode-go',
   anthropic: 'anthropic',
   openai: 'openai',
   google: 'google',

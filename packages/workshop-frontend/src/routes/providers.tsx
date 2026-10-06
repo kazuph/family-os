@@ -372,7 +372,7 @@ function ProvidersPage() {
               <ModelRow
                 model={model}
                 isQuick={quickModel === model.id}
-                isBuiltIn={isBuiltIn(model.id)}
+                isBuiltIn={model.managedByDeployment === true || isBuiltIn(model.id)}
                 canEdit={canAddModels}
                 onEdit={() => openWithSource('edit', model)}
                 onClone={() => openWithSource('clone', model)}

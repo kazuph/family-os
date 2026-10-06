@@ -33,6 +33,7 @@ type SelectionType =
 
 // Placeholder hinting at the shape of each provider's API token.
 const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
+  'opencode-go': 'managed by deployment',
   anthropic: 'sk-ant-...',
   openai: 'sk-...',
   google: 'AIza...',
@@ -79,7 +80,7 @@ function decodeSelection(value: string): SelectionType {
 // Build the flat list of options for the Select dropdown.
 function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null) {
   const options: { value: string; label: string; provider: string }[] = []
-  const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
+  const providerOrder = Object.keys(SUGGESTED_MODELS).filter(provider => provider !== "opencode-go") as AiModelProvider[]
 
   for (const provider of providerOrder) {
     if (enabledProviders && !enabledProviders.has(provider)) continue

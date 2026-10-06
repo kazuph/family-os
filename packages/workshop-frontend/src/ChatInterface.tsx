@@ -629,6 +629,8 @@ function getToolCallSummary(
           : undefined,
       };
     }
+    case "consultPro":
+      return { verb: "Consulted DeepSeek V4 Pro", target: tc.input.question };
     case "giveUp":
       return { verb: "Stopped" };
     case "webFetch": {
@@ -721,6 +723,8 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return count === 1 ? "Made 1 edit" : `Made ${count} edits`;
     case "grep":
       return count === 1 ? "Searched files" : `Searched files ${formatTimes(count)}`;
+    case "consultPro":
+      return count === 1 ? "Consulted DeepSeek V4 Pro" : `Consulted DeepSeek V4 Pro ${formatTimes(count)}`;
     case "webFetch":
       return `Fetched ${pluralize(count, "page")}`;
     case "executeCode":
@@ -766,6 +770,8 @@ function getToolIcon(
       return PencilSimple;
     case "executeCode":
       return Terminal;
+    case "consultPro":
+      return Question;
     case "webFetch":
       return Globe;
     case "grep":
@@ -814,6 +820,8 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Creating worktree";
     case "executeCode":
       return "Running code";
+    case "consultPro":
+      return "Consulting DeepSeek V4 Pro";
     case "webFetch":
       return "Fetching web page";
     case "observeUserChanges":
@@ -843,6 +851,8 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "createGadget": return "Creating gadget";
     case "createWorktree": return "Creating worktree";
     case "executeCode": return "Running code";
+    case "consultPro":
+      return "Consulting DeepSeek V4 Pro";
     case "webFetch": return "Fetching";
     case "observeUserChanges": return "Observing user changes";
     case "giveUp": return "Stopping";
@@ -862,6 +872,8 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "writeFile": return `Writing ${pluralize(count, "file")}`;
     case "editFile": return `Making ${count} edits`;
     case "grep": return `Searching files ${formatTimes(count)}`;
+    case "consultPro":
+      return `Consulting DeepSeek V4 Pro ${formatTimes(count)}`;
     case "webFetch": return `Fetching ${pluralize(count, "page")}`;
     case "executeCode": return count === 1 ? "Running code" : `Running code ${formatTimes(count)}`;
     case "describeBinding": return `Inspecting ${pluralize(count, "binding")}`;
@@ -1480,6 +1492,22 @@ const ToolCallDetails = memo(function ToolCallDetails(
                 Output
               </span>
               <pre className="max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
+                {tc.output}
+              </pre>
+            </>
+          )}
+        </>
+      ) : tc.toolName === "consultPro" ? (
+        <>
+          <pre className="max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
+            {JSON.stringify(tc.input, null, 2)}
+          </pre>
+          {tc.output !== undefined && (
+            <>
+              <span className="font-mono text-[11px] leading-4 text-kumo-inactive uppercase tracking-[0.08em]">
+                Output
+              </span>
+              <pre className="max-h-96 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
                 {tc.output}
               </pre>
             </>
