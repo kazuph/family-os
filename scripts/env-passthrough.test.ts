@@ -80,12 +80,24 @@ const EXPECTED: Record<string, ExpectedArea> = {
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
     // Dedicated direct-script suites: their launchers start real local servers and explicitly
     // pass these addresses to vitest. The cached `test` task never invokes those configs.
-    injected: ["BOOK_TEST_ACCESS_ISS", "GO_TEST_BASE_URL"],
+    injected: [
+      "BOOK_TEST_ACCESS_ISS", "GO_TEST_BASE_URL",
+      // production-maintenance/run.mjs supplies the real local auth server to its child.
+      "MAINTENANCE_JWKS", "MAINTENANCE_ISSUER",
+    ],
     // Migration captures and live credentials belong to directly invoked book/Go suites and
     // capture tooling, not cached tasks. The base vitest config also optionally reads the token;
     // the cached ordinary suite intentionally sees undefined and runs without that binding.
     // Never declare the credential in cache.env: only an explicit direct invocation uses it.
-    external: ["LEGACY_BOOK_FIXTURE", "LEGACY_CONNECTED_BOOK_FIXTURE", "OPENCODE_GO_API_TOKEN"],
+    external: [
+      "LEGACY_BOOK_FIXTURE", "LEGACY_CONNECTED_BOOK_FIXTURE", "OPENCODE_GO_API_TOKEN",
+      // Direct maintenance launchers select protected input files, parser and suite mode.
+      "MAINTENANCE_LIVE_ARTIFACT", "MAINTENANCE_LIVE_FIXTURE",
+      "MAINTENANCE_SAME_ORIGIN_ARTIFACT", "MAINTENANCE_TYPESCRIPT_PARSER",
+      "MAINTENANCE_API_BOUNDARY_ONLY",
+      // Publication and generated rollback scripts are parent-invoked tooling, never vp tasks.
+      "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
+    ],
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.

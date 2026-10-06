@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["../../worker-configuration.d.ts"] },
+  "include": ["read-only.ts", "worker.ts", "context-worker.ts", "convert.ts", "same-origin.ts", "migration-worker.ts", "live-inspect.ts", "test-worker.ts", "../../src/**/*.d.ts"]
+}
