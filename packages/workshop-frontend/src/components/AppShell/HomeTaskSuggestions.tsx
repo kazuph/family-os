@@ -7,7 +7,6 @@ import {
   Presentation,
   type Icon,
 } from '@phosphor-icons/react'
-import { familyLabel, familyUi } from '../../familyUi'
 
 // A few example work tasks shown under the Home composer, so a new user immediately sees the kind
 // of thing they can ask for. Picking one drops a starter prompt into the composer (it does not
@@ -25,68 +24,43 @@ type TaskSuggestion = {
 const SUGGESTIONS: TaskSuggestion[] = [
   {
     id: 'one-on-one',
-    label: familyLabel('Write a 1:1 pre-read', familyUi.suggestOneOnOne),
-    description: familyLabel(
-      'A doc with a snapshot, things to inspect, and one ask',
-      familyUi.suggestOneOnOneDesc,
-    ),
+    label: 'Write a 1:1 pre-read',
+    description: 'A doc with a snapshot, things to inspect, and one ask',
     icon: FileText,
-    prompt: familyLabel(
+    prompt:
       'Create a document to prepare for my next 1:1 with a direct report: a current snapshot, a coaching frame, things to inspect, carryover items from last time, and one clear ask.',
-      familyUi.suggestOneOnOnePrompt,
-    ),
   },
   {
     id: 'team-meeting',
-    label: familyLabel('Build a team meeting deck', familyUi.suggestMeetingDeck),
-    description: familyLabel(
-      'Slides with progress, risks, and what needs a decision',
-      familyUi.suggestMeetingDeckDesc,
-    ),
+    label: 'Build a team meeting deck',
+    description: 'Slides with progress, risks, and what needs a decision',
     icon: Presentation,
-    prompt: familyLabel(
+    prompt:
       'Create a slide deck for my next team meeting: where things stand, what shipped, risks and blockers, and the decisions I need from the room. Ask me what the team is working on first.',
-      familyUi.suggestMeetingDeckPrompt,
-    ),
   },
   {
     id: 'insights',
-    label: familyLabel('Find insights in my data', familyUi.suggestDataInsights),
-    description: familyLabel(
-      'Turn a spreadsheet or CSV into trends and recommendations',
-      familyUi.suggestDataInsightsDesc,
-    ),
+    label: 'Find insights in my data',
+    description: 'Turn a spreadsheet or CSV into trends and recommendations',
     icon: ChartLineUp,
-    prompt: familyLabel(
+    prompt:
       'Turn a dataset I will share (a spreadsheet, CSV, or pasted table) into a narrative analysis: key trends, anomalies, the "so what", and concrete recommendations.',
-      familyUi.suggestDataInsightsPrompt,
-    ),
   },
   {
     id: 'workflow',
-    label: familyLabel('Automate a workflow', familyUi.suggestWorkflow),
-    description: familyLabel(
-      'Trigger an agent when a new email arrives',
-      familyUi.suggestWorkflowDesc,
-    ),
+    label: 'Automate a workflow',
+    description: 'Trigger an agent when a new email arrives',
     icon: Lightning,
-    prompt: familyLabel(
+    prompt:
       'Create an agent workflow that runs automatically when a new email arrives: read the message, decide what to do, and take action or draft a reply. Ask me which inbox to watch and what it should handle.',
-      familyUi.suggestWorkflowPrompt,
-    ),
   },
   {
     id: 'app',
-    label: familyLabel('Build a quick tool', familyUi.suggestQuickTool),
-    description: familyLabel(
-      'A small interactive app, calculator, or dashboard',
-      familyUi.suggestQuickToolDesc,
-    ),
+    label: 'Build a quick tool',
+    description: 'A small interactive app, calculator, or dashboard',
     icon: AppWindow,
-    prompt: familyLabel(
+    prompt:
       'Build a small interactive tool I can use right here — a calculator, dashboard, or explorer. Ask me what it should do, then create it.',
-      familyUi.suggestQuickToolPrompt,
-    ),
   },
 ]
 
@@ -148,9 +122,9 @@ export default function HomeTaskSuggestions({
   const visible = useMemo(pickSuggestions, [])
 
   return (
-    <section aria-label={familyLabel('Example tasks', 'おすすめの使い方')} className="flex flex-col gap-1">
+    <section aria-label="Example tasks" className="flex flex-col gap-1">
       <h3 className="px-1 pb-1 text-[12px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
-        {familyLabel('Get started', familyUi.getStarted)}
+        Get started
       </h3>
       <ul className="flex flex-col gap-0.5">
         {visible.map((suggestion) => (

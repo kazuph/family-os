@@ -63,7 +63,10 @@ export type ConfiguratorUISpec<
     ui: TUI;
   }): Partial<TValues> | Promise<Partial<TValues>>;
 
-  /** Return if the current iframe-owned state is ready to submit. */
+  /**
+   * Return whether the current iframe-owned state is ready to submit. If omitted, the generated
+   * iframe reports ready after its initial render succeeds.
+   */
   isReady?(context: { values: TValues }): boolean;
 
   /** Return the resource URL chosen by current UI state. */
@@ -167,7 +170,7 @@ export function Fragment(_props: { children?: unknown }): unknown {
 
 // JSX ambient types for configurator UI `.tsx` modules. These globals only apply when something
 // imports this package, which is intended only for sandboxed configurator UI modules compiled by
-// `scripts/build-gatekeeper-configurator.mjs`. Workshop and gatekeeper-server code should NOT
+// `scripts/build-gatekeeper-configurator.ts`. Workshop and gatekeeper-server code should NOT
 // import from this package to avoid clashing with React's `JSX` namespace.
 declare global {
   namespace JSX {

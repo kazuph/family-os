@@ -8,16 +8,10 @@ export const MAX_EXPORT_BYTES = 100 * 1024 * 1024;
 export type ExportDeadline = ReturnType<typeof createExportDeadline>;
 
 /** Creates a rejectable wall-clock deadline for an export operation. */
-export function createExportDeadline(
-  message: string | (() => string),
-  durationMs = MAX_EXPORT_DURATION_MS,
-) {
+export function createExportDeadline(message: string, durationMs = MAX_EXPORT_DURATION_MS) {
   const expired = Promise.withResolvers<never>();
-  const error = new Error(typeof message === "function" ? "Export timed out." : message);
-  const timer = setTimeout(() => {
-    if (typeof message === "function") error.message = message();
-    expired.reject(error);
-  }, durationMs);
+  const error = new Error(message);
+  const timer = setTimeout(() => expired.reject(error), durationMs);
   expired.promise.catch(() => {});
 
   return {

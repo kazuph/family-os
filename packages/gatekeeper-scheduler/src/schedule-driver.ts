@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
-import { reportIssue } from "@gadgets/backend-utils/error-reporting";
+import { reportIssue } from "@gadgets/observability/error-reporting";
 import type { ApprovalQueue, HookInitiator } from "@gadgets/workshop-shared/gatekeeper";
 import {
   admitRun,
@@ -448,8 +448,6 @@ export class ScheduleDriver extends DurableObject {
       this.#completePending(prepared, Date.now());
       return false;
     } finally {
-      disposeStub(hookResult?.approvalQueue);
-      disposeStub(hookResult?.callback);
       disposeStub(capabilities.initiator);
     }
   }

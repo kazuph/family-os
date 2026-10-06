@@ -1,6 +1,6 @@
 # Book MCP
 
-Family OS exposes a stateless Streamable HTTP MCP endpoint at `/mcp` so a local authoring agent can
+Cloudflare OS exposes a stateless Streamable HTTP MCP endpoint at `/mcp` so a local authoring agent can
 read and update the table of contents and Markdown chapters of a Workspace Book instance.
 
 The bundled `format.book` blueprint uses the original three-pane reader and Mio tutor chat,
@@ -16,6 +16,8 @@ model selected for that chat. The creating agent must write `content/toc.json` a
 through the new gadget's `putBookFiles()` method, then read them back with `getBookFiles()`.
 Writing Markdown as code-editor files alone does not update the reader's SQLite content.
 The reader derives chapter paths from the current TOC, so books can use their own chapter IDs.
+Untouched new books expose the starter files. Once `content/toc.json` is saved in SQLite, file reads
+return the stored files without injecting a starter chapter absent from the replacement TOC.
 The creation remains a proposed change until accepted; interrupted generation can leave only a
 starter, which is not a completed manuscript. The book's README describes these steps to the agent.
 
@@ -26,13 +28,16 @@ the signed `Cf-Access-Jwt-Assertion` either way, and the endpoint is disabled ou
 `CF_ACCESS_AUD` / `CF_ACCESS_ISS` are not configured.
 
 **A signed-in person, through Access Managed OAuth.** The agent opens a browser, the human
-authenticates against the same Access policy that guards the rest of Family OS, and the token that
+authenticates against the same Access policy that guards the rest of Cloudflare OS, and the token that
 comes back stands for that human. Their identity is the authorization: `ownerEmail` is filled in
 from the assertion, and naming a different account is refused. This is the setup to prefer — there
 is no long-lived shared secret on disk, and the agent reaches exactly the books its human owns.
 
 **A service token.** The assertion carries `common_name` and no identity, so the caller has to say
-which account's books it means. Use this for unattended jobs where no human is present.
+which existing account's books it means. It cannot create an account from that email, even when
+signups are enabled. Use this for unattended jobs where no human is present. Human `book.create`
+uses standard Access first-login registration and honors the deployment's signup setting; existing
+owners can create books while new registrations are disabled.
 
 Before reading or writing, the backend resolves the owning account, verifies that it owns the
 requested workspace, and verifies that the selected Gadget has output id `book`. The
@@ -41,6 +46,8 @@ endpoint never accepts an application-supplied email as authentication, and it c
 Markdown files under `content/` only.
 
 ## Tools
+
+- `book.create`: create a book from `format.book`, with an optional title and tutor model.
 
 - `book.list`: list every book owned by the account, including books moved into another workspace.
 - `book.read_files`: read all book content or selected content paths.
@@ -52,8 +59,7 @@ supply it.
 
 Use the `workspaceId` and `gadgetId` returned by `book.list` for reads, writes, and progress.
 When a workspace contains one book, `gadgetId` may be omitted. When it contains multiple books,
-`gadgetId` is required; an ambiguous request is rejected without editing any book. After a move,
-list the books again to obtain the destination IDs. The moved book keeps its existing storage.
+`gadgetId` is required; an ambiguous request is rejected without editing any book. Previously moved books require the offline book migration before switching runtimes; their owner, destination workspace and gadget IDs must be retained. This port does not add a move operation.
 
 `book.put_files` persists overrides in the book Gadget's own SQLite storage. The reader fetches the
 current table of contents and chapters when it opens, so edits survive reload without rebuilding the

@@ -18,17 +18,7 @@ describe("assertChatAttachmentSupportedByProvider", () => {
 
   it("applies provider raw-file policy", () => {
     // Text + images are universal; PDFs are additionally bridged to providers whose APIs take
-    // documents (see chat-attachment-pdf.ts), which Workers AI and Ollama do not. OpenCode Go
-    // uploads stay equally permissive because per-model image support is decided at replay time
-    // (see imageContentForModel), so pasting a screenshot never fails outright there.
-    expect(() => assertChatAttachmentSupportedByProvider("opencode-go", "text/plain", 1))
-      .not.toThrow();
-    expect(() => assertChatAttachmentSupportedByProvider("opencode-go", "image/png", 1))
-      .not.toThrow();
-    expect(() => assertChatAttachmentSupportedByProvider("opencode-go", "application/pdf", 1))
-      .not.toThrow();
-    expect(() => assertChatAttachmentSupportedByProvider("opencode-go", "application/zip", 1))
-      .toThrow("Unsupported file type");
+    // documents (see chat-attachment-pdf.ts), which Workers AI and Ollama do not.
     expect(() => assertChatAttachmentSupportedByProvider("anthropic", "text/plain", 1)).not.toThrow();
     expect(() => assertChatAttachmentSupportedByProvider("anthropic", "application/pdf", 1))
       .not.toThrow();

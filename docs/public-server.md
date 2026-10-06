@@ -13,52 +13,15 @@ connect the account's capabilities. There's no single switch — the pieces turn
 | Configure | Effect |
 | --- | --- |
 | `AUTH_GATEKEEPERS=cloudflare,google,github` | Allowlists which connected gatekeepers may be used to sign in. Each shows a "Continue with …" button alongside username/password. |
-| Each gatekeeper's OAuth credentials (on the gatekeeper Worker) | Required for that gatekeeper to actually authenticate. In dev, seeded from `GOOGLE_*` / `GITHUB_*` / `CLOUDFLARE_OAUTH_*` shell vars (see `run-dev-server.js`). |
+| Each gatekeeper's OAuth credentials (on the gatekeeper Worker) | Required for that gatekeeper to actually authenticate. In dev, seeded from `GOOGLE_*` / `GITHUB_*` / `CLOUDFLARE_OAUTH_*` shell vars (see `run-dev-server.ts`). |
 | `ENABLE_CLOUDFLARE_LIMITS=true` | Enables the free daily limit + Cloudflare-credits top-up flow. Billing reads a token from the connected Cloudflare gatekeeper. |
 | `DISABLE_PASSWORD_AUTH=true` | Hides username/password, leaving gatekeeper sign-in only (ignored unless `AUTH_GATEKEEPERS` is non-empty, to avoid lockout). |
 
 The primary account key is always the user's **verified email**: signing in with any allowlisted
 gatekeeper that yields the same verified email maps to the same account.
 
-For local development, keep the variables in a dotenvx-encrypted root `.env` file. Create an empty
-file once with `touch .env`, then update it with `dotenvx set` (the generated `.env.keys` is
-gitignored) and run the server through
-dotenvx so the decrypted values exist only in the process environment:
-
-```
-dotenvx set CF_AI_GATEWAY default
-dotenvx set CF_AI_GATEWAY_PROVIDERS openai
-dotenvx set CF_AI_GATEWAY_ACCOUNT_ID ...
-dotenvx set CF_AI_GATEWAY_API_TOKEN ...
-dotenvx run -f .env --overload -- pnpm run dev-server --remote-ai
-```
-
-To use a deployment's OpenCode Go subscription, store its token with
-`dotenvx set -f .env -fk .env.keys OPENCODE_GO_API_TOKEN -- "<token>"`. When that secret is
-present, DeepSeek V4 Flash is the first model in the picker and connects directly to OpenCode Go;
-it is not routed through Cloudflare AI Gateway. The same name should be registered as a Worker
-secret after the target Worker exists.
-
-The picker reads all available models from `https://opencode.ai/zen/go/v1/models` whenever the
-model list is loaded. New Go models therefore appear after reopening or reloading the page,
-without deploying code. The last selected model is retained in the browser for new chats; Flash
-remains the initial choice when there is no saved selection. Model resolution reads and
-ETag-revalidates the OpenCode Go catalog at `https://models.dev/api.json` for each request,
-including native Responses, Anthropic Messages, or OpenAI-compatible routing, input modalities,
-and token limits. Credentials and the API origin remain deployment-owned. Catalog failures are
-reported instead of silently serving an old fixed model list. Models absent from models.dev use
-the catalog provider protocol and the existing generic token limits until metadata is published.
-
-The household picker hides four upstream-unavailable entries by explicit owner preference:
-`hy3-preview`, `kimi-k2.5`, `mimo-v2-pro`, and `mimo-v2-omni`. This only removes picker entries;
-existing chat records are retained. The chat dropdown groups `glm-5.3-flash`,
-`muse-spark-1.3-contributor`, and `kimi-k3` first, in that order, with a star marker. Alpha-named
-models (currently `omen-alpha`) follow in an experimental group with a test-tube marker, then the
-remaining models. Grouping is display-only: it does not change the saved selection or the
-initial default, and newly published Alpha IDs receive the marker without another deployment.
-
-Do not keep both `.dev.vars` and `.env`; Wrangler gives `.dev.vars` precedence. A minimal
-configuration is:
+For local development, set the required variables in a root `.dev.vars` file (gitignored,
+`KEY=VALUE` per line); `pnpm run dev-server` loads it automatically. A minimal example:
 
 ```
 ENABLE_CLOUDFLARE_LIMITS=true
@@ -75,27 +38,51 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 
 # Platform AI Gateway used for the free tier:
 CF_AI_GATEWAY=your-gateway
+# The providers that are always on. An admin can turn on others on the Models tab of /admin:
 CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
-# Required whenever CF_AI_GATEWAY is set (all inference goes over HTTPS with tokens):
+# Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
+# Required unless the WORKERS_AI binding carries gateway traffic (see below); always required
+# for the google provider:
 CF_AI_GATEWAY_API_TOKEN=...
-
-# To send Workers AI straight to its REST endpoint (no gateway, no cost logs):
-CF_AI_GATEWAY_WAI_DIRECT=true
 ```
 
-Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID` and `CF_AI_GATEWAY_API_TOKEN`; the token
-needs AI Gateway Run and Read permissions so Gadgets can execute models and report their costs
-(the Gateway may live in the Worker's own account or a different one). Workers AI defaults to the
-same Gateway ID; set `CF_AI_GATEWAY_WAI` to route it through a different Gateway in the same
-account, or `CF_AI_GATEWAY_WAI_DIRECT=true` to bypass gateways and call the Workers AI REST
-endpoint directly (using the same account/token pair; such requests produce no cost logs).
+Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID`, plus a transport for gateway requests.
+When the `WORKERS_AI` binding is present, the binding is that transport by default: its requests
+are pre-authenticated in-account, so inference and cost-log reads need no API token. This is only
+valid when the Gateway lives in the Worker's **own** account — binding requests can't reach
+another account's Gateway, and the Worker cannot verify where the Gateway lives at runtime — so
+deployments whose Gateway is in a different account must set `CF_AI_GATEWAY_USE_BINDING=false` to
+opt out and route over HTTPS instead. Keep `WORKERS_AI` bound when you do: it is also what the
+webFetch tool's document-to-Markdown conversion runs on, so unbinding it opts out of far more than
+the gateway transport. Without the binding transport, set
+`CF_AI_GATEWAY_API_TOKEN` — a token with AI Gateway Run and Read permissions so Gadgets can
+execute models and report their costs (over HTTPS the Gateway may live in the Worker's own
+account or a different one). The token stays required for the `google` provider regardless of the
+binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
+it, so the platform server itself still needs the token). Every provider, Workers AI included,
+routes through the same Gateway.
+
+Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
+environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can
+turn on the others there. Each model is **Enabled**, **Hidden** (out of the model pickers, still
+works where it is already in use) or **Disabled** (stops working everywhere, including existing
+chats, gadget model bindings and scheduled tasks). The tab also sets reasoning levels and
+compaction budgets, adds models the catalog doesn't list, and tests a provider or a model with
+one real request.
+
+Disabling a model or turning a provider off is not a spend control while **Users may add their
+own models** is on: a user can still add a model under any provider that is on, and it runs
+through the deployment's Gateway. Turn that switch off to make the listed models the only ones.
+An admin session can turn on any provider the Gateway serves.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
-`pnpm run dev-server -- --use-workers-ai-binding` so the webFetch tool's document-to-Markdown
-conversion still has a `WORKERS_AI` binding. (Inference itself no longer uses the binding; it goes
-over HTTPS with the tokens above.)
+`pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
+the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
+it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
+lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
+`--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host
 with `PUBLIC_BASE_URL`):

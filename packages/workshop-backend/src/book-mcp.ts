@@ -2,8 +2,10 @@ import type { JWTPayload } from "jose";
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
+/** Editable manuscript file; executable files are outside this contract. */
 export type BookMcpFile = { path: string; content: string };
 
+/** Book identity within an owning workspace. */
 export type BookMcpWorkspace = {
   workspaceId: string;
   title: string;
@@ -18,6 +20,7 @@ export const BOOK_BLUEPRINT_ID = "format.book";
 /** Model bound as the book's tutor when the caller does not name one. */
 export const DEFAULT_BOOK_TUTOR_MODEL = "deepseek-v4-flash";
 
+/** Owner-checked access to book data using the Workshop storage boundary. */
 export interface BookMcpStore {
   createBook(ownerEmail: string, title?: string, modelId?: string): Promise<BookMcpWorkspace>;
   listBooks(ownerEmail: string): Promise<BookMcpWorkspace[]>;
@@ -171,6 +174,7 @@ function stringField(value: Record<string, unknown>, key: string): string {
   return field;
 }
 
+/** Refuse paths outside the TOC and Markdown manuscript namespace. */
 export function validateBookFilePath(path: string): void {
   if (path.startsWith("/") || path.includes("\\") || path.split("/").includes("..")) {
     throw new Error(`Invalid book file path: ${path}`);
@@ -204,6 +208,7 @@ function toolResult(value: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], structuredContent: { value } };
 }
 
+/** Serve authenticated manuscript-only MCP tools through an owner-checked store. */
 export async function handleBookMcpRequest(
     request: Request, accessPayload: JWTPayload | null, store: BookMcpStore): Promise<Response> {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });

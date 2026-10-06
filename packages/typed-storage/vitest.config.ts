@@ -10,12 +10,15 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: {
-        compatibilityDate: '2026-02-02',
+        compatibilityDate: '2026-09-04',
         compatibilityFlags: ['nodejs_compat'],
       },
     }),
   ],
   test: {
     include: ['__tests__/*.test.ts'],
+    // Nothing here imports `cloudflare:test`, so a pool that failed to start would leave this suite
+    // green while running under Node. The guard makes that fail loudly instead.
+    setupFiles: ['@gadgets/scripts/assert-workerd'],
   },
 })

@@ -2,7 +2,7 @@ import { StrictMode, useState, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
 import { RpcPromise, RpcStub, newWebSocketRpcSession } from 'capnweb'
-import { PublicApi, ServerConfig, WORKSHOP_WEBSOCKET_CLIENT_VERSION } from '@gadgets/workshop-shared/api'
+import { PublicApi, ServerConfig } from '@gadgets/workshop-shared/api'
 import { RpcContext } from './RpcContext'
 import { ServerConfigContext, ServerConfigErrorContext } from './ServerConfigContext'
 import { ThemeProvider } from './ThemeContext'
@@ -13,6 +13,7 @@ import './styles.css'
 import FrontendErrorBoundary from './FrontendErrorBoundary'
 import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
+import { getBackendHost } from './connectHandoff';
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
@@ -82,23 +83,11 @@ const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 };
 
-function getBackendHost(): string {
-  // Only the Vite dev server is hosted separately from the backend. Built assets are served from
-  // the same origin in both production and run-local mode.
-  if (import.meta.env.DEV) {
-    // Access mode keeps the API on the page origin so the Worker origin check passes in dev.
-    if (import.meta.env.VITE_CF_ACCESS_MODE === 'true') return window.location.host;
-    return import.meta.env.VITE_BACKEND_HOST?.trim() || 'localhost:8787';
-  }
-  return window.location.host;
-}
-
 function startConnection(): RpcStub<PublicApi> {
   lastConnectTime = Date.now();
   const apiHost = getBackendHost();
-  const wsUrl = new URL((window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api');
-  wsUrl.searchParams.set('client-version', WORKSHOP_WEBSOCKET_CLIENT_VERSION);
-  const stub = newWebSocketRpcSession<PublicApi>(wsUrl.href);
+  const wsUrl = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api';
+  const stub = newWebSocketRpcSession<PublicApi>(wsUrl);
   stub.onRpcBroken(handleBroken);
   return stub;
 }

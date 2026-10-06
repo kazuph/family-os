@@ -10,7 +10,6 @@ import { DropdownMenu } from '@cloudflare/kumo'
 import type { OutputFormatOffer } from '@gadgets/workshop-shared/api'
 import { FormatGlyph } from './FormatVisuals'
 import { useOutputFormats } from './useOutputFormats'
-import { familyLabel, familyUi, formatNounLabel } from '../../familyUi'
 
 // Matches the surrounding items in the composer menu, which are quieter and rounder than the
 // app-wide MENU_ITEM.
@@ -20,8 +19,10 @@ const COMPOSER_MENU_ITEM =
 
 export default function ComposerFormatMenuItems({
   onSelect,
+  showTrailingSeparator = false,
 }: {
   onSelect: (format: OutputFormatOffer) => void
+  showTrailingSeparator?: boolean
 }) {
   const { formats, creating, create } = useOutputFormats()
 
@@ -33,7 +34,7 @@ export default function ComposerFormatMenuItems({
   return (
     <>
       <p className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase leading-4 tracking-[0.06em] text-kumo-inactive">
-        {familyLabel('Start with', familyUi.startWithFormat)}
+        Start with
       </p>
       {formats.map((format) => (
         <DropdownMenu.Item
@@ -50,13 +51,11 @@ export default function ComposerFormatMenuItems({
             />
           </span>
           <span className="flex-1 truncate">
-            {creating === format.blueprintId
-              ? familyLabel('Creating…', familyUi.creatingEllipsis)
-              : formatNounLabel(format.output.noun)}
+            {creating === format.blueprintId ? 'Creating…' : format.output.noun}
           </span>
         </DropdownMenu.Item>
       ))}
-      <div className="my-1 border-t border-kumo-line/70" />
+      {showTrailingSeparator && <div className="my-1 border-t border-kumo-line/70" />}
     </>
   )
 }

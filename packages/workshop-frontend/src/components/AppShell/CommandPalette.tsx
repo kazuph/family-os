@@ -11,7 +11,6 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import type { GadgetMetadataWithTimestamps, OutputFormatOffer } from '@gadgets/workshop-shared/api'
 import { FormatGlyph } from '../format/FormatVisuals'
 import { createFromFormat } from '../format/useOutputFormats'
-import { familyLabel, familyUi, formatNounLabel, workspaceTitle } from '../../familyUi'
 import { isImeComposing } from '../../keyboardEvent'
 
 // A ⌘K command palette: jump to a workspace or a primary destination. Because it's keyboard-driven
@@ -50,7 +49,7 @@ function mergeBlueprints(
   for (const b of library) {
     map.set(b.id, {
       id: b.id,
-      title: b.metadata.title || familyLabel('Untitled blueprint', familyUi.untitledBlueprint),
+      title: b.metadata.title || 'Untitled blueprint',
       recency: b.addedAt.getTime(),
     })
   }
@@ -58,7 +57,7 @@ function mergeBlueprints(
     const prev = map.get(b.id)
     map.set(b.id, {
       id: b.id,
-      title: b.title || prev?.title || familyLabel('Untitled blueprint', familyUi.untitledBlueprint),
+      title: b.title || prev?.title || 'Untitled blueprint',
       recency: Math.max(prev?.recency ?? 0, b.lastUpdated.getTime()),
     })
   }
@@ -229,11 +228,8 @@ export default function CommandPalette({
     // general starting point; the format shortcuts follow it in the admin's configured order.
     const formatCommands: Command[] = formats.map((format) => ({
       id: `format-${format.blueprintId}`,
-      label: familyLabel(
-        `New ${format.output.noun}`,
-        `新しい${formatNounLabel(format.output.noun)}`,
-      ),
-      hint: familyLabel('Format', familyUi.formatHint),
+      label: `New ${format.output.noun}`,
+      hint: 'Format',
       icon: <FormatGlyph output={format.output} size="md" />,
       run: () => { void createFormat(format) },
     }))
@@ -241,20 +237,20 @@ export default function CommandPalette({
     const nav: Command[] = [
       {
         id: 'nav-new',
-        label: familyLabel('New workspace', familyUi.newWorkspace),
+        label: 'New workspace',
         icon: <Plus size={15} weight="bold" />,
         run: () => navigate({ to: '/' }),
       },
       ...formatCommands,
       {
         id: 'nav-workspaces',
-        label: familyLabel('Workspaces', familyUi.workspaces),
+        label: 'Workspaces',
         icon: <SquaresFour size={15} />,
         run: () => navigate({ to: '/workspaces' }),
       },
       {
         id: 'nav-blueprints',
-        label: familyLabel('Blueprints', familyUi.blueprints),
+        label: 'Blueprints',
         icon: <Blueprint size={15} />,
         run: () => navigate({ to: '/explore' }),
       },
@@ -264,8 +260,8 @@ export default function CommandPalette({
       .toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
       .map((g) => ({
         id: `ws-${g.id}`,
-        label: workspaceTitle(g.title),
-        hint: familyLabel('Workspace', familyUi.workspaceHint),
+        label: g.title || 'Untitled workspace',
+        hint: 'Workspace',
         icon: <SquaresFour size={15} className="text-kumo-inactive" />,
         run: () => navigate({ to: '/workspace/$id', params: { id: g.id } }),
       }))
@@ -275,7 +271,7 @@ export default function CommandPalette({
       .map((b) => ({
         id: `bp-${b.id}`,
         label: b.title,
-        hint: familyLabel('Blueprint', familyUi.blueprintHint),
+        hint: 'Blueprint',
         icon: <Blueprint size={15} className="text-kumo-inactive" />,
         run: () => navigate({ to: '/blueprint/$id', params: { id: b.id } }),
       }))
@@ -295,16 +291,13 @@ export default function CommandPalette({
 
     const built: Group[] = searching
       ? [
-          { heading: familyLabel('Actions', familyUi.actions), items: refine(nav, nav.length) },
-          { heading: familyLabel('Workspaces', familyUi.workspaces), items: refine(wsBase, 8) },
-          { heading: familyLabel('Blueprints', familyUi.blueprints), items: refine(bpBase, 8) },
+          { heading: 'Actions', items: refine(nav, nav.length) },
+          { heading: 'Workspaces', items: refine(wsBase, 8) },
+          { heading: 'Blueprints', items: refine(bpBase, 8) },
         ]
       : [
-          { heading: familyLabel('Actions', familyUi.actions), items: refine(nav, nav.length) },
-          {
-            heading: familyLabel('Recent workspaces', familyUi.recentWorkspaces),
-            items: refine(wsBase, 4),
-          },
+          { heading: 'Actions', items: refine(nav, nav.length) },
+          { heading: 'Recent workspaces', items: refine(wsBase, 4) },
         ]
 
     const groups = built.filter((g) => g.items.length > 0)
@@ -351,7 +344,7 @@ export default function CommandPalette({
       className="fixed inset-0 z-[1500] flex items-start justify-center px-4 pt-[12vh]"
       role="dialog"
       aria-modal="true"
-      aria-label={familyLabel('Command palette', familyUi.commandPalette)}
+      aria-label="Command palette"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -365,10 +358,7 @@ export default function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={familyLabel(
-              'Search workspaces and actions…',
-              familyUi.searchWorkspacesAndActions,
-            )}
+            placeholder="Search workspaces and actions…"
             className="h-12 w-full bg-transparent text-[14px] leading-5 tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive focus:outline-none"
           />
           <kbd className="shrink-0 rounded border border-kumo-line px-1.5 py-0.5 font-sans text-[10px] leading-none text-kumo-inactive">
@@ -378,9 +368,7 @@ export default function CommandPalette({
 
         <div ref={listRef} className="sidebar-scroll max-h-[min(60vh,420px)] overflow-y-auto p-1.5">
           {flat.length === 0 ? (
-            <p className="px-3 py-6 text-center text-[13px] text-kumo-inactive">
-              {familyLabel('No results.', familyUi.noResults)}
-            </p>
+            <p className="px-3 py-6 text-center text-[13px] text-kumo-inactive">No results.</p>
           ) : (
             groups.map((group, gi) => {
               // Compute the flat index offset for this group so keyboard nav stays in sync.
@@ -425,15 +413,15 @@ export default function CommandPalette({
           <span className="flex items-center gap-1">
             <kbd className="rounded border border-kumo-line px-1 py-0.5 font-sans leading-none">↑</kbd>
             <kbd className="rounded border border-kumo-line px-1 py-0.5 font-sans leading-none">↓</kbd>
-            {familyLabel('navigate', familyUi.navigate)}
+            navigate
           </span>
           <span className="flex items-center gap-1">
             <kbd className="rounded border border-kumo-line px-1 py-0.5 font-sans leading-none">↵</kbd>
-            {familyLabel('open', familyUi.open)}
+            open
           </span>
           <span className="flex items-center gap-1">
             <kbd className="rounded border border-kumo-line px-1 py-0.5 font-sans leading-none">esc</kbd>
-            {familyLabel('close', familyUi.close)}
+            close
           </span>
         </div>
       </div>

@@ -1,17 +1,14 @@
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from './AuthContext'
 import { useState, useEffect, useRef } from 'react'
-import { AiChatAuthorInfo, type FamilyMonsterAvatarId } from '@gadgets/workshop-shared/api'
+import { AiChatAuthorInfo, validateCommitEmail } from '@gadgets/workshop-shared/api'
 import { hashPassword } from './passwordHash'
 import { CF_ACCESS_MODE } from './useAuth'
-import FamilyMonsterPicker from './components/FamilyMonsterPicker'
-import { applyFamilyRpcResult } from './familyRpc'
 import { User, Pencil, Check, X, Lock, Camera, Copy, Eye, EyeSlash } from '@phosphor-icons/react'
 import { useAvatar, invalidateAvatarCache } from './useAvatar'
 import { compressAvatar, avatarBlobUrl } from './avatarUtils'
 import UsageSettings from './components/billing/UsageSettings'
 import { useDocumentTitle } from './useDocumentTitle'
-import { familyLabel, familyUi } from './familyUi'
 import { isImeComposing } from './keyboardEvent'
 
 // Shared, on-language control classes (match the rest of the app: Workspaces/Blueprints headers,
@@ -88,10 +85,118 @@ function PasswordField({
   )
 }
 
-export default function SettingsPage() {
-  useDocumentTitle(familyLabel('Profile', familyUi.profilePageTitle))
+const CommitEmailRow = ({ initialCommitEmail }: { initialCommitEmail?: string }) => {
+  const { authenticatedApi } = useAuthenticatedApi()
+  const toasts = useKumoToastManager()
+  const [commitEmail, setCommitEmail] = useState(initialCommitEmail)
+  const [isEditing, setIsEditing] = useState(false)
+  const [input, setInput] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
 
-  const { authenticatedApi, familyEntry } = useAuthenticatedApi()
+  const startEditing = () => {
+    setInput(commitEmail ?? '')
+    setError(null)
+    setIsEditing(true)
+  }
+
+  const handleSave = async () => {
+    const email = input.trim() || null
+    if (email !== null) {
+      try {
+        validateCommitEmail(email)
+      } catch {
+        setError('Enter an address like name@example.com')
+        return
+      }
+    }
+
+    setSaving(true)
+    try {
+      await authenticatedApi.setOwnCommitEmail(email)
+      setCommitEmail(email ?? undefined)
+      setIsEditing(false)
+      toasts.add({ title: email ? 'Commit email updated' : 'Commit email cleared', variant: 'success' })
+    } catch (err) {
+      console.error('Failed to update commit email:', err)
+      toasts.add({ title: 'Failed to update commit email', variant: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex items-end gap-2 px-5 py-4">
+      <div className="min-w-0 flex-1">
+        <FieldLabel>Commit email</FieldLabel>
+        {isEditing ? (
+          <>
+            <input
+              type="email"
+              value={input}
+              onChange={(e) => { setInput(e.target.value); setError(null) }}
+              onKeyDown={(e) => {
+                if (isImeComposing(e)) return
+                if (e.key === 'Enter') handleSave()
+                if (e.key === 'Escape') setIsEditing(false)
+              }}
+              placeholder="name@example.com"
+              aria-label="Commit email"
+              autoComplete="email"
+              autoFocus
+              className={`mt-1.5 ${INPUT} ${error ? 'border-kumo-danger focus:border-kumo-danger' : ''}`}
+            />
+            <p className={`mt-1 text-[12px] tracking-[-0.1px] ${error ? 'text-kumo-danger' : 'text-kumo-subtle'}`}>
+              {error ?? 'Leave blank to use an address based on your user ID.'}
+            </p>
+          </>
+        ) : commitEmail ? (
+          <p className="mt-1 truncate text-[14px] tracking-[-0.25px] text-kumo-default">{commitEmail}</p>
+        ) : (
+          <p className="mt-1 text-[14px] tracking-[-0.25px] text-kumo-inactive">
+            Not set — commits use an address based on your user ID
+          </p>
+        )}
+      </div>
+      {isEditing ? (
+        <>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            aria-label="Save commit email"
+            className={PRIMARY_BTN}
+          >
+            <Check size={15} weight="bold" />
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsEditing(false)}
+            aria-label="Cancel"
+            className={ICON_BTN}
+          >
+            <X size={15} />
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={startEditing}
+          aria-label="Edit commit email"
+          className={ICON_BTN}
+        >
+          <Pencil size={14} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+export default function SettingsPage() {
+  useDocumentTitle('Profile')
+
+  const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   const [userInfo, setUserInfo] = useState<AiChatAuthorInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -102,7 +207,6 @@ export default function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [avatarUploading, setAvatarUploading] = useState(false)
   const [localAvatarPreview, setLocalAvatarPreview] = useState<string | null>(null)
-  const [selectedMonsterId, setSelectedMonsterId] = useState<FamilyMonsterAvatarId | null>(null)
 
   // Revoke preview blob URL on unmount to prevent memory leak
   useEffect(() => {
@@ -152,26 +256,9 @@ export default function SettingsPage() {
     return () => { cancelled = true }
   }, [authenticatedApi])
 
-  useEffect(() => {
-    if (!familyEntry) return
-    let cancelled = false
-    familyEntry.getState().then((state) => {
-      if (cancelled) return
-      const active = state.activeProfile
-      const monsterId = active.kind === 'unselected'
-        ? state.adultMonsterAvatarId
-        : active.monsterAvatarId ?? (active.kind === 'adult' ? state.adultMonsterAvatarId : undefined)
-      if (monsterId) setSelectedMonsterId(monsterId)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [familyEntry])
-
   const handleSaveName = async () => {
     if (!nameInput.trim()) {
-      toasts.add({
-        title: familyLabel('Display name cannot be empty', familyUi.displayNameEmpty),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Display name cannot be empty', variant: 'error' })
       return
     }
 
@@ -179,16 +266,10 @@ export default function SettingsPage() {
       await authenticatedApi.setOwnDisplayName(nameInput.trim())
       setUserInfo(prev => prev ? { ...prev, name: nameInput.trim() } : null)
       setIsEditingName(false)
-      toasts.add({
-        title: familyLabel('Display name updated', familyUi.displayNameUpdated),
-        variant: 'success',
-      })
+      toasts.add({ title: 'Display name updated', variant: 'success' })
     } catch (err) {
       console.error('Failed to update display name:', err)
-      toasts.add({
-        title: familyLabel('Failed to update display name', familyUi.displayNameFailed),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to update display name', variant: 'error' })
     }
   }
 
@@ -201,15 +282,9 @@ export default function SettingsPage() {
     if (!userInfo?.id) return
     try {
       await navigator.clipboard.writeText(userInfo.id)
-      toasts.add({
-        title: familyLabel('User ID copied', familyUi.userIdCopied),
-        variant: 'success',
-      })
+      toasts.add({ title: 'User ID copied', variant: 'success' })
     } catch {
-      toasts.add({
-        title: familyLabel('Failed to copy', familyUi.copyFailed),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to copy', variant: 'error' })
     }
   }
 
@@ -269,15 +344,12 @@ export default function SettingsPage() {
     }
   }
 
-  const monsterAvatarUrl = selectedMonsterId ? `/family-avatars/${selectedMonsterId}.png` : null
-  const displayAvatarUrl = localAvatarPreview || monsterAvatarUrl || avatarUrl
+  const displayAvatarUrl = localAvatarPreview || avatarUrl
 
   if (loading) {
     return (
       <div className="flex min-h-[60vh] flex-1 items-center justify-center">
-        <p className="text-[13px] tracking-[-0.25px] text-kumo-subtle">
-          {familyLabel('Loading profile…', 'プロフィールを読み込み中…')}
-        </p>
+        <p className="text-[13px] tracking-[-0.25px] text-kumo-subtle">Loading profile…</p>
       </div>
     )
   }
@@ -285,111 +357,64 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-4 pb-16 sm:px-10">
       <header className="px-1 pb-2 pt-6 sm:pt-10">
-        <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
-          {familyLabel('Profile', familyUi.profilePageTitle)}
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Profile</h1>
         <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-          {familyLabel('Manage your account details, avatar, and security.', familyUi.profilePageDesc)}
+          Manage your account details, avatar, and security.
         </p>
       </header>
 
       <div className="mt-6 flex flex-col gap-9">
         {/* Account */}
         <section className="flex flex-col gap-3">
-          <SectionLabel>{familyLabel('Account', familyUi.account)}</SectionLabel>
+          <SectionLabel>Account</SectionLabel>
           <div className="divide-y divide-kumo-line overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
             {/* Avatar */}
             <div className="flex items-center gap-4 px-5 py-4">
-              {CF_ACCESS_MODE ? (
-                <>
-                  <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-kumo-fill">
-                    {displayAvatarUrl ? (
-                      <img src={displayAvatarUrl} alt="" className="h-full w-full object-contain" />
-                    ) : (
-                      <User size={28} className="text-kumo-subtle" />
-                    )}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={avatarUploading}
+                className="press group relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-kumo-fill disabled:cursor-wait"
+              >
+                {displayAvatarUrl ? (
+                  <img src={displayAvatarUrl} alt="Avatar" className="h-full w-full object-cover" />
+                ) : (
+                  <User size={28} className="text-kumo-subtle" />
+                )}
+                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                  <Camera size={18} className="text-white" />
+                </div>
+                {avatarUploading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-kumo-base/80">
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-medium tracking-[-0.25px] text-kumo-default">
-                      {CF_ACCESS_MODE
-                        && (!userInfo?.name
-                          || userInfo.name === 'adult'
-                          || /integration\.test/i.test(userInfo.name))
-                        ? familyUi.defaultAdultDisplayName
-                        : userInfo?.name}
-                    </p>
-                    {familyEntry ? (
-                      <FamilyMonsterPicker
-                        className="mt-3 max-w-xs"
-                        selectedId={selectedMonsterId}
-                        onSelect={(id) => {
-                          setSelectedMonsterId(id)
-                          void familyEntry.setMonsterAvatar(id).then((result) => {
-                            applyFamilyRpcResult(result, () => {
-                              if (userInfo?.id) invalidateAvatarCache(userInfo.id)
-                            }, (message) => toasts.add({ title: message, variant: 'error' }))
-                          })
-                        }}
-                      />
-                    ) : (
-                      <p className="mt-0.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-                        {familyLabel(
-                          'Choose an approved monster avatar from the profile menu.',
-                          familyUi.monsterHint,
-                        )}
-                      </p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={avatarUploading}
-                    className="press group relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-kumo-fill disabled:cursor-wait"
-                  >
-                    {displayAvatarUrl ? (
-                      <img src={displayAvatarUrl} alt="Avatar" className="h-full w-full object-cover" />
-                    ) : (
-                      <User size={28} className="text-kumo-subtle" />
-                    )}
-                    <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
-                      <Camera size={18} className="text-white" />
-                    </div>
-                    {avatarUploading && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-kumo-base/80">
-                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />
-                      </div>
-                    )}
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0]
-                      if (file) handleAvatarUpload(file)
-                      e.target.value = ''
-                    }}
-                  />
-                  <div className="min-w-0">
-                    <p className="truncate text-[15px] font-medium tracking-[-0.25px] text-kumo-default">
-                      {userInfo?.name}
-                    </p>
-                    <p className="mt-0.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-                      Click the avatar to upload a new photo
-                    </p>
-                  </div>
-                </>
-              )}
+                )}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) handleAvatarUpload(file)
+                  e.target.value = ''
+                }}
+              />
+              <div className="min-w-0">
+                <p className="truncate text-[15px] font-medium tracking-[-0.25px] text-kumo-default">
+                  {userInfo?.name}
+                </p>
+                <p className="mt-0.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
+                  Click the avatar to upload a new photo
+                </p>
+              </div>
             </div>
 
             {/* Display name */}
             <div className="flex items-end gap-2 px-5 py-4">
               <div className="min-w-0 flex-1">
-                <FieldLabel>{familyLabel('Display name', familyUi.displayName)}</FieldLabel>
+                <FieldLabel>Display name</FieldLabel>
                 {isEditingName ? (
                   <input
                     value={nameInput}
@@ -399,18 +424,13 @@ export default function SettingsPage() {
                       if (e.key === 'Enter') handleSaveName()
                       if (e.key === 'Escape') handleCancelEdit()
                     }}
-                    placeholder={familyLabel('Enter display name', familyUi.displayNamePlaceholder)}
+                    placeholder="Enter display name"
                     autoFocus
                     className={`mt-1.5 ${INPUT}`}
                   />
                 ) : (
                   <p className="mt-1 text-[14px] tracking-[-0.25px] text-kumo-default">
-                    {CF_ACCESS_MODE
-                      && (!userInfo?.name
-                        || userInfo.name === 'adult'
-                        || /integration\.test/i.test(userInfo.name))
-                      ? familyUi.defaultAdultDisplayName
-                      : userInfo?.name}
+                    {userInfo?.name}
                   </p>
                 )}
               </div>
@@ -420,16 +440,16 @@ export default function SettingsPage() {
                     type="button"
                     onClick={handleSaveName}
                     disabled={!nameInput.trim()}
-                    aria-label={familyLabel('Save display name', familyUi.saveDisplayName)}
+                    aria-label="Save display name"
                     className={PRIMARY_BTN}
                   >
                     <Check size={15} weight="bold" />
-                    {familyLabel('Save', familyUi.save)}
+                    Save
                   </button>
                   <button
                     type="button"
                     onClick={handleCancelEdit}
-                    aria-label={familyLabel('Cancel', familyUi.cancel)}
+                    aria-label="Cancel"
                     className={ICON_BTN}
                   >
                     <X size={15} />
@@ -439,7 +459,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setIsEditingName(true)}
-                  aria-label={familyLabel('Edit display name', familyUi.editDisplayName)}
+                  aria-label="Edit display name"
                   className={ICON_BTN}
                 >
                   <Pencil size={14} />
@@ -447,25 +467,25 @@ export default function SettingsPage() {
               )}
             </div>
 
-            {/* User ID — hidden in Family mode so opaque Access digests and test emails never surface */}
-            {!CF_ACCESS_MODE && (
-              <div className="flex items-center gap-2 px-5 py-4">
-                <div className="min-w-0 flex-1">
-                  <FieldLabel>{familyLabel('User ID', familyUi.userId)}</FieldLabel>
-                  <p className="mt-1 truncate font-mono text-[12px] tracking-[-0.1px] text-kumo-subtle">
-                    {userInfo?.id}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCopyId}
-                  aria-label={familyLabel('Copy user ID', familyUi.copyUserId)}
-                  className={ICON_BTN}
-                >
-                  <Copy size={14} />
-                </button>
+            <CommitEmailRow initialCommitEmail={userInfo?.commitEmail} />
+
+            {/* User ID */}
+            <div className="flex items-center gap-2 px-5 py-4">
+              <div className="min-w-0 flex-1">
+                <FieldLabel>User ID</FieldLabel>
+                <p className="mt-1 truncate font-mono text-[12px] tracking-[-0.1px] text-kumo-subtle">
+                  {userInfo?.id}
+                </p>
               </div>
-            )}
+              <button
+                type="button"
+                onClick={handleCopyId}
+                aria-label="Copy user ID"
+                className={ICON_BTN}
+              >
+                <Copy size={14} />
+              </button>
+            </div>
           </div>
         </section>
 

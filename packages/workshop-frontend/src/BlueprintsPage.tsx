@@ -12,7 +12,6 @@ import { useAuthenticatedApi } from "./AuthContext";
 import { BindingBadge, uniqueBindingBadges } from "./components/BlueprintCard";
 import { BlueprintPreviewPlaceholder } from "./components/BlueprintPreviewImage";
 import ViewToggle from "./components/ViewToggle";
-import { familyLabel, familyUi, isFamilyMode } from "./familyUi";
 
 type VendorMap = Map<string, VendorDescription>;
 
@@ -54,7 +53,7 @@ export default function BlueprintsPage() {
       .catch((err) => {
         console.error("Failed to load Explore data:", err);
         toastsRef.current.add({
-          title: familyLabel("Failed to load featured blueprints", familyUi.failedLoadFeatured),
+          title: "Failed to load featured blueprints",
           variant: "error",
         });
       })
@@ -67,30 +66,23 @@ export default function BlueprintsPage() {
     };
   }, [authenticatedApi]);
 
-  const q = search.trim().toLowerCase()
-  // Family mode ships Japanese chrome only; upstream featured blueprint copy is English, so hide
-  // the catalog until household-localized featured content exists.
-  const catalog = isFamilyMode ? [] : featuredBlueprints
-  const filtered = catalog.filter((b) => {
-    if (!q) return true
+  const q = search.trim().toLowerCase();
+  const filtered = featuredBlueprints.filter((b) => {
+    if (!q) return true;
     return (
       b.metadata.title.toLowerCase().includes(q) ||
       (b.metadata.description ?? "").toLowerCase().includes(q)
-    )
-  })
+    );
+  });
 
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-3 sm:px-10">
       <header className="flex items-end justify-between gap-4 px-3 pb-4 pt-6 sm:pt-10">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
-            {familyLabel("Explore", familyUi.exploreTitle)}
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Explore</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            {familyLabel(
-              "Discover featured blueprints to use as starting points. Open one to create a workspace from it, or save it to reuse later.",
-              familyUi.exploreDesc,
-            )}
+            Discover featured blueprints to use as starting points. Open one to create a workspace
+            from it, or save it to reuse later.
           </p>
         </div>
         <ViewToggle view={view} onChange={setView} />
@@ -99,7 +91,7 @@ export default function BlueprintsPage() {
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
         <span className="text-[12px] font-medium uppercase tracking-[0.08em] text-kumo-inactive">
-          {familyLabel("Featured", familyUi.featured)}
+          Featured
         </span>
         <div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
           <MagnifyingGlass
@@ -110,7 +102,7 @@ export default function BlueprintsPage() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={familyLabel("Search blueprints…", familyUi.searchBlueprints)}
+            placeholder="Search blueprints…"
             className="h-10 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[16px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15 sm:h-9 sm:text-[13px]"
           />
         </div>
@@ -123,16 +115,13 @@ export default function BlueprintsPage() {
           <EmptySection
             title={
               search
-                ? familyLabel("No blueprints match", familyUi.noBlueprintsMatch)
-                : familyLabel("No featured blueprints yet", familyUi.noFeaturedBlueprintsYet)
+                ? "No blueprints match"
+                : "No featured blueprints yet"
             }
             message={
               search
-                ? familyLabel("Try a different search term.", familyUi.tryDifferentSearch)
-                : familyLabel(
-                    "Featured blueprints will appear here when they’re published. You can still create blueprints from your own workspaces.",
-                    familyUi.featuredBlueprintsEmptyHint,
-                  )
+                ? "Try a different search term."
+                : "Featured blueprints will appear here when they’re published. You can still create blueprints from your own workspaces."
             }
           />
         ) : view === "grid" ? (
@@ -167,10 +156,7 @@ function BlueprintThumbnail({ blueprint }: { blueprint: BlueprintPublicInfo }) {
       {blueprint.screenshotUrl ? (
         <img
           src={blueprint.screenshotUrl}
-          alt={familyLabel(
-            `Screenshot of ${blueprint.metadata.title}`,
-            familyUi.screenshotOf(blueprint.metadata.title),
-          )}
+          alt={`Screenshot of ${blueprint.metadata.title}`}
           className="h-full w-full object-cover"
           loading="lazy"
         />
@@ -195,10 +181,7 @@ function FeaturedBlueprintCard({
       <Link
         to="/blueprint/$id"
         params={{ id: blueprint.id }}
-        aria-label={familyLabel(
-          `Open featured blueprint ${blueprint.metadata.title}`,
-          familyUi.openFeaturedBlueprint(blueprint.metadata.title),
-        )}
+        aria-label={`Open featured blueprint ${blueprint.metadata.title}`}
         className="absolute inset-0 z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-brand"
       />
 
@@ -217,7 +200,7 @@ function FeaturedBlueprintCard({
               blueprint.metadata.description ? "text-kumo-subtle" : "italic text-kumo-inactive"
             }`}
           >
-            {blueprint.metadata.description || familyLabel("No description", familyUi.noDescription)}
+            {blueprint.metadata.description || "No description"}
           </p>
           {badges.length > 0 && (
             <div className="relative z-20 mt-2 flex flex-wrap gap-1">
@@ -263,7 +246,7 @@ function FeaturedBlueprintRow({
             blueprint.metadata.description ? "text-kumo-subtle" : "italic text-kumo-inactive"
           }`}
         >
-          {blueprint.metadata.description || familyLabel("No description", familyUi.noDescription)}
+          {blueprint.metadata.description || "No description"}
         </p>
       </div>
       {badges.length > 0 && (

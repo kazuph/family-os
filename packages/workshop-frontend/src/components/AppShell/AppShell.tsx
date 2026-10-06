@@ -7,7 +7,6 @@ import { useConnectionLost } from '../../RpcContext'
 import Sidebar from './Sidebar'
 import CommandPalette from './CommandPalette'
 import { OPEN_COMMAND_PALETTE_EVENT } from './commandPaletteBus'
-import { familyLabel } from '../../familyUi'
 
 const STORAGE_KEY_COLLAPSED = 'gadgets:sidebar-collapsed'
 
@@ -149,9 +148,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             type="button"
             ref={menuButtonRef}
             onClick={() => setMobileOpen((o) => !o)}
-            aria-label={mobileOpen
-              ? familyLabel('Close menu', 'メニューを閉じる')
-              : familyLabel('Open menu', 'メニューを開く')}
+            aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
             className="flex h-11 w-11 items-center justify-center rounded-md text-kumo-default transition-colors hover:bg-kumo-tint md:hidden"
           >
             {mobileOpen ? <X size={16} /> : <List size={16} />}

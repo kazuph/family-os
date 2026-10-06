@@ -1,22 +1,21 @@
-import { actionProcessingKey } from './actionIdentity'
 import { useCallback, useRef, type Dispatch, type SetStateAction } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
-import type { ActionState, ActionReference, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionState, Overseer } from '@gadgets/workshop-shared/api'
 
 type ActionDecision = 'approve' | 'deny'
 
 export function useResolveAction(
   overseer: RpcStub<Overseer>,
-  setProcessing: Dispatch<SetStateAction<Set<number | string>>>,
-  onResolved?: (actionId: number | ActionReference, state: Extract<ActionState, 'approved' | 'rejected'>) => void,
+  setProcessing: Dispatch<SetStateAction<Set<number>>>,
+  onResolved?: (actionId: number, state: Extract<ActionState, 'approved' | 'rejected'>) => void,
 ) {
   const toasts = useKumoToastManager()
   const onResolvedRef = useRef(onResolved)
   onResolvedRef.current = onResolved
 
-  return useCallback(async (actionId: number | ActionReference, decision: ActionDecision) => {
-    setProcessing(previous => new Set(previous).add(actionProcessingKey(actionId)))
+  return useCallback(async (actionId: number, decision: ActionDecision) => {
+    setProcessing(previous => new Set(previous).add(actionId))
     try {
       if (decision === 'approve') await overseer.approveAction(actionId)
       else await overseer.rejectAction(actionId)
@@ -27,7 +26,7 @@ export function useResolveAction(
     } finally {
       setProcessing(previous => {
         const next = new Set(previous)
-        next.delete(actionProcessingKey(actionId))
+        next.delete(actionId)
         return next
       })
     }

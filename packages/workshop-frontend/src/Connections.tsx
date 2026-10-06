@@ -21,7 +21,6 @@ import {
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
-import { actionKey } from './actionIdentity'
 import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
@@ -52,23 +51,22 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const [editValue, setEditValue] = useState('')
   const [isNewConnectionModalVisible, setIsNewConnectionModalVisible] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<{ name: string; resourceTitle: string } | null>(null)
-  const [deleteHookTarget, setDeleteHookTarget] = useState<{ id: number; sourceWorkspaceId: string; title: string } | null>(null)
-  const [togglingHooks, setTogglingHooks] = useState<Set<string>>(new Set())
+  const [deleteHookTarget, setDeleteHookTarget] = useState<{ id: number; title: string } | null>(null)
+  const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [annotationTarget, setAnnotationTarget] = useState<GadgetBindingInfo | null>(null)
   const toasts = useKumoToastManager()
 
   const loadGatekeepers = async () => {
     try {
-      const [id, hostId, gadgetTitle, bindingList, hookList] = await Promise.all([
+      const [id, gadgetTitle, bindingList, hookList] = await Promise.all([
         gadget.getId(),
-        gadget.getHostGadgetId(),
         gadget.getTitle(),
         // Pass the open chat so bindings this tab added provisionally to it are listed too.
         gadget.listBindings(chatId),
         // Workspace-wide; filtered to this gadget below.
         overseer.listHooks(),
       ])
-      setGadgetInfo({ id: hostId, title: gadgetTitle })
+      setGadgetInfo({ id, title: gadgetTitle })
       setBindings(bindingList)
       // This tab shows one gadget, so drop hooks that wake a different one -- otherwise its
       // toggle/delete controls would operate on another gadget's hooks.
@@ -85,27 +83,26 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     }
   }
 
-  const handleToggleHook = async (hook: BoundHookInfo, enabled: boolean) => {
-    const key = actionKey(hook)
+  const handleToggleHook = async (id: number, enabled: boolean) => {
     // Optimistically reflect the new state.
-    setHooks((prev) => prev.map((h) => (actionKey(h) === key ? { ...h, enabled } : h)))
-    setTogglingHooks((prev) => new Set(prev).add(key))
+    setHooks((prev) => prev.map((h) => (h.id === id ? { ...h, enabled } : h)))
+    setTogglingHooks((prev) => new Set(prev).add(id))
     try {
       if (enabled) {
-        await overseer.enableHook(hook.id, hook.sourceWorkspaceId)
+        await overseer.enableHook(id)
       } else {
-        await overseer.disableHook(hook.id, hook.sourceWorkspaceId)
+        await overseer.disableHook(id)
       }
       await loadGatekeepers()
     } catch (err) {
       console.error('Failed to toggle hook:', err)
       toasts.add({ title: `Failed to ${enabled ? 'enable' : 'disable'} hook`, variant: 'error' })
       // Revert optimistic update.
-      setHooks((prev) => prev.map((h) => (actionKey(h) === key ? { ...h, enabled: !enabled } : h)))
+      setHooks((prev) => prev.map((h) => (h.id === id ? { ...h, enabled: !enabled } : h)))
     } finally {
       setTogglingHooks((prev) => {
         const next = new Set(prev)
-        next.delete(key)
+        next.delete(id)
         return next
       })
     }
@@ -114,7 +111,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const handleDeleteHookConfirm = async () => {
     if (!deleteHookTarget) return
     try {
-      await overseer.deleteHook(deleteHookTarget.id, deleteHookTarget.sourceWorkspaceId)
+      await overseer.deleteHook(deleteHookTarget.id)
       await loadGatekeepers()
     } catch (err) {
       console.error('Failed to delete hook:', err)
@@ -377,13 +374,12 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
 
             <div className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
               {hooks.map((hook, index) => {
-                const key = actionKey(hook)
-                const isDeleting = deleteHookTarget !== null && actionKey(deleteHookTarget) === key
+                const isDeleting = deleteHookTarget?.id === hook.id
                 const vendorId = bindings.find((b) => b.target === hook.gatekeeperId)?.vendorId
 
                 return (
                   <div
-                    key={key}
+                    key={hook.id}
                     className={`px-3 py-3 ${index > 0 ? 'border-t border-kumo-line' : ''} ${isDeleting ? 'bg-kumo-danger-tint/40' : ''}`}
                   >
                     {isDeleting ? (
@@ -434,13 +430,13 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                         <div className="ml-auto flex shrink-0 items-center gap-2">
                           <HookToggle
                             enabled={hook.enabled}
-                            disabled={togglingHooks.has(key)}
-                            onToggle={(enabled) => handleToggleHook(hook, enabled)}
+                            disabled={togglingHooks.has(hook.id)}
+                            onToggle={(enabled) => handleToggleHook(hook.id, enabled)}
                           />
                           <Tooltip content="Delete hook" asChild>
                             <WorkshopIconButton
                               danger
-                              onClick={() => setDeleteHookTarget({ id: hook.id, sourceWorkspaceId: hook.sourceWorkspaceId, title: hook.description.title })}
+                              onClick={() => setDeleteHookTarget({ id: hook.id, title: hook.description.title })}
                               aria-label="Delete hook"
                             >
                               <Trash size={14} />
@@ -461,7 +457,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       <GatekeeperModal
         open={isNewConnectionModalVisible}
         onClose={() => setIsNewConnectionModalVisible(false)}
-        getConnectionHost={() => gadget}
+        getOverseer={() => overseer}
         spawnerEnvCandidates={spawnerEnvCandidates}
         onCreated={async (gk) => {
           try {
@@ -561,8 +557,8 @@ function BlueprintAnnotationModal({
   return (
     <>
       <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-        <Dialog className="responsive-dialog !z-[1000] !w-[min(480px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0" size="lg">
-          <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-5">
+        <Dialog className="responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(480px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0" size="lg">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-5">
             <div className="min-w-0">
               <Dialog.Title className="text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
                 Blueprint settings
@@ -580,7 +576,7 @@ function BlueprintAnnotationModal({
             />
           </div>
 
-          <div className="space-y-4 px-4 py-4 sm:px-5">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-5">
             {loadError ? (
               <div className="text-[13px] text-kumo-subtle">{loadError}</div>
             ) : !data ? (
@@ -597,7 +593,7 @@ function BlueprintAnnotationModal({
             )}
           </div>
 
-          <div className="border-t border-kumo-line px-4 py-3 sm:px-5">
+          <div className="shrink-0 border-t border-kumo-line px-4 py-3 sm:px-5">
             {saveError && (
               <div className="mb-3 flex items-start gap-2 rounded-lg border border-l-2 border-l-kumo-brand border-y-kumo-line border-r-kumo-line bg-kumo-base px-3 py-2 text-[12px] leading-[18px] font-normal tracking-[-0.2px] text-kumo-default">
                 <Warning size={14} weight="fill" className="mt-0.5 shrink-0 text-kumo-brand" />

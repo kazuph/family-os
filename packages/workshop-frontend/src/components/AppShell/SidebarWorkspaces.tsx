@@ -13,7 +13,6 @@ import { Link } from '@tanstack/react-router'
 import {
   ArrowRight,
   CaretDown,
-  ChatCircleText,
   MagnifyingGlass,
   Star,
 } from '@phosphor-icons/react'
@@ -29,15 +28,13 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
-import { chatTitle, familyLabel, familyRelativeTime, familyUi, isFamilyMode } from '../../familyUi'
-import { selectRecentInternalHomeChats, useInternalHomeChats } from '../../internalHomeChats'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
 const RECENT_INITIAL_LIMIT = 6
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shape of the workspaces state shared between the rail's pinned tools (search) and the scrolling
-// lists (Favorites / Recent chats / Workspaces). Centralized here so both sibling components subscribe to
+// lists (Favorites / Recent workspaces). Centralized here so both sibling components subscribe to
 // the same data and the dialog state has a single owner.
 // ─────────────────────────────────────────────────────────────────────────────
 type WorkspacesContextValue = {
@@ -54,8 +51,6 @@ type WorkspacesContextValue = {
   onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
   onShare: (g: GadgetMetadataWithTimestamps) => void
   onDelete: (g: GadgetMetadataWithTimestamps) => void
-  /** False for Family child profiles — sidebar Share must stay hidden. */
-  canShare: boolean
 }
 
 const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -74,8 +69,7 @@ function useWorkspacesContext(): WorkspacesContextValue {
  * ─────────────────────────────────────────────────────────────────────────────
  */
 export function SidebarWorkspacesProvider({ children }: { children: ReactNode }) {
-  const { authenticatedApi, isFamilyChild } = useAuthenticatedApi()
-  const canShare = !isFamilyChild
+  const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
 
   const [gadgets, setGadgets] = useState<GadgetMetadataWithTimestamps[]>([])
@@ -154,10 +148,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     } catch (err) {
       console.error('Failed to toggle pin:', err)
       setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, pinned: g.pinned } : x)))
-      toasts.add({
-        title: familyLabel('Failed to update favorite', familyUi.failedUpdateFavorite),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to update favorite', variant: 'error' })
     } finally {
       overseer[Symbol.dispose]()
     }
@@ -171,10 +162,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     } catch (err) {
       console.error('Failed to rename:', err)
       setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, title: g.title } : x)))
-      toasts.add({
-        title: familyLabel('Failed to rename workspace', familyUi.failedRenameWorkspace),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to rename workspace', variant: 'error' })
     } finally {
       overseer[Symbol.dispose]()
     }
@@ -191,10 +179,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     } catch (err) {
       overseer?.[Symbol.dispose]()
       console.error('Failed to open workspace for sharing:', err)
-      toasts.add({
-        title: familyLabel('Failed to open share settings', familyUi.failedOpenShare),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to open share settings', variant: 'error' })
     }
   }, [authenticatedApi, toasts])
 
@@ -214,17 +199,12 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
       }
       setGadgets((prev) => prev.filter((x) => x.id !== deleteTarget.id))
       toasts.add({
-        title: deleteTarget.owner
-          ? familyLabel('Workspace removed', familyUi.workspaceRemoved)
-          : familyLabel('Workspace deleted', familyUi.workspaceDeleted),
+        title: deleteTarget.owner ? 'Workspace removed' : 'Workspace deleted',
         variant: 'success',
       })
     } catch (err) {
       console.error('Failed to delete workspace:', err)
-      toasts.add({
-        title: familyLabel('Failed to delete workspace', familyUi.failedDeleteWorkspace),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to delete workspace', variant: 'error' })
     } finally {
       setIsDeleting(false)
       setDeleteTarget(null)
@@ -242,7 +222,6 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     onRename,
     onShare,
     onDelete: setDeleteTarget,
-    canShare,
   }
 
   return (
@@ -254,34 +233,14 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
         open={deleteTarget !== null}
         onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
         isDeleting={isDeleting}
-        title={deleteTarget?.owner
-          ? familyLabel('Remove workspace', familyUi.removeWorkspace)
-          : familyLabel('Delete workspace', familyUi.deleteWorkspace)}
+        title={deleteTarget?.owner ? 'Remove workspace' : 'Delete workspace'}
         description={
           deleteTarget?.owner
-            ? familyLabel(
-                `Remove "${deleteTarget?.title || 'Untitled workspace'}" from your list? You can still access it via its link.`,
-                familyUi.removeWorkspaceBody(
-                  deleteTarget?.title || familyUi.untitledWorkspace,
-                ),
-              )
-            : familyLabel(
-                `Delete "${deleteTarget?.title || 'Untitled workspace'}"? This cannot be undone.`,
-                familyUi.deleteWorkspaceBody(
-                  deleteTarget?.title || familyUi.untitledWorkspace,
-                ),
-              )
+            ? `Remove "${deleteTarget?.title || 'Untitled workspace'}" from your list? You can still access it via its link.`
+            : `Delete "${deleteTarget?.title || 'Untitled workspace'}"? This cannot be undone.`
         }
-        confirmLabel={
-          deleteTarget?.owner
-            ? familyLabel('Remove', familyUi.remove)
-            : familyLabel('Delete', familyUi.delete)
-        }
-        confirmingLabel={
-          deleteTarget?.owner
-            ? familyLabel('Removing...', familyUi.removing)
-            : familyLabel('Deleting...', familyUi.deleting)
-        }
+        confirmLabel={deleteTarget?.owner ? 'Remove' : 'Delete'}
+        confirmingLabel={deleteTarget?.owner ? 'Removing...' : 'Deleting...'}
         onConfirm={handleDeleteConfirm}
       />
 
@@ -317,8 +276,8 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
       <button
         type="button"
         onClick={() => openCommandPalette()}
-        aria-label={familyLabel('Search', familyUi.search)}
-        title={familyLabel('Search (⌘K)', `${familyUi.search}（⌘K）`)}
+        aria-label="Search"
+        title="Search (⌘K)"
         className="press flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
       >
         <MagnifyingGlass size={15} />
@@ -329,7 +288,7 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- * Lists (Favorites / Recent chats / Workspaces). Lives in the rail's scrolling middle
+ * Lists (Favorites / Recent workspaces). Lives in the rail's scrolling middle
  * region. In collapsed mode shows a compact avatar stack.
  * ─────────────────────────────────────────────────────────────────────────────
  */
@@ -343,17 +302,10 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     onRename,
     onShare,
     onDelete,
-    canShare,
   } = useWorkspacesContext()
 
   const [favOpen, setFavOpen] = useState(true)
-  const [chatsOpen, setChatsOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
-  const {
-    workspaceId: internalWorkspaceId,
-    chats: internalChats,
-    loading: internalChatsLoading,
-  } = useInternalHomeChats()
 
   if (collapsed) {
     const compact = [...favorites, ...recent].slice(0, 8)
@@ -368,7 +320,6 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             onRename={onRename}
             onShare={onShare}
             onDelete={onDelete}
-            canShare={canShare}
           />
         ))}
       </div>
@@ -382,7 +333,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     <div className="flex flex-col pb-3">
       {/* Favorites */}
       <SidebarSection
-        label={familyLabel('Favorites', familyUi.favorites)}
+        label="Favorites"
         count={favorites.length}
         open={favOpen}
         onToggle={() => setFavOpen((o) => !o)}
@@ -390,7 +341,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
       >
         {favorites.length === 0 ? (
           <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-            {familyLabel('Favorite a workspace to keep it here.', familyUi.favoriteHint)}
+            Favorite a workspace to keep it here.
           </p>
         ) : (
           <div className="flex flex-col">
@@ -402,59 +353,15 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                 onRename={onRename}
                 onShare={onShare}
                 onDelete={onDelete}
-                canShare={canShare}
               />
             ))}
           </div>
         )}
       </SidebarSection>
 
-      <SidebarSection
-        label={familyLabel('Recent chats', familyUi.recentHomeChats)}
-        open={chatsOpen}
-        onToggle={() => setChatsOpen((o) => !o)}
-        icon={<ChatCircleText size={12} weight="regular" className="text-kumo-inactive" />}
-      >
-        {internalChatsLoading ? (
-          <div className="flex flex-col gap-1 px-1">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="h-7 animate-pulse rounded-md bg-kumo-elevated" />
-            ))}
-          </div>
-        ) : internalChats.length === 0 || !internalWorkspaceId ? (
-          <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-            {familyLabel('No chats yet.', familyUi.noHomeChats)}
-          </p>
-        ) : (
-          <div className="flex flex-col">
-            {selectRecentInternalHomeChats(internalChats).map((chat) => (
-              <Link
-                key={chat.id}
-                to="/workspace/$id"
-                params={{ id: internalWorkspaceId }}
-                search={{ chat: chat.id }}
-                className="flex h-8 items-center gap-2 rounded-lg px-2.5 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
-              >
-                <span className="min-w-0 flex-1 truncate">{chatTitle(chat.title)}</span>
-                <span className="shrink-0 text-[10px] text-kumo-inactive">
-                  {familyRelativeTime(chat.lastActive)}
-                </span>
-              </Link>
-            ))}
-          </div>
-        )}
-        <Link
-          to="/chats"
-          className="mt-0.5 flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
-        >
-          {familyLabel('Show all', familyUi.showAllHomeChats)}
-          <ArrowRight size={11} weight="bold" />
-        </Link>
-      </SidebarSection>
-
       {/* Recent workspaces — no count here; the "Show all (N)" link already carries it. */}
       <SidebarSection
-        label={familyLabel('Recent workspaces', familyUi.recentWorkspaces)}
+        label="Recent workspaces"
         open={recentOpen}
         onToggle={() => setRecentOpen((o) => !o)}
       >
@@ -466,9 +373,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
           </div>
         ) : recent.length === 0 ? (
           <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-            {search
-              ? (isFamilyMode ? familyUi.noMatches : 'No matches.')
-              : (isFamilyMode ? familyUi.noWorkspacesYetShort : 'No workspaces yet.')}
+            {search ? 'No matches.' : 'No workspaces yet.'}
           </p>
         ) : (
           <>
@@ -481,7 +386,6 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                   onRename={onRename}
                   onShare={onShare}
                   onDelete={onDelete}
-                  canShare={canShare}
                 />
               ))}
             </div>
@@ -489,9 +393,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
               to="/workspaces"
               className="mt-0.5 flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
-              {recentHidden > 0
-                ? familyLabel(`Show all (${recent.length})`, `${familyUi.showAll}（${recent.length}）`)
-                : familyLabel('Show all', familyUi.showAll)}
+              {recentHidden > 0 ? `Show all (${recent.length})` : 'Show all'}
               <ArrowRight size={11} weight="bold" />
             </Link>
           </>

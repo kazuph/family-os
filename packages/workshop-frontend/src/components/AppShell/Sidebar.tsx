@@ -21,7 +21,6 @@ import {
   SidebarWorkspacesLists,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
-import { familyLabel, familyUi } from '../../familyUi'
 
 /**
  * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
@@ -32,7 +31,7 @@ import { familyLabel, familyUi } from '../../familyUi'
  *   • brand row                            pinned
  *   • primary nav (Home, Workspaces, …)    pinned
  *   • workspace tools (⌘K search)          pinned
- *   • Favorites / Recent chats / Workspaces SCROLLS
+ *   • Favorites / Recent workspaces        SCROLLS
  *   • utility strip (plug, avatar)         pinned
  */
 export default function Sidebar({
@@ -50,7 +49,7 @@ export default function Sidebar({
 
   return (
     <aside
-      aria-label={familyLabel('Primary', 'メイン')}
+      aria-label="Primary"
       className={[
         // Sidebar is the app chrome: a hair greyer than the (lighter) content canvas so the two
         // surfaces read as distinct without a heavy divider.
@@ -81,8 +80,8 @@ export default function Sidebar({
             <button
               type="button"
               onClick={() => openCommandPalette()}
-              aria-label={familyLabel('Search', familyUi.search)}
-              title={familyLabel('Search (⌘K)', `${familyUi.search}（⌘K）`)}
+              aria-label="Search"
+              title="Search (⌘K)"
               className="press flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <MagnifyingGlass size={15} />
@@ -90,8 +89,8 @@ export default function Sidebar({
             <button
               type="button"
               onClick={onToggleCollapsed}
-              aria-label={familyLabel('Collapse sidebar', familyUi.collapseSidebar)}
-              title={familyLabel('Collapse sidebar', familyUi.collapseSidebar)}
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <SidebarSimple size={15} />
@@ -105,8 +104,8 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          aria-label={familyLabel('Expand sidebar', familyUi.expandSidebar)}
-          title={familyLabel('Expand sidebar', familyUi.expandSidebar)}
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
           className="mx-auto mt-2 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
         >
           <SidebarSimple size={15} className="rotate-180" />
@@ -120,25 +119,25 @@ export default function Sidebar({
           <nav className="flex flex-col gap-0.5 px-2">
             <SidebarItem
               to="/"
-              label={familyLabel('Home', familyUi.home)}
+              label="Home"
               icon={<House size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/workspaces"
-              label={familyLabel('Workspaces', familyUi.workspaces)}
+              label="Workspaces"
               icon={<SquaresFour size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/blueprints"
-              label={familyLabel('Blueprints', familyUi.blueprints)}
+              label="Blueprints"
               icon={<Blueprint size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/outputs"
-              label={familyLabel('Outputs', familyUi.outputs)}
+              label="Outputs"
               icon={<Stack size={14} weight="regular" />}
               collapsed={collapsed}
             />
@@ -183,7 +182,7 @@ export default function Sidebar({
             })}
             <SidebarItem
               to="/explore"
-              label={familyLabel('Explore', familyUi.explore)}
+              label="Explore"
               icon={<Compass size={14} weight="regular" />}
               collapsed={collapsed}
             />
@@ -193,7 +192,7 @@ export default function Sidebar({
           <SidebarWorkspacesTools collapsed={collapsed} />
         </div>
 
-        {/* Scrolling middle: only the Favorites / Recent chats / Workspaces lists.
+        {/* Scrolling middle: only the Favorites / Recent workspaces / Recent blueprints lists.
             min-h-0 lets flex children compute scroll height correctly. */}
         <div className="sidebar-scroll mt-1 min-h-0 flex-1 overflow-y-auto">
           <SidebarWorkspacesLists collapsed={collapsed} />

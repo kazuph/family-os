@@ -1,31 +1,24 @@
-import { createFileRoute, Navigate } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
-import {
-  AiChatAuthorInfo,
-  AiGatewayInfo,
-  AiModelProvider,
-  SUGGESTED_MODELS,
-  unwrapFamilyRpcResult,
-} from '@gadgets/workshop-shared/api'
+import { AiChatAuthorInfo, AiGatewayInfo } from '@gadgets/workshop-shared/api'
 import {
   Plus,
   Trash,
   Lightning,
   MagnifyingGlass,
   DotsThreeVertical,
+  PencilSimple,
+  Copy,
 } from '@phosphor-icons/react'
-import AddModelModal from '../AddModelModal'
+import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
-import { familyLabel, familyUi, isFamilyMode } from '../familyUi'
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
 
 // ─── constants ────────────────────────────────────────────────────────────────
-
-const PROVIDER_ORDER = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
 const PRIMARY_BTN =
   'press inline-flex h-9 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-kumo-brand px-3.5 text-[13px] font-medium tracking-[-0.25px] text-white transition-colors hover:bg-kumo-brand-hover'
@@ -38,12 +31,19 @@ function ModelRow({
   model,
   isQuick,
   isBuiltIn,
+  canEdit,
+  onEdit,
+  onClone,
   onDelete,
   onSetQuick,
 }: {
   model: AiChatAuthorInfo
   isQuick: boolean
   isBuiltIn: boolean
+  /** Whether Edit and Clone are offered. Both save a model of the user's own. */
+  canEdit: boolean
+  onEdit: () => void
+  onClone: () => void
   onDelete: () => void
   onSetQuick: () => void
 }) {
@@ -58,10 +58,7 @@ function ModelRow({
           onSetQuick()
         }
       }}
-      title={familyLabel(
-        isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model',
-        isQuick ? familyUi.quickModelTitleSet : familyUi.quickModelTitleUnset,
-      )}
+      title={isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
       className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
     >
       {/* Neutral monogram — matches the sidebar/workspaces treatment */}
@@ -77,13 +74,13 @@ function ModelRow({
           </span>
           {isBuiltIn && (
             <span className="shrink-0 rounded-full bg-kumo-tint px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-subtle">
-              {familyLabel('built-in', familyUi.builtIn)}
+              built-in
             </span>
           )}
           {isQuick && (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[rgba(255,72,1,0.10)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-brand">
               <Lightning size={9} weight="fill" />
-              {familyLabel('quick', familyUi.quickModel)}
+              quick
             </span>
           )}
         </div>
@@ -98,7 +95,7 @@ function ModelRow({
           <DropdownMenu.Trigger
             render={
               <button
-                aria-label={familyLabel('Provider actions', 'モデルの操作')}
+                aria-label="Provider actions"
                 className="cursor-pointer rounded-md p-1.5 text-kumo-subtle transition-colors hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
               >
                 <DotsThreeVertical size={16} />
@@ -108,15 +105,24 @@ function ModelRow({
           <DropdownMenu.Content className={MENU_CONTENT}>
             <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
               <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
-              {familyLabel(
-                isQuick ? 'Clear quick model' : 'Set as quick model',
-                isQuick ? familyUi.clearQuickModel : familyUi.setAsQuickModel,
-              )}
+              {isQuick ? 'Clear quick model' : 'Set as quick model'}
             </DropdownMenu.Item>
+            {!isBuiltIn && canEdit && (
+              <>
+                <DropdownMenu.Item onClick={onEdit} className={MENU_ITEM}>
+                  <PencilSimple size={13} className="mr-2" />
+                  Edit provider
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onClick={onClone} className={MENU_ITEM}>
+                  <Copy size={13} className="mr-2" />
+                  Clone provider
+                </DropdownMenu.Item>
+              </>
+            )}
             {!isBuiltIn && (
               <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
                 <Trash size={13} className="mr-2" />
-                {familyLabel('Delete provider', familyUi.deleteProvider)}
+                Delete provider
               </DropdownMenu.Item>
             )}
           </DropdownMenu.Content>
@@ -139,9 +145,9 @@ function Notice({ children }: { children: React.ReactNode }) {
 // ─── main page ────────────────────────────────────────────────────────────────
 
 function ProvidersPage() {
-  useDocumentTitle(familyLabel('AI Providers', familyUi.aiProviders))
+  useDocumentTitle('AI Providers')
 
-  const { authenticatedApi, isFamilyChild } = useAuthenticatedApi()
+  const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   const [models, setModels] = useState<AiChatAuthorInfo[]>([])
   const [quickModel, setQuickModel] = useState<string | null>(null)
@@ -151,6 +157,8 @@ function ProvidersPage() {
   const [loadError, setLoadError] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // The stored model being edited or cloned, once its configuration has loaded.
+  const [sourceMode, setSourceMode] = useState<Exclude<ModelModalMode, { type: 'add' }> | null>(null)
 
   const fetchAll = async () => {
     setLoadError(false)
@@ -163,6 +171,13 @@ function ProvidersPage() {
       setModels(modelList)
       setQuickModel(qm)
       setAiConfig(cfg)
+      // Each dialog saves a model of the user's own, so none stays open, or opens late, once the
+      // deployment says users may not add theirs.
+      if (cfg.enabled && !cfg.userModelsEnabled) {
+        ++openRequest.current
+        setSheetOpen(false)
+        setSourceMode(null)
+      }
     } catch (err) {
       console.error('Failed to load providers:', err)
       setLoadError(true)
@@ -173,41 +188,41 @@ function ProvidersPage() {
 
   useEffect(() => { fetchAll() }, [authenticatedApi])
 
-  // Family child profiles must not manage external models even via a direct URL.
-  if (isFamilyChild) {
-    return <Navigate to="/" replace />
-  }
-
   const gatewayMode = aiConfig?.enabled === true
+  // False only on an AI Gateway deployment whose administrator turned adding models off.
+  const canAddModels = aiConfig?.enabled !== true || aiConfig.userModelsEnabled
 
-  const isBuiltIn = (model: AiChatAuthorInfo): boolean => {
-    if (model.managedByDeployment) return true
-    if (!aiConfig?.enabled) return false
-    const enabled = new Set((aiConfig as Extract<AiGatewayInfo, { enabled: true }>).enabledProviders)
-    return PROVIDER_ORDER.some((p) => enabled.has(p) && model.id in SUGGESTED_MODELS[p])
+  const isBuiltIn = (modelId: string): boolean =>
+    aiConfig?.enabled === true && aiConfig.builtInModelIds.includes(modelId)
+
+  // Bumped whenever the user opens a dialog, so a configuration that finishes loading after a later
+  // click doesn't open its editor over the dialog the user chose.
+  const openRequest = useRef(0)
+  const openAdd = () => {
+    ++openRequest.current
+    setSheetOpen(true)
+  }
+  const openWithSource = async (type: 'edit' | 'clone', model: AiChatAuthorInfo) => {
+    const request = ++openRequest.current
+    try {
+      const source = await authenticatedApi.getModelConfig(model.id)
+      if (request === openRequest.current) setSourceMode({ type, source })
+    } catch (err) {
+      if (request !== openRequest.current) return
+      console.error('Failed to load model configuration:', err)
+      toasts.add({ title: 'Failed to load provider configuration', variant: 'error' })
+    }
   }
 
   const handleDelete = async (model: AiChatAuthorInfo) => {
-    if (
-      !confirm(
-        familyLabel(
-          `Delete "${model.name}"? This cannot be undone.`,
-          familyUi.deleteProviderConfirm(model.name),
-        ),
-      )
-    ) {
-      return
-    }
+    if (!confirm(`Delete "${model.name}"? This cannot be undone.`)) return
     setDeletingId(model.id)
     try {
-      await unwrapFamilyRpcResult(await authenticatedApi.deleteModel(model.id))
+      await authenticatedApi.deleteModel(model.id)
       await fetchAll()
     } catch (err) {
       console.error('Failed to delete model:', err)
-      toasts.add({
-        title: familyLabel('Failed to delete provider', familyUi.failedDeleteProvider),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to delete provider', variant: 'error' })
     } finally {
       setDeletingId(null)
     }
@@ -222,14 +237,11 @@ function ProvidersPage() {
     const next = quickModel === modelId ? null : modelId
     setQuickModel(next)
     try {
-      await unwrapFamilyRpcResult(await authenticatedApi.setQuickModel(next))
+      await authenticatedApi.setQuickModel(next)
     } catch (err) {
       console.error('Failed to set quick model:', err)
       setQuickModel(quickModel) // revert
-      toasts.add({
-        title: familyLabel('Failed to update default model', familyUi.failedUpdateDefaultModel),
-        variant: 'error',
-      })
+      toasts.add({ title: 'Failed to update default model', variant: 'error' })
     } finally {
       quickInFlight.current = false
     }
@@ -245,20 +257,23 @@ function ProvidersPage() {
     <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-3 sm:px-10">
       <header className="flex flex-col items-stretch gap-4 px-3 pb-3 pt-6 sm:flex-row sm:items-end sm:justify-between sm:pt-10">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
-            {familyLabel('AI providers', familyUi.aiProviders)}
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">AI providers</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            {familyLabel(
-              'Configure the AI models available to your workspaces.',
-              familyUi.aiProvidersDesc,
-            )}
+            Configure the AI models available to your workspaces.
           </p>
         </div>
-        <button type="button" onClick={() => setSheetOpen(true)} className={`${PRIMARY_BTN} h-11 justify-center text-[14px] sm:h-9 sm:text-[13px]`}>
-          <Plus size={14} weight="bold" />
-          {familyLabel('Add provider', familyUi.addModel)}
-        </button>
+        {canAddModels && (
+          <button
+            type="button"
+            onClick={openAdd}
+            // Until the deployment's configuration loads, nothing says whether adding is allowed.
+            disabled={aiConfig === null}
+            className={`${PRIMARY_BTN} h-11 justify-center text-[14px] disabled:cursor-not-allowed disabled:opacity-60 sm:h-9 sm:text-[13px]`}
+          >
+            <Plus size={14} weight="bold" />
+            Add provider
+          </button>
+        )}
       </header>
 
       {/* Search — hidden when the user has no models */}
@@ -270,7 +285,7 @@ function ProvidersPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={familyLabel('Search providers…', 'モデルを検索…')}
+              placeholder="Search providers…"
               className="h-9 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[13px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />
           </div>
@@ -285,13 +300,12 @@ function ProvidersPage() {
               <Notice>
                 <Lightning size={15} className="mt-px shrink-0 text-kumo-brand" />
                 <span>
-                  <strong className="font-medium text-kumo-default">
-                    {familyLabel('AI Gateway mode:', familyUi.aiGatewayMode)}
-                  </strong>{' '}
-                  {familyLabel(
-                    'built-in models are managed by your deployment. You can still add custom models with your own API tokens.',
-                    familyUi.aiGatewayHint,
-                  )}
+                  <strong className="font-medium text-kumo-default">AI Gateway mode:</strong>{' '}
+                  {canAddModels
+                    ? 'built-in models are managed by your deployment. You can still add other ' +
+                      'models from the enabled providers.'
+                    : 'your deployment’s administrator provides the models. Adding your own is ' +
+                      'turned off.'}
                 </span>
               </Notice>
             )}
@@ -300,23 +314,11 @@ function ProvidersPage() {
               <Notice>
                 <Lightning size={15} className="mt-px shrink-0 text-kumo-brand" />
                 <span>
-                  {isFamilyMode ? (
-                    <>
-                      <strong className="font-medium text-kumo-default">{familyUi.quickModelLabel}</strong>{' '}
-                      {quickModel
-                        ? `${models.find((m) => m.id === quickModel)?.name ?? quickModel}.`
-                        : familyUi.quickModelNone}{' '}
-                      {familyUi.quickModelHint}
-                    </>
-                  ) : (
-                    <>
-                      <strong className="font-medium text-kumo-default">Quick model:</strong>{' '}
-                      {quickModel
-                        ? `${models.find((m) => m.id === quickModel)?.name ?? quickModel}.`
-                        : 'none set.'}{' '}
-                      Used for fast tasks like generating chat titles. Click a model to set it.
-                    </>
-                  )}
+                  <strong className="font-medium text-kumo-default">Quick model:</strong>{' '}
+                  {quickModel
+                    ? `${models.find((m) => m.id === quickModel)?.name ?? quickModel}.`
+                    : 'none set.'}{' '}
+                  Used for fast tasks like generating chat titles. Click a model to set it.
                 </span>
               </Notice>
             )}
@@ -332,14 +334,9 @@ function ProvidersPage() {
           </div>
         ) : loadError ? (
           <div className="py-12 text-center text-sm">
-            <p className="text-kumo-danger">
-              {familyLabel(
-                'Something went wrong loading your providers.',
-                familyUi.providersLoadError,
-              )}
-            </p>
+            <p className="text-kumo-danger">Something went wrong loading your providers.</p>
             <button type="button" onClick={fetchAll} className="mt-1 cursor-pointer text-kumo-brand underline">
-              {familyLabel('Try again', familyUi.tryAgain)}
+              Try again
             </button>
           </div>
         ) : models.length === 0 ? (
@@ -349,24 +346,23 @@ function ProvidersPage() {
             </div>
             <div>
               <p className="text-sm font-medium text-kumo-default">
-                {familyLabel('No AI providers yet', familyUi.noProvidersYet)}
+                {canAddModels ? 'No AI providers yet' : 'No AI models available'}
               </p>
               <p className="mt-1 text-[13px] leading-[18px] text-kumo-subtle">
-                {familyLabel(
-                  'Add a provider to start building workspaces with AI.',
-                  familyUi.noProvidersYetDesc,
-                )}
+                {canAddModels
+                  ? 'Add a provider to start building workspaces with AI.'
+                  : 'Your deployment’s administrator offers no models at the moment.'}
               </p>
             </div>
-            <button type="button" onClick={() => setSheetOpen(true)} className={PRIMARY_BTN}>
-              <Plus size={14} weight="bold" />
-              {familyLabel('Add your first provider', familyUi.addModel)}
-            </button>
+            {canAddModels && (
+              <button type="button" onClick={openAdd} className={PRIMARY_BTN}>
+                <Plus size={14} weight="bold" />
+                Add your first provider
+              </button>
+            )}
           </div>
         ) : filtered.length === 0 ? (
-          <div className="py-12 text-center text-sm text-kumo-inactive">
-            {familyLabel('No providers found', 'モデルが見つかりません')}
-          </div>
+          <div className="py-12 text-center text-sm text-kumo-inactive">No providers found</div>
         ) : (
           filtered.map((model) => (
             <div
@@ -376,7 +372,10 @@ function ProvidersPage() {
               <ModelRow
                 model={model}
                 isQuick={quickModel === model.id}
-                isBuiltIn={isBuiltIn(model)}
+                isBuiltIn={model.managedByDeployment === true || isBuiltIn(model.id)}
+                canEdit={canAddModels}
+                onEdit={() => openWithSource('edit', model)}
+                onClone={() => openWithSource('clone', model)}
                 onDelete={() => handleDelete(model)}
                 onSetQuick={() => handleSetQuick(model.id)}
               />
@@ -396,6 +395,20 @@ function ProvidersPage() {
         authenticatedApi={authenticatedApi}
         aiConfig={aiConfig}
       />
+      {sourceMode && (
+        <AddModelModal
+          key={`${sourceMode.type}:${sourceMode.source.profile.id}`}
+          visible
+          mode={sourceMode}
+          onCancel={() => setSourceMode(null)}
+          onSuccess={() => {
+            setSourceMode(null)
+            fetchAll()
+          }}
+          authenticatedApi={authenticatedApi}
+          aiConfig={aiConfig}
+        />
+      )}
     </div>
   )
 }

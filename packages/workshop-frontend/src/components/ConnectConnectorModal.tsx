@@ -7,7 +7,6 @@ import {
   VendorDescription,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton, WorkshopIconButton } from './WorkshopControls'
-import { familyLabel, familyUi } from '../familyUi'
 
 interface ConnectConnectorModalProps {
   open: boolean
@@ -147,14 +146,11 @@ export default function ConnectConnectorModal({
   const accountDisplayName =
     accountDescription?.displayName ??
     accountDescription?.uniqueName ??
-    familyLabel('Connected', familyUi.connected)
+    'Connected'
 
   const headerTitle = isManage
     ? vendorDescription.displayName
-    : familyLabel(
-        `Connect ${vendorDescription.displayName}`,
-        familyUi.connectVendor(vendorDescription.displayName),
-      )
+    : `Connect ${vendorDescription.displayName}`
 
   const headerSubline = isManage ? (
     <div className="mt-0.5 flex items-center gap-1.5 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
@@ -169,10 +165,7 @@ export default function ConnectConnectorModal({
           ? accountDescription?.uniqueName
             ? `${accountDisplayName} / ${accountDescription.uniqueName}`
             : accountDisplayName
-          : familyLabel(
-              'Credentials expired; reconnect from the Gatekeepers page',
-              familyUi.credentialsExpiredReconnect,
-            )}
+          : 'Credentials expired; reconnect from the Gatekeepers page'}
       </span>
     </div>
   ) : (
@@ -237,7 +230,7 @@ export default function ConnectConnectorModal({
           </div>
           <Dialog.Close
             render={(props) => (
-              <WorkshopIconButton {...props} disabled={busy} aria-label={familyLabel('Close', familyUi.close)}>
+              <WorkshopIconButton {...props} disabled={busy} aria-label="Close">
                 <X size={16} />
               </WorkshopIconButton>
             )}
@@ -256,12 +249,9 @@ export default function ConnectConnectorModal({
               <h3 className="mb-2 text-[12px] leading-4 font-semibold uppercase tracking-[0.6px] text-kumo-inactive">
                 {granular
                   ? isManage
-                    ? familyLabel('Resources', familyUi.resources)
-                    : familyLabel('Resources to enable', familyUi.resourcesToEnable)
-                  : familyLabel(
-                      'What this gatekeeper can do',
-                      familyUi.whatThisGatekeeperCanDo,
-                    )}
+                    ? 'Resources'
+                    : 'Resources to enable'
+                  : 'What this gatekeeper can do'}
               </h3>
               <ul className="space-y-2">
                 {supportedResources.map((resource) => {
@@ -294,14 +284,8 @@ export default function ConnectConnectorModal({
                           className="shrink-0"
                           aria-label={
                             isManage
-                              ? familyLabel(
-                                  `Grant ${resource.title}`,
-                                  familyUi.grantResource(resource.title),
-                                )
-                              : familyLabel(
-                                  `Enable ${resource.title}`,
-                                  familyUi.enableResource(resource.title),
-                                )
+                              ? `Grant ${resource.title}`
+                              : `Enable ${resource.title}`
                           }
                           checked={checked}
                           disabled={disabled}
@@ -333,16 +317,12 @@ export default function ConnectConnectorModal({
                 />
                 <div className="text-[12px] leading-[17px] font-normal tracking-[-0.2px] text-kumo-default">
                   <span className="font-medium">
-                    {familyLabel(
-                      `Gatekeeper sits between ${vendorDescription.displayName} and your Gadgets.`,
-                      familyUi.gatekeeperSitsBetween(vendorDescription.displayName),
-                    )}
+                    Gatekeeper sits between {vendorDescription.displayName} and your Gadgets.
                   </span>{' '}
                   <span className="text-kumo-subtle">
-                    {familyLabel(
-                      'Each Gadget only sees the resources you connect. If the workspace is shared, Gatekeeper verifies other users have the required permissions before they can access those resources.',
-                      familyUi.gatekeeperConnectHint,
-                    )}
+                    Each Gadget only sees the resources you connect. If the workspace is shared,
+                    Gatekeeper verifies other users have the required permissions before they can
+                    access those resources.
                   </span>
                 </div>
               </div>
@@ -351,10 +331,8 @@ export default function ConnectConnectorModal({
 
           {isManage && (
             <div className="mt-5 rounded-lg border border-kumo-line bg-kumo-elevated px-4 py-3 text-[12px] leading-[17px] font-normal tracking-[-0.2px] text-kumo-subtle">
-              {familyLabel(
-                'This account can be used by Gadgets you connect it to. Shared users must have the required permissions before they can access those connected resources.',
-                familyUi.manageAccountHint,
-              )}
+              This account can be used by Gadgets you connect it to. Shared users must have the
+              required permissions before they can access those connected resources.
             </div>
           )}
         </div>
@@ -362,24 +340,15 @@ export default function ConnectConnectorModal({
         <div className="shrink-0 flex items-center justify-between gap-3 border-t border-kumo-line bg-kumo-base px-5 py-3">
           {isManage && confirmingDisconnect ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-default">
-              {familyLabel(
-                `Disconnect ${vendorDescription.displayName}? Gadgets using this will lose access.`,
-                familyUi.disconnectConfirm(vendorDescription.displayName),
-              )}
+              Disconnect {vendorDescription.displayName}? Gadgets using this will lose access.
             </p>
           ) : isManage && hasPending ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {familyLabel(
-                `${pendingPatterns.length} resource${pendingPatterns.length === 1 ? '' : 's'} to add`,
-                familyUi.resourcesToAdd(pendingPatterns.length),
-              )}
+              {pendingPatterns.length} resource{pendingPatterns.length === 1 ? '' : 's'} to add
             </p>
           ) : !isManage && granular && noneSelected ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {familyLabel(
-                'Select at least one resource to continue.',
-                familyUi.selectAtLeastOneResource,
-              )}
+              Select at least one resource to continue.
             </p>
           ) : (
             <span aria-hidden />
@@ -394,7 +363,7 @@ export default function ConnectConnectorModal({
                       disabled={disconnecting}
                       className="!h-9"
                     >
-                      {familyLabel('Cancel', familyUi.cancel)}
+                      Cancel
                     </WorkshopButton>
                     <WorkshopButton
                       tone="danger"
@@ -402,15 +371,13 @@ export default function ConnectConnectorModal({
                       disabled={disconnecting}
                       className="!h-9 min-w-[140px]"
                     >
-                      {disconnecting
-                        ? familyLabel('Disconnecting...', familyUi.disconnecting)
-                        : familyLabel('Yes, disconnect', familyUi.yesDisconnect)}
+                      {disconnecting ? 'Disconnecting...' : 'Yes, disconnect'}
                     </WorkshopButton>
                   </>
                 ) : hasPending ? (
                   <>
                     <WorkshopButton onClick={discardPending} disabled={ensuringBusy} className="!h-9">
-                      {familyLabel('Cancel', familyUi.cancel)}
+                      Cancel
                     </WorkshopButton>
                     <WorkshopButton
                       tone="primary"
@@ -419,11 +386,8 @@ export default function ConnectConnectorModal({
                       className="min-w-[140px]"
                     >
                       {ensuringBusy
-                        ? familyLabel('Opening...', familyUi.opening)
-                        : familyLabel(
-                            `Continue to ${vendorDescription.displayName}`,
-                            familyUi.continueTo(vendorDescription.displayName),
-                          )}
+                        ? 'Opening...'
+                        : `Continue to ${vendorDescription.displayName}`}
                     </WorkshopButton>
                   </>
                 ) : (
@@ -431,7 +395,7 @@ export default function ConnectConnectorModal({
                     <Dialog.Close
                       render={(props) => (
                         <WorkshopButton {...props} className="!h-9">
-                          {familyLabel('Close', familyUi.close)}
+                          Close
                         </WorkshopButton>
                       )}
                     />
@@ -441,7 +405,7 @@ export default function ConnectConnectorModal({
                       disabled={disconnecting}
                       className="!h-9"
                     >
-                      {familyLabel('Disconnect', familyUi.disconnect)}
+                      Disconnect
                     </WorkshopButton>
                   </>
                 )}
@@ -451,7 +415,7 @@ export default function ConnectConnectorModal({
                 <Dialog.Close
                   render={(props) => (
                     <WorkshopButton {...props} disabled={connecting} className="!h-9">
-                      {familyLabel('Cancel', familyUi.cancel)}
+                      Cancel
                     </WorkshopButton>
                   )}
                 />
@@ -463,17 +427,11 @@ export default function ConnectConnectorModal({
                 >
                   {autoProvisions
                     ? connecting
-                      ? familyLabel('Adding...', familyUi.adding)
-                      : familyLabel(
-                          `Add ${vendorDescription.displayName}`,
-                          familyUi.addVendor(vendorDescription.displayName),
-                        )
+                      ? 'Adding...'
+                      : `Add ${vendorDescription.displayName}`
                     : connecting
-                    ? familyLabel('Opening...', familyUi.opening)
-                    : familyLabel(
-                        `Continue to ${vendorDescription.displayName}`,
-                        familyUi.continueTo(vendorDescription.displayName),
-                      )}
+                    ? 'Opening...'
+                    : `Continue to ${vendorDescription.displayName}`}
                 </WorkshopButton>
               </>
             )}

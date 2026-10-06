@@ -1,12 +1,11 @@
-import { actionKey, compareActionOrder, isStaleAction } from './actionIdentity'
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { ActionLogEntry, ActionsSubscriber, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 
 // One ref-counted store per Overseer stub, shared across consumers. On open the store initiates
 // the live subscription first, then pages the currently-pending set via
-// listActions({filter: 'pending'}): await registration on every host before the first page
-// reads, so every record is covered — pages snapshot call-time state, and
+// listActions({filter: 'pending'}): capnweb e-order registers the subscriber server-side before
+// the first page reads, so every record is covered — pages snapshot call-time state, and
 // everything that changes after arrives on the subscription. Pages fold with live-wins
 // semantics; the last page loading is the "settled" signal. Resolved history is demand-paged
 // separately (see useActionHistory).
@@ -30,10 +29,10 @@ export type ActionsState = {
 type Store = {
   // Immutable object handed to useSyncExternalStore; rebuilt from the staged fields on commit.
   snapshot: ActionsState
-  stagedPending: Map<string, ActionLogEntry>
+  stagedPending: Map<number, ActionLogEntry>
   // Records delivered on the live subscription (only — paged records are not entries), retained
   // for useActionEntries' mount-time replay.
-  stagedEntries: Map<string, ActionLogEntry>
+  stagedEntries: Map<number, ActionLogEntry>
   refCount: number
   listeners: Set<() => void>
   entryListeners: Set<(record: ActionLogEntry) => void>
@@ -73,11 +72,8 @@ export function linkActionLog(overseer: RpcStub<Overseer>, key: string): void {
  * as store status 'error' and never parks a watermark, so the next stub swap replays its entire
  * gap from the last good one.
  */
-export function actionLogResumed(overseer: RpcStub<Overseer> | null,
-  previous?: RpcStub<Overseer> | null): boolean {
-  if (!overseer || !stores.get(overseer)?.resumed) return false
-  return previous === undefined || (previous !== null
-    && storeKeys.get(previous) !== undefined && storeKeys.get(previous) === storeKeys.get(overseer))
+export function actionLogResumed(overseer: RpcStub<Overseer> | null): boolean {
+  return (overseer && stores.get(overseer)?.resumed) ?? false
 }
 
 function getStore(overseer: RpcStub<Overseer>): Store {
@@ -102,9 +98,9 @@ function getStore(overseer: RpcStub<Overseer>): Store {
 }
 
 function commit(store: Store, status: ActionsState['status'] = store.snapshot.status): void {
-  // IDs are only ordered inside their host; merge all hosts by creation time and identity.
+  // Entries arrive in ascending id order, so this sort is near-free at pending-count scale.
   const pending = [...store.stagedPending.values()].toSorted((a, b) =>
-    compareActionOrder(a, b))
+    a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id)
   store.snapshot = { status, pending }
   for (const listener of store.listeners) listener()
 }
@@ -146,16 +142,14 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   class ActionsSubscriberImpl extends RpcTarget implements ActionsSubscriber {
     entry(record: ActionLogEntry): void {
       if (store.generation !== generation) return
-      if (isStaleAction(record, store.stagedEntries.get(actionKey(record))) ||
-          isStaleAction(record, store.stagedPending.get(actionKey(record)))) return
       trackChange(store, record)
-      store.stagedEntries.set(actionKey(record), record)
+      store.stagedEntries.set(record.id, record)
       let pendingChanged: boolean
       if (record.state === 'pending') {
-        store.stagedPending.set(actionKey(record), record)
+        store.stagedPending.set(record.id, record)
         pendingChanged = true
       } else {
-        pendingChanged = store.stagedPending.delete(actionKey(record))
+        pendingChanged = store.stagedPending.delete(record.id)
       }
       // Entries that never touch the pending set (observations, hook events) don't need a
       // re-sorted snapshot or a consumer re-render.
@@ -174,50 +168,52 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   }
   const subscriber = new ActionsSubscriberImpl() as unknown as RpcStub<ActionsSubscriber>
 
+  let failed = false
   const fail = (error: unknown) => {
     if (store.generation !== generation) return
-    // A failed load cannot settle this generation. Keep its gathered records for the error UI,
-    // but fence late deliveries and release every host until a new subscription is opened.
-    store.generation++
-    store.subscription?.[Symbol.dispose]()
-    store.subscription = null
     console.error('Failed to load pending actions:', error)
+    // Deliberately also downgrades an already-'ready' store: the pages can drain before the
+    // subscribe call's return trip fails, and a store with a dead live stream must not present
+    // as settled.
+    failed = true
     commit(store, 'error')
   }
 
-  // A moved gadget registers on another host asynchronously. Await the full subscription
-  // before paging so an action cannot land between that host's snapshot and registration.
+  // Initiated first — the page loop below relies on capnweb e-order having registered the
+  // subscriber server-side before the first page reads. With a watermark the server also replays
+  // the gap (everything changed at/after it, as upserts) ahead of the pages.
   const subscribed = startAfter
     ? overseer.subscribeToActions(subscriber, startAfter)
     : overseer.subscribeToActions(subscriber)
-
-
-  // One page in flight at a time. Moved-host notifications and pages use different RPC sessions,
-  // so prefer the higher host revision. Unversioned local records preserve live-wins ordering.
-  ;(async () => {
-    const sub = await subscribed
+  subscribed.then(sub => {
     if (store.generation !== generation) {
       sub[Symbol.dispose]()
       return
     }
     store.subscription = sub
-    let cursor: string | undefined
+  }, fail)
+
+  // One page in flight at a time. Records created mid-paging are live-only (their ids are above
+  // page 1's snapshot bound), so the fold only has to resolve one conflict class: a page's stale
+  // copy of a record the subscription already delivered — the subscription's copy (in any state)
+  // is newer by definition, so a record resolved live is never re-marked pending by a page that
+  // predates the resolution.
+  ;(async () => {
+    let beforeId: number | undefined
     do {
-      const page = await overseer.listActions({ filter: 'pending', cursor })
+      const page = await overseer.listActions({ filter: 'pending', beforeId })
       if (store.generation !== generation) return
       for (const record of page.entries) {
         trackChange(store, record)
-        const live = store.stagedEntries.get(actionKey(record))
-        if (!live || isStaleAction(live, record)) {
-          store.stagedPending.set(actionKey(record), record)
-          if (live) store.stagedEntries.set(actionKey(record), record)
-        }
+        if (!store.stagedEntries.has(record.id)) store.stagedPending.set(record.id, record)
       }
-      cursor = page.nextCursor
+      beforeId = page.nextBeforeId
       scheduleNotify(store)
-    } while (cursor !== undefined)
-    // Synchronous commit so a throttled background tab still settles.
-    commit(store, 'ready')
+    } while (beforeId !== undefined)
+    // Synchronous commit (not scheduleNotify) so a throttled background tab still settles. A
+    // subscribe failure is sticky: pages draining afterwards must not upgrade a store whose live
+    // stream is dead back to 'ready'.
+    commit(store, failed ? 'error' : 'ready')
   })().catch(fail)
 }
 

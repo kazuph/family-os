@@ -13,6 +13,7 @@ import { getModel } from "./ai-models.js";
 import { completeText } from "./ai-invoke.js";
 import { OPENCODE_GO_PRO_MODEL_ID } from "./opencode-go.js";
 
+/** Explicit information sent to the one-shot advisor; never includes implicit workspace state. */
 export type ProAdvisorInput = {
   /** The specific question to ask Pro. */
   question: string;

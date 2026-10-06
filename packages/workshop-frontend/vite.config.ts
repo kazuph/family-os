@@ -3,12 +3,75 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
+import { vitestTask } from '@gadgets/scripts/vitest-task'
+
+// `dist/` is this package's own build output, excluded from the inputs of the bundle and test
+// tasks: vp declines to cache a task that reads a path it also wrote. Package-relative rather than
+// workspace-wide -- `typed-storage` emits, and its `exports` resolves to `dist/index.js`, so a
+// pattern matching every package's `dist` would drop a real input.
+const frontendBundleTaskOptions = {
+  dependsOn: ['clean:dist'],
+  cache: {
+    env: ['VITE_*'],
+    input: [
+      { auto: true },
+      { pattern: '!dist/**', base: 'package' } as const,
+      // Wrangler's scratch bundles are randomly named, and tracking reaches past the package that
+      // owns the task, so any sibling that ran `wrangler dev` guarantees a miss here. Workspace-wide
+      // for that reason; `build:app` and the shared `test` task exclude the same tree.
+      { pattern: '!**/.wrangler/**', base: 'workspace' } as const,
+    ],
+    output: ['dist/**'],
+  },
+}
+
+const ownDist = { pattern: '!dist/**', base: 'package' } as const
+const viteBuildCommand =
+  `node --input-type=module -e "process.env.NODE_ENV='production'; await (await import('vite')).build()"`
+
+const runConfig = {
+  run: {
+    tasks: {
+      'clean:dist': {
+        command: `node --input-type=module -e "import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })"`,
+        cache: false,
+      },
+      /**
+       * `build` is a task rather than a package.json script so `cache.env` can declare the `VITE_*`
+       * flags it reads: a cached `vp` run executes scripts in a clean environment, and the values
+       * would be missing from the fingerprint besides. `VITE_CF_ACCESS_MODE` is inlined into the
+       * bundle (`src/useAuth.ts`) and `VITE_FRONTEND_ERROR_REPORTING` selects hidden source maps
+       * below, so replaying a bundle built under different values is wrong rather than merely stale.
+       *
+       * Separate commands rather than one `&&` string so each is a cache entry of its own;
+       * `cache.env` is task-wide, so changing a flag re-runs all three anyway. `tsconfig.vite.json`
+       * is the config-file pass (`vite.config.ts` and the scripts it imports), which the app's own
+       * `tsconfig.json` excludes.
+       *
+       * Production mode is set before Vite is imported because Vite snapshots whether `NODE_ENV`
+       * was present before loading this config. The Node launcher is shell-neutral.
+       */
+      build: {
+        command: ['tsc', 'tsc -p tsconfig.vite.json', viteBuildCommand],
+        ...frontendBundleTaskOptions,
+      },
+      'build:assets': {
+        command: viteBuildCommand,
+        ...frontendBundleTaskOptions,
+      },
+      test: vitestTask('vitest run', [ownDist]),
+    },
+  },
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd())
-  const backendHost = env.VITE_BACKEND_PROXY_HOST?.trim() || env.VITE_BACKEND_HOST?.trim() || 'localhost:8787'
+  const backendHost = env.VITE_BACKEND_HOST?.trim() || 'localhost:8787'
   const frontendErrorReporting = env.VITE_FRONTEND_ERROR_REPORTING === 'true'
   return {
+    // Spread, not a literal `run: {...}`: `run` is Vite+'s field and vite's own `defineConfig` has
+    // no such property, but the excess-property check doesn't reach spreads.
+    ...runConfig,
     plugins: [
       TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
       react(),
@@ -19,27 +82,6 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       host: true,
       proxy: {
-        '/api': {
-          target: `http://${backendHost}`,
-          changeOrigin: true,
-          ws: true,
-          configure: (proxy) => {
-            proxy.on('proxyReqWs', (proxyReq, req) => {
-              let jwt = process.env.FAMILY_DEV_ACCESS_JWT;
-              if (jwt) proxyReq.setHeader('cf-access-jwt-assertion', jwt);
-              let cookie = req.headers.cookie;
-              if (cookie) proxyReq.setHeader('cookie', cookie);
-              // Access mode rejects cross-origin WS when the page is on Vite but the Worker sees
-              // localhost:8787; align Origin with the proxied backend host.
-              proxyReq.setHeader('origin', `http://${backendHost}`);
-            });
-            proxy.on('proxyReq', (proxyReq) => {
-              let jwt = process.env.FAMILY_DEV_ACCESS_JWT;
-              if (jwt) proxyReq.setHeader('cf-access-jwt-assertion', jwt);
-              proxyReq.setHeader('origin', `http://${backendHost}`);
-            });
-          },
-        },
         '/api/client-errors': `http://${backendHost}`,
         '/blueprint-screenshot': `http://${backendHost}`,
         '/api/site-logo': `http://${backendHost}`,

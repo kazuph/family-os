@@ -21,11 +21,11 @@ import {
   SupportedResource,
   VendorDescription,
 } from '@gadgets/workshop-shared/gatekeeper'
-import { GatekeeperVendorInfo, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
+import { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
-import { familyLabel, familyUi } from '../familyUi'
+import { openConnectWindow } from '../connectHandoff'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -149,7 +149,7 @@ function ConnectorCard({
         className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-kumo-line bg-kumo-base px-3 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-default transition-[background-color,border-color,opacity,transform] duration-150 ease-out hover:border-kumo-fill hover:bg-kumo-tint active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:active:scale-100"
       >
         <ArrowsClockwise size={12} weight="bold" />
-        {reconnectBusy ? familyLabel('Opening...', familyUi.opening) : familyLabel('Reconnect', familyUi.reconnect)}
+        {reconnectBusy ? 'Opening...' : 'Reconnect'}
       </button>
     ) : (
       <div className="grid h-7 w-7 place-items-center text-kumo-inactive transition-colors group-hover:text-kumo-default">
@@ -403,10 +403,7 @@ function ConnectorsHeroDiagram({
         <button
           type="button"
           className="themed-card-hover-shadow grid h-[52px] w-[52px] place-items-center rounded-2xl border border-kumo-line bg-kumo-base text-kumo-brand transition-[border-color,box-shadow] hover:border-kumo-fill focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring focus-visible:ring-offset-2 focus-visible:ring-offset-kumo-base"
-          aria-label={familyLabel(
-            'Gatekeeper keeps Gadget access limited to connected resources',
-            familyUi.gatekeeperAria,
-          )}
+          aria-label="Gatekeeper keeps Gadget access limited to connected resources"
         >
           <ShieldCheck size={21} weight="duotone" />
         </button>
@@ -417,13 +414,10 @@ function ConnectorsHeroDiagram({
             </div>
             <div className="min-w-0">
               <p className="m-0 text-[12px] leading-4 font-semibold tracking-[-0.2px] text-kumo-default">
-                {familyLabel('Gatekeeper', familyUi.gatekeepersTitle)}
+                Gatekeeper
               </p>
               <p className="mt-1 text-[11px] leading-4 font-normal tracking-[-0.1px] text-kumo-subtle">
-                {familyLabel(
-                  'Keeps each workspace limited to the resources you connect and ensures every user has the required permissions before accessing them.',
-                  familyUi.gatekeeperTooltip,
-                )}
+                Keeps each workspace limited to the resources you connect and ensures every user has the required permissions before accessing them.
               </p>
             </div>
           </div>
@@ -449,7 +443,7 @@ type ModalTarget =
   | null
 
 function ConnectorsPage() {
-  useDocumentTitle(familyLabel('Gatekeepers', familyUi.gatekeepersTitle))
+  useDocumentTitle('Gatekeepers')
   const siteName = useSiteName()
 
   const { authenticatedApi } = useAuthenticatedApi()
@@ -502,10 +496,7 @@ function ConnectorsPage() {
         const unavailable = vendorList.filter((v) => v.unavailable)
         if (unavailable.length > 0) {
           toasts.add({
-            title: familyLabel(
-              `Some services are temporarily unavailable: ${unavailable.map((v) => v.id).join(', ')}`,
-              familyUi.someServicesUnavailable(unavailable.map((v) => v.id).join(', ')),
-            ),
+            title: `Some services are temporarily unavailable: ${unavailable.map((v) => v.id).join(', ')}`,
             variant: 'warning',
           })
         }
@@ -586,13 +577,12 @@ function ConnectorsPage() {
         // If the gatekeeper provides a management UI, its nav entry should appear without a reload.
         refreshGatekeeperApps(authenticatedApi)
       } else {
-        const { url } = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
-        window.open(url, '_blank', 'noopener,noreferrer')
+        openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
       }
       handleCloseModal()
     } catch (err) {
       console.error('Failed to connect account:', err)
-      toasts.add({ title: familyLabel('Failed to start connection', familyUi.failedStartConnection), variant: 'error' })
+      toasts.add({ title: 'Failed to start connection', variant: 'error' })
     } finally {
       setConnecting(false)
     }
@@ -602,18 +592,16 @@ function ConnectorsPage() {
     if (!modalTarget || modalTarget.kind !== 'manage') return
     setEnsuringResourceUrlPatterns((prev) => [...new Set([...prev, ...resourceUrlPatterns])])
     try {
-      const result = await authenticatedApi.ensureAccountResources(
+      const flow = await authenticatedApi.ensureAccountResources(
         modalTarget.accountId,
         resourceUrlPatterns,
       )
-      if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
-      }
-      // On success the new grant arrives via subscribeConnectedAccounts(); the toggle reflects it
-      // once `grantedResourceUrlPatterns` updates.
+      if (flow) openConnectWindow(flow)
+      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      // and the toggle reflects it once `grantedResourceUrlPatterns` updates.
     } catch (err) {
       console.error('Failed to expand account access:', err)
-      toasts.add({ title: familyLabel('Failed to request additional access', familyUi.failedRequestAccess), variant: 'error' })
+      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
     } finally {
       setEnsuringResourceUrlPatterns((prev) =>
         prev.filter((p) => !resourceUrlPatterns.includes(p)),
@@ -634,7 +622,7 @@ function ConnectorsPage() {
       handleCloseModal()
     } catch (err) {
       console.error('Failed to disconnect account:', err)
-      toasts.add({ title: familyLabel('Failed to disconnect account', familyUi.failedDisconnect), variant: 'error' })
+      toasts.add({ title: 'Failed to disconnect account', variant: 'error' })
     } finally {
       setDisconnecting(false)
     }
@@ -643,11 +631,10 @@ function ConnectorsPage() {
   const handleReconnect = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
     } catch (err) {
       console.error('Failed to reconnect account:', err)
-      toasts.add({ title: familyLabel('Failed to reconnect account', familyUi.failedReconnect), variant: 'error' })
+      toasts.add({ title: 'Failed to reconnect account', variant: 'error' })
     } finally {
       setReconnectingAccountId(null)
     }
@@ -730,13 +717,11 @@ function ConnectorsPage() {
         <header className="mb-8 grid gap-8 lg:grid-cols-[minmax(0,540px)_444px] lg:items-center lg:justify-between">
           <div>
             <h1 className="m-0 text-3xl font-semibold leading-tight tracking-tight text-kumo-default sm:text-[34px]">
-              {familyLabel('Gatekeepers', familyUi.gatekeepersTitle)}
+              Gatekeepers
             </h1>
             <p className="mt-2 text-[14px] leading-[20px] font-normal tracking-[-0.25px] text-kumo-subtle">
-              {familyLabel(
-                'Add the apps and accounts your workspaces can use. Connect once, then wire them into anything you build.',
-                familyUi.gatekeepersDesc,
-              )}
+              Add the apps and accounts your workspaces can use. Connect once, then wire
+              them into anything you build.
             </p>
           </div>
           <ConnectorsHeroDiagram accounts={accounts} vendors={vendors} siteName={siteName} />
@@ -752,7 +737,7 @@ function ConnectorsPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={familyLabel('Search gatekeepers…', familyUi.searchGatekeepers)}
+              placeholder="Search gatekeepers…"
               className="h-10 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />
           </div>
@@ -762,32 +747,29 @@ function ConnectorsPage() {
         {loadError && (
           <div className="rounded-2xl border border-kumo-line bg-kumo-base px-4 py-6 text-center">
             <p className="m-0 text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-danger">
-              {familyLabel('Something went wrong loading your gatekeepers.', familyUi.somethingWrongGatekeepers)}
+              Something went wrong loading your gatekeepers.
             </p>
             <p className="mt-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {familyLabel(
-                'Check your connection and try refreshing the page.',
-                familyUi.checkConnectionRefresh,
-              )}
+              Check your connection and try refreshing the page.
             </p>
           </div>
         )}
 
         {initialLoading && (
           <div className="rounded-2xl border border-kumo-line bg-kumo-base px-4 py-8 text-center text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-            {familyLabel('Loading gatekeepers...', familyUi.loadingGatekeepers)}
+            Loading gatekeepers...
           </div>
         )}
 
         {filteredAccounts.length > 0 && (
           <section className="mb-10">
-            <SectionEyebrow label={familyLabel('Connected', familyUi.connected)} count={filteredAccounts.length} />
+            <SectionEyebrow label="Connected" count={filteredAccounts.length} />
             <div className={sectionGridClass}>
               {filteredAccounts.map((account) => {
                 const displayName =
                   account.accountDescription.displayName ??
                   account.accountDescription.uniqueName ??
-                  familyLabel('Connected', familyUi.connected)
+                  'Connected'
                 const tagline = account.vendorDescription.tagline
                 return (
                   <ConnectorCard
@@ -804,7 +786,7 @@ function ConnectorsPage() {
                       >
                         {account.credentialsValid
                           ? displayName
-                          : familyLabel('Credentials expired', familyUi.credentialsExpired)}
+                          : 'Credentials expired'}
                       </span>
                     }
                     tagline={tagline}
@@ -822,7 +804,7 @@ function ConnectorsPage() {
 
         {filteredAvailable.length > 0 && (
           <section className="mb-10">
-            <SectionEyebrow label={familyLabel('Available', familyUi.available)} />
+            <SectionEyebrow label="Available" />
             <div className={sectionGridClass}>
 
               {filteredAvailable.map((vendor) => (
@@ -849,19 +831,13 @@ function ConnectorsPage() {
             <EmptyState
               title={
                 search
-                  ? familyLabel('No gatekeepers match', familyUi.noGatekeepersMatch)
-                  : familyLabel('No gatekeepers yet', familyUi.noGatekeepersYet)
+                  ? 'No gatekeepers match'
+                  : 'No gatekeepers yet'
               }
               description={
                 search
-                  ? familyLabel(
-                      "We couldn't find anything matching your search.",
-                      familyUi.noGatekeepersMatchHint,
-                    )
-                  : familyLabel(
-                      'Gatekeepers will appear here as they become available in your workspace.',
-                      familyUi.noGatekeepersYetHint,
-                    )
+                  ? "We couldn't find anything matching your search."
+                  : 'Gatekeepers will appear here as they become available in your workspace.'
               }
               icon={Plugs}
             />

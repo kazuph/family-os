@@ -1,9 +1,22 @@
 import { useState, useEffect } from 'react'
-import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
-import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS, unwrapFamilyRpcResult } from '@gadgets/workshop-shared/api'
+import { Dialog, Button, Input, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
-import { familyLabel, familyUi } from './familyUi'
+import { ExtraHeadersEditor } from './features/ai-models/ExtraHeadersEditor'
+import { StoredSecretInput } from './features/ai-models/StoredSecretInput'
+import {
+  headerRowsFromRecord, headerRowsToRecord, validateHeaderRows, type HeaderRow,
+} from './features/ai-models/extraHeaders'
+import { PROVIDER_LABELS, parseTokenLimit } from './features/ai-models/modelForm'
+
+/**
+ * Whether the modal adds a model from scratch, edits a stored one, or adds a model based on a
+ * stored one, with the stored model's withheld secrets carried over.
+ */
+export type ModelModalMode =
+  | { type: 'add' }
+  | { type: 'edit' | 'clone', source: { profile: AiChatAuthorInfo, config: RedactedAiModelConfig } }
 
 interface AddModelModalProps {
   visible: boolean
@@ -11,30 +24,31 @@ interface AddModelModalProps {
   onSuccess: () => void
   authenticatedApi: RpcStub<AuthenticatedApi>
   aiConfig: AiGatewayInfo | null
+  mode?: ModelModalMode
 }
 
 type SelectionType =
   | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
   | { type: 'custom', provider: AiModelProvider }
 
-const PROVIDER_LABELS: Record<AiModelProvider, string> = {
-  'opencode-go': 'OpenCode Go',
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  cloudflare: 'Cloudflare Workers AI',
-  ollama: 'Ollama',
-}
-
 // Placeholder hinting at the shape of each provider's API token.
 const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
-  'opencode-go': familyLabel('Managed by deployment', familyUi.apiTokenManaged),
+  'opencode-go': 'managed by deployment',
   anthropic: 'sk-ant-...',
   openai: 'sk-...',
   google: 'AIza...',
-  cloudflare: familyLabel('Cloudflare API token', 'Cloudflare APIトークン'),
-  ollama: familyLabel('(optional)', familyUi.optionalShort),
+  cloudflare: 'Cloudflare API token',
+  ollama: '(optional)',
 }
+
+// Providers whose client can send no API key at all, so a proxy that extra headers authenticate
+// can supply its own (AI Gateway only injects a stored key into requests that carry none). Google's
+// SDK always sends a key, and the Workers AI endpoint can't be redirected to a proxy.
+const TOKEN_OPTIONAL_WITH_HEADERS: ReadonlySet<AiModelProvider> = new Set(['anthropic', 'openai'])
+
+const isTokenRequired = (provider: AiModelProvider, headerRows: readonly HeaderRow[]) =>
+  provider !== 'ollama' &&
+  !(TOKEN_OPTIONAL_WITH_HEADERS.has(provider) && headerRowsToRecord(headerRows) !== undefined)
 
 // Example used in the custom-model placeholders for providers that have no suggested models
 // (currently Ollama, which serves whatever the user has pulled locally).
@@ -66,8 +80,7 @@ function decodeSelection(value: string): SelectionType {
 // Build the flat list of options for the Select dropdown.
 function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null) {
   const options: { value: string; label: string; provider: string }[] = []
-  const providerOrder = (Object.keys(SUGGESTED_MODELS) as AiModelProvider[])
-    .filter((provider) => provider !== 'opencode-go')
+  const providerOrder = Object.keys(SUGGESTED_MODELS).filter(provider => provider !== "opencode-go") as AiModelProvider[]
 
   for (const provider of providerOrder) {
     if (enabledProviders && !enabledProviders.has(provider)) continue
@@ -75,6 +88,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
     // In gateway mode, suggested models are already built-in, so don't list them.
     if (!gatewayMode) {
       for (const [modelId, model] of Object.entries(SUGGESTED_MODELS[provider])) {
+        if (model.hidden) continue
         options.push({
           value: encodeSelection(provider, modelId),
           label: model.name,
@@ -85,10 +99,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
 
     options.push({
       value: encodeSelection(provider),
-      label: familyLabel(
-        `Other ${PROVIDER_LABELS[provider] || provider}...`,
-        familyUi.otherProvider(PROVIDER_LABELS[provider] || provider),
-      ),
+      label: `Other ${PROVIDER_LABELS[provider] || provider}...`,
       provider,
     })
   }
@@ -96,22 +107,33 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   return options
 }
 
-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig }: AddModelModalProps) {
+export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' } }: AddModelModalProps) {
   const toasts = useKumoToastManager()
 
+  // Edit and clone modes take their initial state from the source model, so the caller remounts
+  // the modal (with a `key`) to switch source.
+  const source = mode.type === 'add' ? null : mode.source
+  const editing = mode.type === 'edit'
+
   const [loading, setLoading] = useState(false)
-  const [selection, setSelection] = useState<SelectionType | null>(null)
+  const [selection, setSelection] = useState<SelectionType | null>(
+    source && { type: 'custom', provider: source.config.provider })
   const [selectValue, setSelectValue] = useState<string | undefined>(undefined)
 
-  // Form fields (used for custom models)
-  const [modelId, setModelId] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [apiToken, setApiToken] = useState('')
-  const [accountId, setAccountId] = useState('')
-  const [apiUrl, setApiUrl] = useState('')
+  // Form fields (used for custom models). A null secret keeps the source's withheld value.
+  const [modelId, setModelId] = useState(editing ? source!.config.model : '')
+  const [displayName, setDisplayName] = useState(editing ? source!.profile.name : '')
+  const [apiToken, setApiToken] = useState<string | null>(source ? source.config.apiToken : '')
+  const [accountId, setAccountId] = useState(source?.config.accountId ?? '')
+  const [apiUrl, setApiUrl] = useState(source?.config.apiUrl ?? '')
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => headerRowsFromRecord(source?.config.extraHeaders))
+  // Token limits are specific to a model, so a clone doesn't inherit them.
+  const [contextWindow, setContextWindow] = useState(editing ? String(source!.config.contextWindow ?? '') : '')
+  const [outputLimit, setOutputLimit] = useState(editing ? String(source!.config.outputLimit ?? '') : '')
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [headerErrors, setHeaderErrors] = useState<Record<number, string>>({})
 
   // Advanced settings collapsible state
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -120,6 +142,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const enabledProviders: Set<string> | null = gatewayMode
     ? new Set(aiConfig.enabledProviders)
     : null
+
+  // The server keeps withheld secrets only for the endpoint they were configured for. Once the URL
+  // changes, withheld values are shown (and sent) as blank, and header values must be re-entered.
+  const storedSecretsUsable = source !== null && apiUrl.trim() === (source.config.apiUrl ?? '')
+  const effectiveApiToken = apiToken === null && !storedSecretsUsable ? '' : apiToken
 
   // Reset all state when dialog closes
   useEffect(() => {
@@ -131,7 +158,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiToken('')
       setAccountId('')
       setApiUrl('')
+      setHeaderRows([])
+      setContextWindow('')
+      setOutputLimit('')
       setErrors({})
+      setHeaderErrors({})
       setAdvancedOpen(false)
     }
   }, [visible])
@@ -139,6 +170,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const handleModelSelect = (value: string) => {
     setSelectValue(value)
     setErrors({})
+    setHeaderErrors({})
     const sel = decodeSelection(value)
     setSelection(sel)
 
@@ -152,40 +184,64 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     setApiToken('')
     setAccountId('')
     setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
+    setHeaderRows([])
+    setContextWindow('')
+    setOutputLimit('')
   }
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {}
 
     if (!selection) {
-      newErrors.selection = gatewayMode
-        ? familyLabel('Please select a provider', familyUi.pleaseSelectProvider)
-        : familyLabel('Please select a model', familyUi.pleaseSelectModel)
+      newErrors.selection = gatewayMode ? 'Please select a provider' : 'Please select a model'
     }
 
     if (selection?.type === 'custom') {
-      if (!modelId.trim()) newErrors.modelId = familyLabel('Please enter the model ID', familyUi.pleaseEnterModelId)
-      if (!displayName.trim()) newErrors.displayName = familyLabel('Please enter a display name', familyUi.pleaseEnterDisplayName)
+      if (!modelId.trim()) newErrors.modelId = 'Please enter the model ID'
+      if (!displayName.trim()) newErrors.displayName = 'Please enter a display name'
     }
 
     const isOllama = selection?.provider === 'ollama'
     const isCloudflare = selection?.provider === 'cloudflare'
     const showCredentials = !gatewayMode
 
-    if (showCredentials && selection && !isOllama && !apiToken.trim()) {
-      newErrors.apiToken = familyLabel('Please enter your API token', familyUi.pleaseEnterApiToken)
+    if (showCredentials && selection && isTokenRequired(selection.provider, headerRows) && effectiveApiToken?.trim() === '') {
+      newErrors.apiToken = apiToken === null
+        ? 'Please re-enter your API token, since the API URL changed'
+        : 'Please enter your API token'
     }
 
     if (showCredentials && isCloudflare && !accountId.trim()) {
-      newErrors.accountId = familyLabel('Please enter your Cloudflare account ID', familyUi.pleaseEnterAccountId)
+      newErrors.accountId = 'Please enter your Cloudflare account ID'
     }
 
     if (showCredentials && isOllama && !apiUrl.trim()) {
-      newErrors.apiUrl = familyLabel('Please enter the Ollama API URL', familyUi.pleaseEnterApiUrl)
+      newErrors.apiUrl = 'Please enter the Ollama API URL'
+    }
+
+    if (parseTokenLimit(contextWindow) === null) {
+      newErrors.contextWindow = 'Please enter a positive whole number of tokens'
+    }
+    if (parseTokenLimit(outputLimit) === null) {
+      newErrors.outputLimit = 'Please enter a positive whole number of tokens'
+    }
+
+    const newHeaderErrors = showCredentials ? validateHeaderRows(headerRows) : {}
+    if (showCredentials && !storedSecretsUsable) {
+      for (const row of headerRows) {
+        if (row.value === null && !newHeaderErrors[row.id]) {
+          newHeaderErrors[row.id] = "Please re-enter this header's value, since the API URL changed"
+        }
+      }
+    }
+    // These fields live in the collapsible, so reveal their errors if it was closed.
+    if (Object.keys(newHeaderErrors).length > 0 || newErrors.contextWindow || newErrors.outputLimit) {
+      setAdvancedOpen(true)
     }
 
     setErrors(newErrors)
-    return Object.keys(newErrors).length === 0
+    setHeaderErrors(newHeaderErrors)
+    return Object.keys(newErrors).length === 0 && Object.keys(newHeaderErrors).length === 0
   }
 
   const handleSubmit = async () => {
@@ -199,24 +255,39 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
       const profile: AiChatAuthorInfo = {
         type: 'agent',
-        id: finalModelId,
+        // A model's ID is its identity to chats and settings, so editing never changes it.
+        id: editing ? source!.profile.id : finalModelId,
         name: finalDisplayName,
       }
 
-      const config: AiModelConfig = {
+      const extraHeaders = gatewayMode ? undefined : headerRowsToRecord(headerRows)
+      const contextWindowTokens = parseTokenLimit(contextWindow)
+      const outputLimitTokens = parseTokenLimit(outputLimit)
+      const config: RedactedAiModelConfig = {
         provider: selection!.provider,
         model: finalModelId,
-        apiToken: gatewayMode ? '' : apiToken.trim(),
+        apiToken: gatewayMode ? '' : effectiveApiToken?.trim() ?? null,
         ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
+        ...(extraHeaders && { extraHeaders }),
+        ...(contextWindowTokens && { contextWindow: contextWindowTokens }),
+        ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
       }
 
-      await unwrapFamilyRpcResult(await authenticatedApi.addModel(profile, config))
-      toasts.add({ title: familyLabel('AI model added successfully', familyUi.addModelSuccess), variant: 'success' })
+      if (editing) {
+        await authenticatedApi.updateModel(profile, config)
+      } else {
+        await authenticatedApi.addModel(profile, config, source?.profile.id)
+      }
+      toasts.add({ title: editing ? 'AI model updated successfully' : 'AI model added successfully', variant: 'success' })
       onSuccess()
     } catch (error: any) {
-      console.error('Failed to add model:', error)
-      toasts.add({ title: familyLabel('Failed to add model', familyUi.failedAddModel), variant: 'error' })
+      console.error('Failed to save model:', error)
+      toasts.add({
+        title: editing ? 'Failed to update model' : 'Failed to add model',
+        description: error?.message,
+        variant: 'error',
+      })
     } finally {
       setLoading(false)
     }
@@ -228,6 +299,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const isOllama = selection?.provider === 'ollama'
   const isCloudflare = selection?.provider === 'cloudflare'
   const showCredentials = !gatewayMode
+  const tokenRequired = selection !== null && isTokenRequired(selection.provider, headerRows)
+  const title = { add: 'Add AI Model', edit: 'Edit AI Model', clone: 'Clone AI Model' }[mode.type]
 
   // Group options by provider for rendering with visual separators.
   const groupedOptions: { provider: string; items: typeof options }[] = []
@@ -244,19 +317,22 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
       <Dialog className="responsive-dialog overflow-y-auto p-6" size="lg">
         <Dialog.Title className="text-lg font-semibold mb-4">
-          {familyLabel('Add AI Model', familyUi.addAiModel)}
+          {title}
         </Dialog.Title>
 
         <div className="space-y-4">
           {/* Model / Provider selection */}
+          {source ? (
+            <Input
+              label="Provider"
+              value={PROVIDER_LABELS[source.config.provider] || source.config.provider}
+              disabled
+            />
+          ) : (
           <Select
-            label={gatewayMode
-              ? familyLabel('Select Provider', familyUi.selectProvider)
-              : familyLabel('Select Model', familyUi.selectModel)}
+            label={gatewayMode ? 'Select Provider' : 'Select Model'}
             className="w-full text-sm"
-            placeholder={gatewayMode
-              ? familyLabel('Choose a provider...', familyUi.chooseProvider)
-              : familyLabel('Choose an AI model...', familyUi.chooseAiModel)}
+            placeholder={gatewayMode ? 'Choose a provider...' : 'Choose an AI model...'}
             value={selectValue}
             onValueChange={(v) => handleModelSelect(v as string)}
             error={errors.selection}
@@ -281,27 +357,26 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               </div>
             ))}
           </Select>
+          )}
 
           {/* Custom model fields */}
           {showCustomFields && (
             <>
               <Input
-                label={familyLabel('Model ID', familyUi.modelIdLabel)}
-                placeholder={familyLabel(`e.g., ${example!.modelId}`, `例: ${example!.modelId}`)}
-                description={familyLabel(
-                  `The model identifier as specified by the provider (e.g., '${example!.modelId}')`,
-                  familyUi.modelIdDesc(example!.modelId),
-                )}
+                label="Model ID"
+                placeholder={`e.g., ${example!.modelId}`}
+                description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
                 value={modelId}
+                disabled={editing}
                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
                 error={errors.modelId}
                 variant={errors.modelId ? 'error' : 'default'}
               />
 
               <Input
-                label={familyLabel('Display Name', familyUi.displayNameLabel)}
-                placeholder={familyLabel(`e.g., ${example!.name}`, `例: ${example!.name}`)}
-                description={familyLabel('Human-readable name shown in the UI', familyUi.displayNameDesc)}
+                label="Display Name"
+                placeholder={`e.g., ${example!.name}`}
+                description="Human-readable name shown in the UI"
                 value={displayName}
                 onChange={(e) => { setDisplayName(e.target.value); setErrors(prev => ({ ...prev, displayName: '' })) }}
                 error={errors.displayName}
@@ -313,15 +388,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {/* Cloudflare account ID (the Workers AI REST endpoint is account-scoped) */}
           {showCredentials && isCloudflare && (
             <Input
-              label={familyLabel('Cloudflare Account ID', familyUi.cloudflareAccountId)}
-              placeholder={familyLabel(
-                'e.g., 0123456789abcdef0123456789abcdef',
-                '例: 0123456789abcdef0123456789abcdef',
-              )}
-              description={familyLabel(
-                'The Cloudflare account to bill for Workers AI usage',
-                familyUi.cloudflareAccountIdDesc,
-              )}
+              label="Cloudflare Account ID"
+              placeholder="e.g., 0123456789abcdef0123456789abcdef"
+              description="The Cloudflare account to bill for Workers AI usage"
               value={accountId}
               onChange={(e) => { setAccountId(e.target.value); setErrors(prev => ({ ...prev, accountId: '' })) }}
               error={errors.accountId}
@@ -331,35 +400,31 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
           {/* API Token */}
           {showCredentials && selection && (
-            <SensitiveInput
-              label={familyLabel('API Token', familyUi.apiToken)}
-              placeholder={API_TOKEN_PLACEHOLDERS[selection.provider]}
+            <StoredSecretInput
+              label="API Token"
+              stored={storedSecretsUsable && source!.config.apiToken === null}
+              placeholder={tokenRequired ? API_TOKEN_PLACEHOLDERS[selection.provider] : '(optional)'}
               description={
                 isOllama
-                  ? familyLabel('Optional for local Ollama access', familyUi.apiTokenOptionalOllama)
+                  ? 'Optional for local Ollama access'
                   : isCloudflare
-                  ? familyLabel(
-                      'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)',
-                      familyUi.apiTokenWorkersAi,
-                    )
-                  : familyLabel(
-                      `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`,
-                      familyUi.apiTokenFor(PROVIDER_LABELS[selection.provider]),
-                    )
+                  ? 'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)'
+                  : TOKEN_OPTIONAL_WITH_HEADERS.has(selection.provider)
+                  ? `Your ${PROVIDER_LABELS[selection.provider]} API token for billing. Leave blank if the extra headers under Advanced Settings authenticate you to a proxy that supplies its own key.`
+                  : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
               }
-              value={apiToken}
+              value={effectiveApiToken}
               onValueChange={(v) => { setApiToken(v); setErrors(prev => ({ ...prev, apiToken: '' })) }}
               error={errors.apiToken}
-              variant={errors.apiToken ? 'error' : 'default'}
             />
           )}
 
           {/* Ollama API URL (always visible for Ollama) */}
           {showCredentials && isOllama && (
             <Input
-              label={familyLabel('API URL', familyUi.apiUrl)}
+              label="API URL"
               placeholder="http://localhost:11434"
-              description={familyLabel('URL of your Ollama server', familyUi.apiUrlOllamaDesc)}
+              description="URL of your Ollama server"
               value={apiUrl}
               onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}
               error={errors.apiUrl}
@@ -367,24 +432,58 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             />
           )}
 
-          {/* Advanced Settings for non-Ollama, non-Cloudflare providers */}
-          {showCredentials && selection && !isOllama && !isCloudflare && (
+          {selection && (
             <Collapsible.Root
               open={advancedOpen}
               onOpenChange={setAdvancedOpen}
             >
-              <Collapsible.DefaultTrigger>{familyLabel('Advanced Settings', familyUi.advancedSettings)}</Collapsible.DefaultTrigger>
+              <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
               <Collapsible.DefaultPanel>
-                <Input
-                  label={familyLabel('API URL', familyUi.apiUrl)}
-                  placeholder="https://..."
-                  description={familyLabel(
-                    'Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)',
-                    familyUi.apiUrlOverrideDesc,
+                <div className="space-y-4">
+                  {/* Ollama shows its API URL above; Workers AI's endpoint is derived from the account ID. */}
+                  {showCredentials && !isOllama && !isCloudflare && (
+                    <Input
+                      label="API URL"
+                      placeholder="https://..."
+                      description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
+                      value={apiUrl}
+                      onChange={(e) => setApiUrl(e.target.value)}
+                    />
                   )}
-                  value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
-                />
+                  {showCredentials && (
+                    <ExtraHeadersEditor
+                      rows={headerRows}
+                      storedValuesUsable={storedSecretsUsable}
+                      errors={headerErrors}
+                      onRowsChange={(rows) => {
+                        setHeaderRows(rows)
+                        setHeaderErrors({})
+                        // Adding a header can make the token optional.
+                        setErrors(prev => ({ ...prev, apiToken: '' }))
+                      }}
+                    />
+                  )}
+                  <Input
+                    label="Context Window"
+                    inputMode="numeric"
+                    placeholder="(default)"
+                    description="The maximum tokens one request may total. Leave blank to use the model's built-in default."
+                    value={contextWindow}
+                    onChange={(e) => { setContextWindow(e.target.value); setErrors(prev => ({ ...prev, contextWindow: '' })) }}
+                    error={errors.contextWindow}
+                    variant={errors.contextWindow ? 'error' : 'default'}
+                  />
+                  <Input
+                    label="Output Limit"
+                    inputMode="numeric"
+                    placeholder="(default)"
+                    description="The maximum tokens in one response, also reserved out of the context window. Leave blank to use the model's built-in default."
+                    value={outputLimit}
+                    onChange={(e) => { setOutputLimit(e.target.value); setErrors(prev => ({ ...prev, outputLimit: '' })) }}
+                    error={errors.outputLimit}
+                    variant={errors.outputLimit ? 'error' : 'default'}
+                  />
+                </div>
               </Collapsible.DefaultPanel>
             </Collapsible.Root>
           )}
@@ -394,7 +493,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         <div className="mt-6 flex justify-end gap-2">
           <Dialog.Close render={(props) => (
             <Button variant="secondary" {...props} disabled={loading}>
-              {familyLabel('Cancel', familyUi.cancel)}
+              Cancel
             </Button>
           )} />
           <Button
@@ -403,7 +502,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             loading={loading}
             disabled={!selection}
           >
-            {familyLabel('Add Model', familyUi.addModelBtn)}
+            {editing ? 'Save Changes' : 'Add Model'}
           </Button>
         </div>
       </Dialog>

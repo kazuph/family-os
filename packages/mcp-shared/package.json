@@ -25,19 +25,21 @@
     "./util": "./src/util.ts"
   },
   "scripts": {
-    "build": "tsc",
-    "types:check": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "build": "tsc && tsc -p tsconfig.test.json",
     "clean": "rm -rf dist",
-    "test": "vitest run"
+    "test:run": "vitest run"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "@types/node": "^26.1.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "typescript": "catalog:",
+    "typescript6": "catalog:",
+    "vitest": "catalog:"
   }
 }

@@ -1,15 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { RpcStub } from 'capnweb'
-import { PublicApi, AuthenticatedApi, FamilyEntry } from '@gadgets/workshop-shared/api'
+import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
-import { isFamilyProfileChangedEvent } from './familyProfileEvents'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
 interface AuthState {
   token: string | null
   authenticatedApi: RpcStub<AuthenticatedApi> | null
-  familyEntry: RpcStub<FamilyEntry> | null
   isLoading: boolean
   error: string | null
 }
@@ -20,7 +18,6 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   const [authState, setAuthState] = useState<AuthState>({
     token: null,
     authenticatedApi: null,
-    familyEntry: null,
     isLoading: true,
     error: null
   })
@@ -29,17 +26,6 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   // State closures go stale in cleanup functions, so we use a ref.
   const authenticatedApiRef = useRef<RpcStub<AuthenticatedApi> | null>(null)
   authenticatedApiRef.current = authState.authenticatedApi
-  const familyEntryRef = useRef<RpcStub<FamilyEntry> | null>(null)
-  familyEntryRef.current = authState.familyEntry
-
-  useEffect(() => {
-    if (!CF_ACCESS_MODE) return
-    const onStorage = (event: StorageEvent) => {
-      if (isFamilyProfileChangedEvent(event)) window.location.reload()
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [])
 
   /**
    * Names the signed-in user on error reports, for as long as this stub is the current one.
@@ -84,7 +70,6 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       // The authenticateWithXxx functions also dispose the old stub via their setAuthState
       // updater, so this may double-dispose on reconnect. That's fine — dispose is idempotent.
       authenticatedApiRef.current?.[Symbol.dispose]()
-      familyEntryRef.current?.[Symbol.dispose]()
     }
   }, [publicApi])
 
@@ -93,18 +78,16 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       if (prev.authenticatedApi) {
         prev.authenticatedApi[Symbol.dispose]()
       }
-      if (prev.familyEntry) {
-        prev.familyEntry[Symbol.dispose]()
-      }
-      return { ...prev, authenticatedApi: null, familyEntry: null, isLoading: true, error: null }
+      return { ...prev, authenticatedApi: null, isLoading: true, error: null }
     })
 
-    // Access authentication yields only a chooser capability until a server-backed profile is selected.
-    const familyEntry = publicApi.authenticateFromCfAccess()
+    // Use promise pipelining - no need to await. The CF Access JWT is already attached
+    // to the request by the browser (injected by the Access service worker/cookie), so
+    // the server validates it and returns an authenticated stub immediately.
+    const authenticatedApi = publicApi.authenticateFromCfAccess()
     setAuthState({
       token: null,
-      authenticatedApi: null,
-      familyEntry,
+      authenticatedApi,
       isLoading: false,
       error: null
     })
@@ -116,13 +99,9 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       if (prev.authenticatedApi) {
         prev.authenticatedApi[Symbol.dispose]()
       }
-      if (prev.familyEntry) {
-        prev.familyEntry[Symbol.dispose]()
-      }
       return {
         ...prev,
         authenticatedApi: null, // Clear the disposed stub
-        familyEntry: null,
         isLoading: true,
         error: null
       }
@@ -132,9 +111,8 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
     // without awaiting. Authentication errors will be handled when the stub is actually used.
     const authenticatedApi = publicApi.authenticate(token)
     setAuthState({
-        token,
-        authenticatedApi,
-        familyEntry: null,
+      token,
+      authenticatedApi,
       isLoading: false,
       error: null
     })
@@ -157,13 +135,9 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       if (prev.authenticatedApi) {
         prev.authenticatedApi[Symbol.dispose]()
       }
-      if (prev.familyEntry) {
-        prev.familyEntry[Symbol.dispose]()
-      }
       return {
         token: null,
         authenticatedApi: null,
-        familyEntry: null,
         isLoading: false,
         error: null
       }
@@ -172,18 +146,10 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
     localStorage.removeItem('authToken')
   }
 
-  const setFamilyAuthenticatedApi = useCallback((authenticatedApi: RpcStub<AuthenticatedApi>) => {
-    setAuthState(previous => {
-      previous.authenticatedApi?.[Symbol.dispose]()
-      return { ...previous, authenticatedApi, error: null }
-    })
-  }, [])
-
   return {
     ...authState,
     login,
     logout,
-    setFamilyAuthenticatedApi,
     isAuthenticated: !!authState.authenticatedApi
   }
 }

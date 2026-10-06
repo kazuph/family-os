@@ -17,7 +17,6 @@ import {
   AiChatAuthorInfo,
   GatekeeperClient,
   Overseer,
-  unwrapFamilyRpcResult,
 } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
 import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
@@ -37,18 +36,16 @@ import { reportIssue } from './errorReporting'
 import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
-
-type ConnectionHost = Pick<RpcStub<Overseer>,
-  'newAiModelGatekeeper' | 'newAgentSpawnerGatekeeper' | 'newGatekeeper'>
+import { openConnectWindow } from './connectHandoff'
 
 export interface GatekeeperModalProps {
   open: boolean
   onClose: () => void
   /**
-   * Returns the workspace or Gadget that will own the new connection. Called only when
-   * creating it, so Home can lazily provision a workspace and moved Gadgets retain their host.
+   * Returns an overseer stub. Called only when actually creating a gatekeeper. This allows
+   * the Home page to lazily provision a gadget on first use.
    */
-  getConnectionHost: () => Promise<ConnectionHost> | ConnectionHost
+  getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>
   /**
    * Called after the gatekeeper is successfully created. The caller decides what to do with
    * the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this callback
@@ -188,7 +185,7 @@ function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
 }
 
 export default function GatekeeperModal({
-  open, onClose, getConnectionHost, onCreated, spawnerEnvCandidates,
+  open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceUrlPattern,
 }: GatekeeperModalProps) {
   const { authenticatedApi } = useAuthenticatedApi()
@@ -590,9 +587,8 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = unwrapFamilyRpcResult(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
+      toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       reportIssue('gatekeeper.connect-start', error, { gatekeeperVendorId: vendorId })
@@ -611,13 +607,13 @@ export default function GatekeeperModal({
     if (missing.length === 0) return
     setGrantingAccountId(accountId)
     try {
-      const result = await authenticatedApi.ensureAccountResources(accountId, missing)
-      if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
-        toasts.add({ title: 'Grant the additional access in the new tab.', variant: 'success' })
+      const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
+      if (flow) {
+        openConnectWindow(flow)
+        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
-      // The new grant arrives via subscribeConnectedAccounts(); the account's flag then clears and
-      // the configurator loads automatically.
+      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      // the account's flag then clears and the configurator loads automatically.
     } catch (error) {
       console.error('Failed to request additional access:', error)
       reportIssue('gatekeeper.resource-grant', error, {
@@ -632,9 +628,8 @@ export default function GatekeeperModal({
   const handleReconnectAccount = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      const result = await authenticatedApi.reconnectAccount(accountId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account reconnect in the new tab.', variant: 'success' })
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate reconnect:', error)
       reportIssue('gatekeeper.reconnect-start', error, {
@@ -655,8 +650,8 @@ export default function GatekeeperModal({
     let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
     let transferred = false
     try {
-      const connectionHost = await getConnectionHost()
-      gatekeeper = await connectionHost.newAiModelGatekeeper(selectedModelId)
+      const overseer = await getOverseer()
+      gatekeeper = await overseer.newAiModelGatekeeper(selectedModelId)
       if (gatekeeper) {
         await onCreated(gatekeeper)
         transferred = true
@@ -692,8 +687,8 @@ export default function GatekeeperModal({
     let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
     let transferred = false
     try {
-      const connectionHost = await getConnectionHost()
-      gatekeeper = await connectionHost.newAgentSpawnerGatekeeper(config)
+      const overseer = await getOverseer()
+      gatekeeper = await overseer.newAgentSpawnerGatekeeper(config)
       if (gatekeeper) {
         await onCreated(gatekeeper)
         transferred = true
@@ -725,8 +720,8 @@ export default function GatekeeperModal({
       }
       const resourceUrl = await configuratorCollectResourceUrlRef.current?.()
       if (!resourceUrl) throw new Error('Configurator did not provide a resource URL.')
-      const connectionHost = await getConnectionHost()
-      gatekeeper = await connectionHost.newGatekeeper(selectedAccountId, resourceUrl)
+      const overseer = await getOverseer()
+      gatekeeper = await overseer.newGatekeeper(selectedAccountId, resourceUrl)
       if (gatekeeper) {
         await onCreated(gatekeeper)
         transferred = true
@@ -757,7 +752,7 @@ export default function GatekeeperModal({
         configuratorFrameState?.frame &&
         configuratorFrameState.accountId === selectedAccountId &&
         configuratorFrameState.resourceUrlPattern === resourceUrlPattern &&
-        configuratorSelectionReady !== false &&
+        configuratorSelectionReady === true &&
         !hasMissingResourceGrants,
       )
     }
