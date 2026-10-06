@@ -78,6 +78,14 @@ const EXPECTED: Record<string, ExpectedArea> = {
   },
   "packages/workshop-backend": {
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
+    // Dedicated direct-script suites: their launchers start real local servers and explicitly
+    // pass these addresses to vitest. The cached `test` task never invokes those configs.
+    injected: ["BOOK_TEST_ACCESS_ISS", "GO_TEST_BASE_URL"],
+    // Migration captures and live credentials belong to directly invoked book/Go suites and
+    // capture tooling, not cached tasks. The base vitest config also optionally reads the token;
+    // the cached ordinary suite intentionally sees undefined and runs without that binding.
+    // Never declare the credential in cache.env: only an explicit direct invocation uses it.
+    external: ["LEGACY_BOOK_FIXTURE", "LEGACY_CONNECTED_BOOK_FIXTURE", "OPENCODE_GO_API_TOKEN"],
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
@@ -91,6 +99,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
       "CI_COMMIT_SHA", "CI_PIPELINE_IID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
       "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS", "PREVIEW_GITHUB_CLIENT_ID",
+      // `run-dev-server.ts` is invoked directly; it declares this secret only on the backend.
+      "OPENCODE_GO_API_TOKEN",
       "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
       "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
       // Read by `vp/concurrency.ts` in the wrapper before `vp` starts, never inside a task.
