@@ -655,7 +655,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let startedAt = Date.now();
     let failure: { status?: number, message: string } | undefined;
     try {
-      let handle = getModel(this.env, config,
+      let handle = await getModel(this.env, config,
           { type: "user", id: adminUserId, name: adminUserId });
       await completeText(handle, {
         prompt: "Reply with OK.", maxTokens: Math.min(test.maxTokens, handle.model.maxTokens),

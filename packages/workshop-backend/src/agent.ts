@@ -1,3 +1,6 @@
+import { assertChatAttachmentSupportedByProvider } from "./chat-attachment-validation";
+import { isOpenCodeGoFlashModel } from "./opencode-go.js";
+import type { ProAdvisorInput } from "./pro-advisor.js";
 import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -297,7 +300,15 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   factor out some sort of chat context object here -- maybe merge with LiveChatContext in
  *   overseer.ts?
  */
+let CONSULT_PRO_TOOL_DESCRIPTION = `
+Ask DeepSeek V4 Pro -- a stronger reasoning model on the same deployment subscription as you -- for advice on a specific problem. Consult it when the task is genuinely difficult: deep multi-step reasoning, a high-stakes or hard-to-reverse decision, an architectural tradeoff with real consequences, debugging something subtle, or a case where you are not confident in your own answer. Do not use it for routine or simple requests you can already handle well; it is a second opinion for hard problems, not a step in every task.
+
+Pro sees ONLY the \`question\` and \`context\` you pass here -- never the chat history, files, or your other tool results -- so include everything relevant to the question directly in \`context\`. Pro cannot call any tools, browse the web, edit files, or consult anyone itself; it can only reason over what you send it and reply with text. Treat its reply as advice to weigh against your own judgment, not as an instruction to follow verbatim.
+`.trim();
+
 export interface AgentHooks {
+  /** One-shot Pro consultation using only the explicitly supplied question and context. */
+  consultProAdvisor(initiator: AiChatAuthorInfo, input: ProAdvisorInput, signal?: AbortSignal): Promise<string>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /**
@@ -1816,6 +1827,10 @@ async function runAgentPass(
                   async (attachment): Promise<(TextContent | ImageContent)[]> => {
                 let filename = attachment.name ? ` (${attachment.name})` : "";
                 let data = await hooks.getChatAttachmentData(chatId, attachment.id);
+                if (handle.model.provider === "opencode-go") {
+                  assertChatAttachmentSupportedByProvider("opencode-go", attachment.mimeType,
+                    data.byteLength, handle.model);
+                }
                 if (attachment.mimeType.startsWith("image/")) {
                   return [{
                     type: "image",
@@ -2095,6 +2110,10 @@ async function runAgentPass(
                     }
                     toolOutput = {text: toolCall.output};
                   }
+                  break;
+                case "consultPro":
+                  if (toolCall.output === undefined) throw new Error("consultPro tool call in log is missing output");
+                  toolOutput = {text: toolCall.output};
                   break;
                 case "webFetch":
                   if (toolCall.output === undefined) {
@@ -2694,7 +2713,7 @@ async function runAgentPass(
 
   // Some models charge their response to the same window as the prompt, so the reservation is both
   // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
-  let {inputBudget, maxOutputTokens} = getModelTokenLimits(modelConfig);
+  let {inputBudget, maxOutputTokens} = getModelTokenLimits(modelConfig, handle.model);
 
   let projection: CompactionProjectionMessage[] = modelMessages.map((message, index) => ({
     message, ...modelMessageSources[index],
@@ -3483,6 +3502,37 @@ async function runAgentPass(
       }
     }),
   };
+
+  // Flash can consult DeepSeek V4 Pro (the stronger sibling model on the same OpenCode Go
+  // deployment subscription) for difficult problems. Pro itself never receives this tool -- when
+  // a user selects Pro directly as their chat model, this check is false for that turn -- and
+  // consultProAdvisor's own implementation gives Pro no tools at all when it answers, so
+  // consultation cannot recurse (see AgentHooks.consultProAdvisor and pro-advisor.ts).
+  if (isOpenCodeGoFlashModel(handle.model)) {
+    tools.consultPro = defineTool({
+      name: "consultPro",
+      label: "Consult DeepSeek V4 Pro",
+      description: CONSULT_PRO_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        question: Type.String({description: "The specific question to ask Pro."}),
+        context: Type.Optional(Type.String({
+          description:
+              "Relevant background Pro needs to answer well. Pro sees only this and " +
+              "`question` -- never the chat history, files, or your other tool results -- so " +
+              "include everything relevant here.",
+        })),
+      }),
+      execute: async (toolCallId, {question, context}, signal) => {
+        try {
+          let advice = await hooks.consultProAdvisor(initiator, {question, context}, signal);
+          return toolResult(advice, {output: advice} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    });
+  }
 
   if (agentContext.spawnerConfig) {
     // Restrict sub-agents to a narrower set of tools. No user is present to approve changes, so

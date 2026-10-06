@@ -1,3 +1,4 @@
+import { OPENCODE_GO_BASE_URL, getOpenCodeGoMetadata } from "./opencode-go.js";
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
@@ -491,6 +492,14 @@ function makeHandle(args: HandleArgs): ModelHandle {
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          // Pi sends effort:none for quick Responses calls. Go's Responses models reject
+          // that value, so preserve the Go contract of using the provider's default instead.
+          if (!thinking && args.model.provider === "opencode-go" && args.model.api === "openai-responses") {
+            const quickPayload = bridged ?? payload;
+            if (quickPayload && typeof quickPayload === "object") {
+              delete (quickPayload as Record<string, unknown>).reasoning;
+            }
+          }
           if (options.cacheRetention === "none") return bridged;
           return splitSystemPrompt(args.model, transcript, bridged ?? payload) ?? bridged;
         },
@@ -508,9 +517,47 @@ function makeHandle(args: HandleArgs): ModelHandle {
  * access with the config's own credentials. The handle carries the matching AI Gateway log route
  * for cost accounting, when there is one.
  */
-export function getModel(env: Cloudflare.Env, config: AiModelConfig,
+export async function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
-                         options: ModelRoutingOptions = {}): ModelHandle {
+                         options: ModelRoutingOptions = {}): Promise<ModelHandle> {
+  // OpenCode Go is a deployment subscription, not a Cloudflare AI Gateway provider or a
+  // user-supplied model. Its credential always comes from the Worker environment.
+  if (config.provider === "opencode-go") {
+    if (!env.OPENCODE_GO_API_TOKEN) {
+      throw new Error("This OpenCode Go model is not configured by the deployment.");
+    }
+    const { api, metadata } = await getOpenCodeGoMetadata(config.model);
+    const suggested = SUGGESTED_MODELS["opencode-go"][config.model];
+    return makeHandle({
+      model: {
+        id: config.model,
+        name: suggested?.name ?? metadata?.name ?? config.model,
+        api,
+        provider: "opencode-go",
+        baseUrl: api === "anthropic-messages"
+          ? OPENCODE_GO_BASE_URL.replace(/\/v1$/, "") : OPENCODE_GO_BASE_URL,
+        reasoning: metadata?.reasoning ?? true,
+        input: metadata?.modalities.input.includes("image") ? ["text", "image"] : ["text"],
+        cost: ZERO_COST,
+        ...modelTokenWindow(config, undefined),
+        ...(metadata ? { contextWindow: metadata.limit.context, maxTokens: metadata.limit.output } : {}),
+        compat: {
+          // Go exposes interleaved reasoning through reasoning_content. Preserve that field when
+          // replaying assistant turns, but leave thinking controls to the gateway/model default:
+          // the shared OpenAI-compatible endpoint does not use one native family's thinking
+          // request format for every model.
+          requiresReasoningContentOnAssistantMessages: api === "openai-completions",
+        },
+      },
+      apiKey: env.OPENCODE_GO_API_TOKEN,
+      headers: {
+        "User-Agent": "family-os",
+        "x-opencode-session": options.sessionAffinity ?? crypto.randomUUID(),
+      },
+      sessionAffinity: options.sessionAffinity,
+    });
+  }
+
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -806,6 +853,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
+    case "opencode-go":
+      throw new Error("OpenCode Go must use deployment-managed routing.");
     default:
       config.provider satisfies never;
       throw new Error(`Unknown provider "${config.provider}".`);
@@ -863,7 +912,7 @@ export class LanguageModelGatekeeper
     } else {
       models?.refuseUserModel(this.ctx.props.displayName);
     }
-    let model = getModel(this.env, config, this.ctx.props.initiator, {
+    let model = await getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
     return new LanguageModelBindingImpl(model);

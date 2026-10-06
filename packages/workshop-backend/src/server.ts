@@ -1,3 +1,4 @@
+import { BOOK_BLUEPRINT_ID, DEFAULT_BOOK_TUTOR_MODEL, handleBookMcpRequest, type BookMcpStore } from "./book-mcp.js";
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
@@ -848,6 +849,79 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
+
+    if (url.pathname === "/mcp") {
+      let accessPayload = env.CF_ACCESS_AUD
+        ? await verifyCfAccessJwt(req, env)
+        : null;
+      let users = ctx.exports.UserDurableObject;
+      let overseers = ctx.exports.OverseerDurableObject;
+      let owner = (email: string) => users.getByName(email);
+      let workspace = (id: string) => overseers.get(overseers.idFromString(id));
+      let ownedWorkspace = async (email: string, workspaceId: string) => {
+        let ownerStub = owner(email);
+        let metadata = await ownerStub.getGadget(workspaceId);
+        if (!metadata || metadata.owner) {
+          throw new Error("The account does not own this workspace.");
+        }
+        return { ownerId: ownerStub.id.toString(), workspace: workspace(workspaceId) };
+      };
+      let store: BookMcpStore = {
+        async createBook(ownerEmail, title, modelId) {
+          const signupsEnabled = (await readAdminConfig(env)).signupsEnabled;
+          // Access users follow standard first-login registration; service assertions may only
+          // address an existing account and never provision an owner from a supplied email.
+          await owner(ownerEmail).authenticateFromCfAccess(ownerEmail,
+            typeof accessPayload?.email === "string" && signupsEnabled);
+          await ctx.exports.AdminSettings.getByName("").ensureBundledBlueprintsInstalled();
+          // Creating a workspace from a blueprint reads KV and R2, mints an Overseer, and wires up
+          // the blueprint's bindings. That is exactly what the browser does, so go through the same
+          // AuthenticatedApi rather than reimplementing it. Nothing here can abort a session -- this
+          // is one HTTP request, not a Cap'n Web session -- so the abort hook has nothing to do.
+          // Creating from a blueprint opens a workspace session, which is built for a browser tab
+          // that stays connected. This is one HTTP request, so the session is closed here rather
+          // than left for the response to outlive -- its teardown talks back to the workspace, and
+          // a context that has already returned cannot answer.
+          let api = new AuthenticatedApiImpl(ctx, env, owner(ownerEmail).id, () => {});
+          let workspaceId: string;
+          {
+            using overseer = await api.newGadgetFromBlueprint(BOOK_BLUEPRINT_ID, {
+              AI: { type: "aiModel", modelId: modelId ?? DEFAULT_BOOK_TUTOR_MODEL },
+            });
+            if (title !== undefined) await overseer.setTitle(title);
+            workspaceId = (await overseer.getMetadata()).id;
+          }
+
+          // Read the workspace back through the same path book.list uses. It settles the session
+          // teardown before the response goes out, and it proves the new book is actually listed
+          // as one rather than trusting that creation implied it.
+          let book = await workspace(workspaceId).getBookMcpWorkspace(owner(ownerEmail).id.toString());
+          if (!book) throw new Error("The new workspace was not registered as a book.");
+          return book;
+        },
+        async listBooks(ownerEmail) {
+          let ownerStub = owner(ownerEmail);
+          let ownerId = ownerStub.id.toString();
+          let books = await Promise.all((await ownerStub.listGadgets()).map(({ id }) =>
+            workspace(id).getBookMcpWorkspaces(ownerId)));
+          return books.flat();
+        },
+        async readFiles(ownerEmail, workspaceId, paths, gadgetId) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.readBookMcpFiles(owned.ownerId, paths, gadgetId);
+        },
+        async putFiles(ownerEmail, workspaceId, files, gadgetId) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.putBookMcpFiles(owned.ownerId, files, gadgetId);
+        },
+        async readProgress(ownerEmail, workspaceId, gadgetId) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.readBookMcpProgress(owned.ownerId, gadgetId);
+        },
+      };
+      return handleBookMcpRequest(req, accessPayload, store);
+    }
+
 
     if (url.pathname === SITE_LOGO_PATH) {
       return serveSiteLogo(req, env.BLUEPRINT_CONTENT);

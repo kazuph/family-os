@@ -1,5 +1,8 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
 import type { AiModelConfig, AiModelProvider, ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
+import { getOpenCodeGoMetadata, OPEN_CODE_GO_CATALOG } from "./opencode-go";
+import { modelApiSupportsPdfAttachments } from "./chat-attachment-pdf";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
 // Bounds attachment storage and the bytes replayed into model requests.
@@ -33,6 +36,7 @@ const isTextImageOrPdfMime = (mimeType: string) =>
 // application/pdf inline data as-is, and Anthropic/OpenAI payloads are rewritten in flight (see
 // chat-attachment-pdf.ts). Workers AI and Ollama chat endpoints have no document input at all.
 const ATTACHMENT_SUPPORT_BY_PROVIDER = {
+  "opencode-go": isTextImageOrPdfMime,
   anthropic: isTextImageOrPdfMime,
   openai: isTextImageOrPdfMime,
   google: isTextImageOrPdfMime,
@@ -51,11 +55,22 @@ function sanitizeChatAttachmentName(name: string | undefined): string | undefine
   return result || undefined;
 }
 
+/** Model capabilities relevant to Go attachments, resolved before any storage write. */
+export type GoAttachmentCapabilities = Pick<Model<Api>, "input" | "api">;
+
+/** Read the selected Go model's actual capabilities; other providers keep their existing policy. */
+export async function getGoAttachmentCapabilities(config?: AiModelConfig, source = OPEN_CODE_GO_CATALOG): Promise<GoAttachmentCapabilities | undefined> {
+  if (config?.provider !== "opencode-go") return undefined;
+  const { api, metadata } = await getOpenCodeGoMetadata(config.model, source);
+  return { api, input: metadata?.modalities.input.includes("image") ? ["text", "image"] : ["text"] };
+}
+
 /** Reject an attachment type that the selected provider cannot accept. */
 export function assertChatAttachmentSupportedByProvider(
   provider: AiModelProvider | undefined,
   mimeType: string,
   byteLength: number,
+  goModel?: GoAttachmentCapabilities,
 ): void {
   if (byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
     throw new Error("Chat attachment is too large.");
@@ -66,6 +81,13 @@ export function assertChatAttachmentSupportedByProvider(
     throw new Error("Unsupported file type");
   }
 
+  if (provider === "opencode-go") {
+    if (isTextLikeAttachmentMimeType(mimeType)) return;
+    if (goModel?.input.includes("image") &&
+        (IMAGE_SIGNATURES.has(mimeType) ||
+          (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(goModel.api)))) return;
+    throw new Error("The selected OpenCode Go model does not support this attachment type.");
+  }
   if (ATTACHMENT_SUPPORT_BY_PROVIDER[provider](mimeType)) return;
 
   throw new Error("Unsupported file type");
@@ -75,10 +97,11 @@ export function assertChatAttachmentSupportedByProvider(
 export function validateChatAttachmentUpload(
   attachment: ChatAttachmentUpload,
   provider?: AiModelConfig["provider"],
+  goModel?: GoAttachmentCapabilities,
 ): ChatAttachmentUpload {
   attachment.name = sanitizeChatAttachmentName(attachment.name);
   attachment.mimeType = sanitizeChatAttachmentMimeType(attachment.mimeType);
-  assertChatAttachmentSupportedByProvider(provider, attachment.mimeType, attachment.content.byteLength);
+  assertChatAttachmentSupportedByProvider(provider, attachment.mimeType, attachment.content.byteLength, goModel);
 
   let signature = CONTENT_SIGNATURES.get(attachment.mimeType);
   if (signature) {

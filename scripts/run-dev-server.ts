@@ -560,6 +560,12 @@ for (const gk of gatekeepers) {
     if (process.env[name] !== undefined) config.vars[name] = process.env[name];
   }
 
+  // Wrangler reads only declared secrets from process.env here. Keep the Go token out of the
+  // generated config and out of the other workers; never enable whole-environment bindings.
+  if (process.env.OPENCODE_GO_API_TOKEN) {
+    config.secrets = { required: ["OPENCODE_GO_API_TOKEN"] };
+  }
+
   // Account connect flows post their completion ticket to the Workshop *origin* named here (see
   // packages/workshop-backend/src/connect-handoff.ts), so the backend refuses to complete one without
   // it. Default to wherever the frontend is served from: Vite in normal dev, the backend itself in

@@ -1431,7 +1431,7 @@ export type CloudflareAccountOption = {
 };
 
 /** Supported AI providers. */
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
+export type AiModelProvider = "opencode-go" | "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
@@ -1758,6 +1758,31 @@ type SuggestedModel = {
 
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
 const SUGGESTED_MODEL_CATALOG = {
+  "opencode-go": {
+    "deepseek-v4-flash": {
+      name: "DeepSeek V4 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
+    },
+    // Same context window / output cap as Flash (DeepSeek publishes identical limits for both
+    // tiers; verified against https://api-docs.deepseek.com/quick_start/pricing/ and OpenCode
+    // Go's own model catalog, both of which list DeepSeek-V4-Pro-0813 and
+    // DeepSeek-V4-Flash-0731 side by side with "CONTEXT LENGTH 1M / MAX OUTPUT 384K").
+    "deepseek-v4-pro": {
+      name: "DeepSeek V4 Pro (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 384_000,
+    },
+    // OpenCode's public models.dev catalog lists 1M context and 128K output for both GLM-5.3
+    // variants: https://models.dev/api.json
+    "glm-5.3": {
+      name: "GLM-5.3 (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 131_072,
+    },
+    "glm-5.3-flash": {
+      name: "GLM-5.3 Flash (OpenCode Go)", contextWindow: 1_000_000, outputLimit: 131_072,
+    },
+    // OpenCode's public models.dev catalog lists 1,048,576 context and 131,072 output:
+    // https://models.dev/api.json
+    "kimi-k3": {
+      name: "Kimi K3 (OpenCode Go)", contextWindow: 1_048_576, outputLimit: 131_072,
+    },
+  },
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
@@ -3273,6 +3298,7 @@ export type ActionHistoryPage = {
   nextBeforeId?: number;
 };
 
+/** Lightweight author/model identity included in chat messages and model pickers. */
 export type AiChatAuthorInfo = {
   /**
    * Is the author a human, AI, or Gadget?
@@ -3295,6 +3321,9 @@ export type AiChatAuthorInfo = {
    * Self-asserted and unverified: it is attribution only and must never be read as identity.
    */
   commitEmail?: string;
+
+  /** The model is managed by deployment credentials and cannot be edited by a user. */
+  managedByDeployment?: boolean;
 
   // Note: the avatar is intentionally not included here to keep this type lightweight (it's
   // embedded in every chat message). Fetch user avatars separately via
@@ -3939,6 +3968,22 @@ export type AiToolCall = {
   };
 
   /** Output, if the code actually ran. (Otherwise, `error` should be present.) */
+  output?: string;
+} | {
+  /**
+   * Ask DeepSeek V4 Pro for advice on a difficult problem (see pro-advisor.ts). Available only
+   * on Flash-run turns; Pro itself never receives this tool.
+   */
+  toolName: "consultPro";
+  input: {
+    question: string;
+    context?: string;
+  };
+
+  /**
+   * Pro's reply, if the consult actually completed. (Otherwise, `error` should be present.) This
+   * is stored so that the agent's chat history can be replayed without re-consulting Pro.
+   */
   output?: string;
 } | {
   /**

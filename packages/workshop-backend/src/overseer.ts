@@ -1,5 +1,8 @@
+import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp.js";
+import { consultProAdvisor as consultProAdvisorImpl, type ProAdvisorInput } from "./pro-advisor.js";
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
+import { readBookUiBundle } from './book-ui-bundle';
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -76,6 +79,7 @@ import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
+  getGoAttachmentCapabilities,
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
 import {
@@ -4134,7 +4138,12 @@ class OverseerImpl implements AgentHooks {
   async getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): Promise<UiBundle | null> {
     // TODO: Bundle the UI? For now we just return client.js.
     this.checkChatExistsAndMaterializeChanges(chatId);
-    let jsCode = (await this.readGadgetFiles(gadgetId, chatId)).get("client.js");
+    let files = await this.readGadgetFiles(gadgetId, chatId);
+    let gadget = this.storage.gadgets.get(gadgetId);
+    if (gadget?.type === "gadget" && gadget.output?.id === "book") {
+      return readBookUiBundle(files);
+    }
+    let jsCode = files.get("client.js");
     return jsCode !== undefined ? {jsCode} : null;
   }
 
@@ -4680,15 +4689,16 @@ class OverseerImpl implements AgentHooks {
   //
   // The send message request only contains staged attachment IDs. This fills in metadata from
   // upload records before the message is stored in chat history.
-  canonicalizeChatAttachmentRefs(
+  async canonicalizeChatAttachmentRefs(
     attachments?: ChatAttachmentHandle[],
-    provider?: AiModelConfig["provider"],
-  ): ChatAttachmentRef[] | undefined {
+    modelConfig?: AiModelConfig,
+  ): Promise<ChatAttachmentRef[] | undefined> {
     if (!attachments || attachments.length === 0) return undefined;
     if (attachments.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
       throw new Error(`You can attach up to ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments.`);
     }
 
+    const goModel = await getGoAttachmentCapabilities(modelConfig);
     let total = 0;
     let result: ChatAttachmentRef[] = [];
     let seenIds = new Set<string>();
@@ -4700,7 +4710,7 @@ class OverseerImpl implements AgentHooks {
       if (!content || content.state.type !== "staged") {
         throw new Error("Chat attachment not found.");
       }
-      assertChatAttachmentSupportedByProvider(provider, content.state.mimeType, content.data.byteLength);
+      assertChatAttachmentSupportedByProvider(modelConfig?.provider, content.state.mimeType, content.data.byteLength, goModel);
       total += content.data.byteLength;
       result.push({
         id,
@@ -4818,6 +4828,11 @@ class OverseerImpl implements AgentHooks {
 
   // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
   // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
+  /** Consult Pro without forwarding workspace history or capabilities. */
+  async consultProAdvisor(initiator: AiChatAuthorInfo, input: ProAdvisorInput, signal?: AbortSignal): Promise<string> {
+    return consultProAdvisorImpl(this.env, initiator, input, signal);
+  }
+
   getWebFetchEnv(): WebFetchEnv {
     if (this.storage.containsRestrictedData.get()) {
       // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
@@ -5658,8 +5673,8 @@ class OverseerImpl implements AgentHooks {
     if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
-    let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
-        attachments, userMeta.aiModel?.config.provider);
+    let canonicalAttachments = await this.canonicalizeChatAttachmentRefs(
+        attachments, userMeta.aiModel?.config);
     let prepared = await this.#prepareChatMessage(
         initialMessage, (canonicalAttachments?.length ?? 0) > 0);
 
@@ -5739,8 +5754,8 @@ class OverseerImpl implements AgentHooks {
     if (typeof message !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
-    let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
-        attachments, userMeta.aiModel?.config.provider);
+    let canonicalAttachments = await this.canonicalizeChatAttachmentRefs(
+        attachments, userMeta.aiModel?.config);
     this.assertChatNotActive(chatId);
     using _chatMessageReservation = this.reserveChatMessagePreparation(chatId);
     let prepared = await this.#prepareChatMessage(
@@ -6190,7 +6205,7 @@ class OverseerImpl implements AgentHooks {
         }
 
         let sessionAffinity = await computeSessionAffinity(this.ctx.id.toString(), chatId);
-        let chosenModel = getModel(
+        let chosenModel = await getModel(
             this.env, aiModel.config, initiator, {
               sessionAffinity,
               userGateway: byokRouting,
@@ -6661,7 +6676,7 @@ class OverseerImpl implements AgentHooks {
       subject: string, takenNames: Set<string>,
       quick: {config: AiModelConfig, initiator: AiChatAuthorInfo}): Promise<string | undefined> {
     try {
-      let model = getModel(this.env, quick.config, quick.initiator);
+      let model = await getModel(this.env, quick.config, quick.initiator);
       let result = await completeText(model, {
         signal: AbortSignal.timeout(10_000),
         prompt:
@@ -7364,7 +7379,7 @@ class OverseerImpl implements AgentHooks {
                             modelConfig: AiModelConfig,
                             initiator: AiChatAuthorInfo): Promise<void> {
     try {
-      let model = getModel(this.env, modelConfig, initiator, {
+      let model = await getModel(this.env, modelConfig, initiator, {
         metadata: { source: "thread-title", gadgetId: this.ctx.id.toString(), chatId },
       });
 
@@ -7421,7 +7436,7 @@ class OverseerImpl implements AgentHooks {
         }
       }
 
-      let model = getModel(this.env, modelConfig, initiator, {
+      let model = await getModel(this.env, modelConfig, initiator, {
         metadata: { source: "gadget-title", gadgetId: this.ctx.id.toString(), chatId },
       });
 
@@ -9195,6 +9210,90 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     await owner().setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
   }
 
+  private getOwnedBook(ownerId: string, gadgetId?: WorkpieceId): GadgetRecord {
+    if (this.impl.ownerId !== ownerId) throw new Error("The account does not own this workspace.");
+    let books = [...this.impl.storage.gadgets.list()].filter((candidate): candidate is GadgetRecord =>
+      candidate.type === "gadget" && candidate.output?.id === "book" && !candidate.pending);
+    if (gadgetId !== undefined) {
+      let gadget = this.impl.storage.gadgets.get(gadgetId);
+      if (!gadget || gadget.type !== "gadget" || !books.some(book => book.id === gadget.id)) {
+        throw new Error(`Gadget ${gadgetId} is not an available book in this workspace.`);
+      }
+      return gadget;
+    }
+    if (books.length === 0) throw new Error("The workspace is not a book.");
+    if (books.length > 1) {
+      throw new Error("This workspace contains multiple books; specify gadgetId.");
+    }
+    return books[0]!;
+  }
+
+  async getBookMcpWorkspace(ownerId: string): Promise<BookMcpWorkspace | null> {
+    if (this.impl.ownerId !== ownerId) return null;
+    let gadget = [...this.impl.storage.gadgets.list()].find(candidate =>
+      candidate.type === "gadget" && candidate.output?.id === "book" && !candidate.pending);
+    if (!gadget) return null;
+    return { workspaceId: this.ctx.id.toString(), title: this.impl.storage.title.get(), gadgetId: gadget.id };
+  }
+
+  async getBookMcpWorkspaces(ownerId: string): Promise<BookMcpWorkspace[]> {
+    if (this.impl.ownerId !== ownerId) return [];
+    return [...this.impl.storage.gadgets.list()]
+        .filter((gadget): gadget is GadgetRecord => gadget.type === "gadget" && gadget.output?.id === "book" && !gadget.pending)
+        .map(gadget => ({
+          workspaceId: this.ctx.id.toString(),
+          title: this.impl.storage.title.get(),
+          gadgetTitle: gadget.title,
+          gadgetId: gadget.id,
+        }));
+  }
+
+  async #withBookMcpFacet<T>(ownerId: string, gadget: GadgetRecord,
+                             run: (facet: any) => Promise<T>): Promise<T> {
+    let facet: any;
+    try {
+      facet = await this.impl.getGadgetFacet(gadget.id);
+      return await run(facet);
+    } finally {
+      facet?.[Symbol.dispose]?.();
+    }
+  }
+
+  async readBookMcpFiles(ownerId: string, paths?: string[], gadgetId?: WorkpieceId)
+      : Promise<BookMcpFile[]> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    let requested = paths ? new Set(paths) : undefined;
+    for (let path of requested ?? []) validateBookFilePath(path);
+    let stored = await this.#withBookMcpFacet(ownerId, gadget,
+        facet => facet.getBookFiles() as Promise<Record<string, string>>);
+    let files: BookMcpFile[] = [];
+    for (let [path, content] of Object.entries(stored)) {
+      try {
+        validateBookFilePath(path);
+      } catch {
+        continue;
+      }
+      if (!requested || requested.has(path)) files.push({ path, content });
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return files;
+  }
+
+  async putBookMcpFiles(ownerId: string, files: BookMcpFile[], gadgetId?: WorkpieceId)
+      : Promise<BookMcpFile[]> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    for (let file of files) validateBookFilePath(file.path);
+    await this.#withBookMcpFacet(ownerId, gadget, facet => facet.putBookFiles(files));
+    return files.map(({ path, content }) => ({ path, content }));
+  }
+
+  async readBookMcpProgress(ownerId: string, gadgetId?: WorkpieceId): Promise<unknown> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    let state = await this.#withBookMcpFacet(ownerId, gadget,
+        facet => facet.getState() as Promise<{progress?: unknown}>);
+    return state?.progress ?? {};
+  }
+
   async startGatekeeperSession(
       target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
     return this.impl.startGatekeeperSession(target, caller);
@@ -10631,15 +10730,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     attachment: ChatAttachmentUpload,
     modelId: string | null,
   ): Promise<ChatAttachmentHandle> {
-    let provider: AiModelConfig["provider"] | undefined;
+    let config: AiModelConfig | undefined;
     if (modelId !== null) {
-      provider = (await retryOnDoReset(
+      config = (await retryOnDoReset(
           () => this.#clientUser.getChatContext(modelId), this.impl.logger))
-          .aiModel?.config.provider;
+          .aiModel?.config;
     }
     attachment = validateChatAttachmentUpload(
       attachment,
-      provider,
+      config?.provider,
+      await getGoAttachmentCapabilities(config),
     );
 
     this.impl.sweepStagedChatAttachments();

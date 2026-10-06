@@ -27,12 +27,12 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
  * either is capped at what the window leaves for a prompt. A Cloudflare model configured by hand
  * has no SUGGESTED_MODELS entry to declare its reservation, so the provider's applies.
  */
-export function getModelTokenLimits(config: AiModelConfig):
+export function getModelTokenLimits(config: AiModelConfig, resolvedModel?: Model<Api>):
     {inputBudget: number, maxOutputTokens?: number} {
   let model = SUGGESTED_MODELS[config.provider][config.model];
-  let maxOutputTokens = config.outputLimit ?? model?.outputLimit ??
+  let maxOutputTokens = config.outputLimit ?? (config.provider === "opencode-go" ? resolvedModel?.maxTokens : undefined) ?? model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
-  let inputLimit = (config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
+  let inputLimit = (config.contextWindow ?? (config.provider === "opencode-go" ? resolvedModel?.contextWindow : undefined) ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
       (maxOutputTokens ?? 0);
   return {
     inputBudget: Math.min(

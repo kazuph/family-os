@@ -1,3 +1,4 @@
+import { listOpenCodeGoModels, getOpenCodeGoModel, isKnownOpenCodeGoModelId, OPEN_CODE_GO_CATALOG, type OpenCodeGoCatalogSource } from "./opencode-go.js";
 import { RpcStub } from "capnweb";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
@@ -186,7 +187,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
 
-  constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
+  constructor(ctx: DurableObjectState, env: Cloudflare.Env,
+      private readonly goCatalog: OpenCodeGoCatalogSource = OPEN_CODE_GO_CATALOG) {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
@@ -452,8 +454,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#listModels(await getGatewayModels(this.env));
   }
 
-  #listModels(models: GatewayModels | null): AiChatAuthorInfo[] {
-    let result: AiChatAuthorInfo[] = [];
+  async #listModels(models: GatewayModels | null): Promise<AiChatAuthorInfo[]> {
+    let result: AiChatAuthorInfo[] = await listOpenCodeGoModels(this.env, this.goCatalog);
 
     // When AI Gateway mode is active, include the gateway models the deployment offers.
     if (models) {
@@ -464,7 +466,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // gateway model shadows, whatever its mode (see #resolveModel()).
     if (models && !models.userModels) return result;
     for (let model of this.storage.aiModels.list()) {
-      if (!models?.get(model.profile.id)) {
+      if (!models?.get(model.profile.id) && !result.some(offered => offered.id === model.profile.id)) {
         result.push(model.profile);
       }
     }
@@ -512,6 +514,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
+    if (config.provider === "opencode-go") {
+      throw new Error("OpenCode Go uses deployment-managed credentials.");
+    }
     if (models && !models.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
@@ -557,7 +562,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
       // Any model that resolves is accepted, hidden ones included (see getExternalMessageChatContext()).
-      if (!this.#resolveModel(id, await getGatewayModels(this.env))) {
+      if (!await this.#resolveModel(id, await getGatewayModels(this.env))) {
         throw new Error(`No such model: ${id}`);
       }
     }
@@ -661,12 +666,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#getChatContext(modelId, await getGatewayModels(this.env));
   }
 
-  #getChatContext(modelId: string | null, models: GatewayModels | null): UserChatContext {
+  async #getChatContext(modelId: string | null, models: GatewayModels | null): Promise<UserChatContext> {
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      result.aiModel = this.#resolveModel(modelId, models);
+      result.aiModel = await this.#resolveModel(modelId, models);
       if (!result.aiModel) {
         models?.refuseDisabled(modelId);
         // No gateway model has the ID, so a stored model with it is one the deployment keeps
@@ -699,8 +704,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // composer does with its stored choice, and otherwise the first available model.
     let models = await getGatewayModels(this.env);
     let selectedModelId = existingChatModelId;
-    if (selectedModelId === null || !this.#resolveModel(selectedModelId, models)) {
-      let offered = this.#listModels(models);
+    if (selectedModelId === null || !await this.#resolveModel(selectedModelId, models)) {
+      let offered = await this.#listModels(models);
       let preferredModel = this.storage.preferredModel.get();
       selectedModelId = (offered.find(model => model.id === preferredModel) ?? offered[0])?.id ?? null;
     }
@@ -713,9 +718,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * whatever its mode, so a disabled one resolves to nothing rather than to the stored model. No
    * stored model resolves on a gateway deployment whose users may not add their own.
    */
-  #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
+  async #resolveModel(id: string, models: GatewayModels | null): Promise<UserAiModelRecord | undefined> {
+    if (this.env.OPENCODE_GO_API_TOKEN && isKnownOpenCodeGoModelId(id, this.goCatalog)) {
+      return getOpenCodeGoModel(this.env, id, this.goCatalog);
+    }
     if (models?.get(id)) return models.resolve(id);
-    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+    const stored = models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+    if (stored) return stored;
+    return getOpenCodeGoModel(this.env, id, this.goCatalog);
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
