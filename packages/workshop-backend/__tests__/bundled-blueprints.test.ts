@@ -111,6 +111,10 @@ describe("bundled blueprints", () => {
 
   it("declares the intended export formats for every standard output format", async () => {
     let expectedFormats: Record<string, string[]> = {
+      "format.book": [
+        'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
+        'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+      ],
       "format.document": [
         'id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown"',
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',

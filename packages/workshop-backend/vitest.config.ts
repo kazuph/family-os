@@ -84,7 +84,11 @@ export default defineConfig({
           compatibilityDate: COMPATIBILITY_DATE,
           compatibilityFlags: ['experimental', 'streaming_tail_worker'],
         }],
-        bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
+        bindings: {
+          PUBLIC_BASE_URL: 'https://workshop.example/',
+          ...(process.env.OPENCODE_GO_API_TOKEN
+            ? { OPENCODE_GO_API_TOKEN: process.env.OPENCODE_GO_API_TOKEN } : {}),
+        },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },
         durableObjects: {

@@ -43,7 +43,7 @@ describe("completeText", () => {
 
   // A handle on a gateway whose Workers AI binding answers every request with "OK", and the
   // headers and bodies of the requests it received.
-  function answering(config: Partial<AiModelConfig> = {}) {
+  async function answering(config: Partial<AiModelConfig> = {}) {
     const sent: Headers[] = [];
     const bodies: Record<string, unknown>[] = [];
     const event = (choice: object) => `data: ${JSON.stringify({
@@ -59,7 +59,7 @@ describe("completeText", () => {
           event({ delta: {}, finish_reason: "stop" }) + "data: [DONE]\n\n",
           { headers: { "content-type": "text/event-stream" } });
     });
-    const handle = getModel({
+    const handle = await getModel({
       CF_AI_GATEWAY: "platform-gateway",
       CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
       CF_AI_GATEWAY_PROVIDERS: "cloudflare",
@@ -71,7 +71,7 @@ describe("completeText", () => {
   }
 
   it("sends a request's own headers beside the handle's", async () => {
-    const { handle, sent } = answering();
+    const { handle, sent } = await answering();
     expect(await completeText(handle, {
       prompt: "hello", headers: { "cf-aig-skip-cache": "true" },
     })).toBe("OK");
@@ -82,7 +82,7 @@ describe("completeText", () => {
   });
 
   it("sends only the handle's headers when given none", async () => {
-    const { handle, sent } = answering();
+    const { handle, sent } = await answering();
     expect(await completeText(handle, { prompt: "hello" })).toBe("OK");
     expect(sent).toHaveLength(1);
     expect(sent[0]!.has("cf-aig-skip-cache")).toBe(false);
@@ -93,7 +93,7 @@ describe("completeText", () => {
   // A handle with a reasoning level names that level on the requests that ask for thinking. On
   // the others, pi names the effort GLM 5.2 calls no reasoning.
   it("asks for thinking only when told to", async () => {
-    const { handle, bodies } = answering({ model: "@cf/zai-org/glm-5.2", reasoning: "high" });
+    const { handle, bodies } = await answering({ model: "@cf/zai-org/glm-5.2", reasoning: "high" });
     expect(await completeText(handle, { prompt: "hello" })).toBe("OK");
     expect(await completeText(handle, { prompt: "hello", thinking: false })).toBe("OK");
     expect(await completeText(handle, { prompt: "hello", thinking: true })).toBe("OK");
