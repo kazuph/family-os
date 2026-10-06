@@ -1,0 +1,27 @@
+{
+  "blueprintId": "format.book",
+  "title": "Workspace Book",
+  "description": "章立てした本文を読み、AIチューターと学べる本です。",
+  "output": {
+    "id": "book",
+    "noun": "本",
+    "plural": "本",
+    "icon": "fileText"
+  },
+  "author": {
+    "type": "user",
+    "name": "Family OS",
+    "id": "family-os"
+  },
+  "revision": 16,
+  "created": "2026-09-03T00:00:00.000Z",
+  "version": 1,
+  "lastUpdated": "2026-09-03T00:00:00.000Z",
+  "bindings": {
+    "AI": {
+      "type": "aiModel",
+      "title": "AIチューター",
+      "description": "開いている章の本文に沿って質問へ答えます。"
+    }
+  }
+}
