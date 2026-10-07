@@ -7,8 +7,10 @@ export type WorkshopObservabilityFields = {
   agentName: string;
   autoProvisioned: boolean;
   blueprintId: string;
+  blueprintIds: string[];
   callbackInitiated: boolean;
   chatId: number;
+  chatIds: number[];
   claimedType: string;
   commitCount: number;
   durableObjectId: string;
