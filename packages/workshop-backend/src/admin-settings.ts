@@ -1,4 +1,5 @@
 import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, ChildBookMigrationReport, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, BookCodeUpgradeReport, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -17,6 +18,7 @@ import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provis
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { planChildBookMigration, runChildBookMigration, type ChildBookMigrationContext } from './child-books.js';
 import { UserDurableObject } from './user.js';
+import { planBookCodeUpgrade, runBookCodeUpgrade, type BookCodeUpgradeContext } from './book-code-upgrade.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
@@ -883,6 +885,50 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       ledger: this.storage.childBookMigrations,
     };
   }
+
+  // --- Existing book code upgrades (see book-code-upgrade.ts) ---
+
+  /**
+   * Dry-run the book code upgrade: list every book in the requesting admin's workspaces with
+   * its code vintage and what an upgrade would change. Writes nothing.
+   */
+  async planBookCodeUpgrade(adminUserId: string): Promise<BookCodeUpgradeReport> {
+    await this.ensureBundledBlueprintsInstalled();
+    return planBookCodeUpgrade(this.#bookCodeUpgrade(adminUserId));
+  }
+
+  /**
+   * Run the book code upgrade: one code-only commit per book on its head. Serialized on
+   * #bookCodeUpgradeTail so a second click cannot interleave commits with a run still in
+   * flight; a completed run is idempotent and its report answers `unchanged`.
+   */
+  upgradeBookCode(adminUserId: string): Promise<BookCodeUpgradeReport> {
+    let run = this.#bookCodeUpgradeTail.then(async () => {
+      await this.ensureBundledBlueprintsInstalled();
+      let report = await runBookCodeUpgrade(this.#bookCodeUpgrade(adminUserId));
+      logger.info("book code upgrade finished", {
+        event: "book.code.upgrade.finished",
+        size: report.upgradedCount + report.unchangedCount + report.skippedCount,
+        failureCount: report.errorCount,
+      });
+      return report;
+    });
+    // Keep the tail alive past a failed run so a later retry is not dropped by it.
+    this.#bookCodeUpgradeTail = run.then(() => {}, () => {});
+    return run;
+  }
+
+  #bookCodeUpgradeTail: Promise<unknown> = Promise.resolve();
+
+  #bookCodeUpgrade(adminUserId: string): BookCodeUpgradeContext {
+    let adminUser = this.users.get(this.users.idFromName(adminUserId));
+    return {
+      env: this.env,
+      adminUserId: adminUser.id.toString(),
+      adminUser,
+      overseers: this.ctx.exports.OverseerDurableObject,
+    };
+  }
 }
 
 // Capability for managing deployment-wide admin settings, obtained via
@@ -1039,5 +1085,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   migrateChildBooks(): Promise<ChildBookMigrationReport> {
     return this.admin.migrateChildBooks(this.adminUserId);
+  }
+
+  planBookCodeUpgrade(): Promise<BookCodeUpgradeReport> {
+    return this.admin.planBookCodeUpgrade(this.adminUserId);
+  }
+
+  upgradeBookCode(): Promise<BookCodeUpgradeReport> {
+    return this.admin.upgradeBookCode(this.adminUserId);
   }
 }

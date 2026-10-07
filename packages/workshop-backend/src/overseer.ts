@@ -9381,6 +9381,68 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  /**
+   * Read the server.js and client.js committed on a book gadget's head, for the admin-only book
+   * code upgrade (book-code-upgrade.ts). Fields absent from the commit are left absent.
+   */
+  async readBookCode(ownerId: string, gadgetId?: WorkpieceId)
+      : Promise<{serverJs?: string; clientJs?: string}> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    let files = gadget.commitId === undefined ? new Map<string, string>()
+        : await this.impl.gitStore.readCommitFiles(gadget.commitId);
+    let code: {serverJs?: string; clientJs?: string} = {};
+    let serverJs = files.get("server.js");
+    let clientJs = files.get("client.js");
+    if (serverJs !== undefined) code.serverJs = serverJs;
+    if (clientJs !== undefined) code.clientJs = clientJs;
+    return code;
+  }
+
+  /**
+   * Replace a book gadget's server.js and client.js with a new commit on its current head, for
+   * the admin-only book code upgrade. Every other file in the commit -- and all workspace
+   * storage -- is left alone. Returns the new head commit oid, or null when the book's code
+   * already matches `code` (no commit is written then).
+   */
+  async upgradeBookCode(ownerId: string, code: {serverJs: string; clientJs: string},
+                        gadgetId?: WorkpieceId): Promise<string | null> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    let files = gadget.commitId === undefined ? new Map<string, string>()
+        : new Map(await this.impl.gitStore.readCommitFiles(gadget.commitId));
+    if (files.get("server.js") === code.serverJs && files.get("client.js") === code.clientJs) {
+      return null;
+    }
+    files.set("server.js", code.serverJs);
+    files.set("client.js", code.clientJs);
+    // Fresh stub per call: a captured user-DO stub would be permanently broken by a reset (see
+    // initializeFromBlueprint, which the whoami() read below mirrors).
+    let owner = () => this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(ownerId)));
+    let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.impl.logger);
+    let commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
+      parents: gadget.commitId === undefined ? [] : [gadget.commitId],
+      author: commitIdentityForAuthor(ownerProfile),
+      message: "Upgrade book code to the current book template",
+      timestamp: new Date(),
+    });
+    // A chat merge (or another upgrade) can fast-forward the book's head across the awaits
+    // above; re-read the record and advance it only when the head still sits where we read it,
+    // so an interleaved commit is never overwritten. From here on everything is synchronous,
+    // so the check and the write land atomically -- the same convention the chat merge uses
+    // for its toCommit heads. The orphan commit stays in git storage, as content-addressed
+    // garbage does.
+    let fresh = this.impl.storage.gadgets.get(gadget.id);
+    if (fresh?.type !== "gadget" || fresh.commitId !== gadget.commitId) {
+      throw new Error(
+          "The book's code changed while the upgrade was being prepared; run it again.");
+    }
+    fresh.commitId = commitId;
+    this.impl.storage.gadgets.put(fresh);
+    // Reload the gadget's code so the next facet call runs the upgraded server.js/client.js.
+    this.impl.bumpVersion([fresh.id]);
+    return commitId;
+  }
+
   async startGatekeeperSession(
       target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
     return this.impl.startGatekeeperSession(target, caller);

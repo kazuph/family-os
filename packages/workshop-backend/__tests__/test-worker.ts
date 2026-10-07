@@ -58,6 +58,11 @@ export class TestLoginCallback extends LoginConnectCallbackImpl {}
  * originally wrote it.
  */
 export { Gadget as LegacyBookGadget } from "../__book_tests__/legacy-book-server.js";
+/**
+ * The current book template's own Gadget class, exported so a test can bind it over a migrated
+ * book's facet name and prove the copy reads under the runtime destinations actually ship with.
+ */
+export { Gadget as NewBookGadget } from "../../bundled-blueprints/blueprints/workspace-book/files/server.js";
 
 /**
  * The migration's book-storage facet class, named explicitly for `ctx.exports` the same way as

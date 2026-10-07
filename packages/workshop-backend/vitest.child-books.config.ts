@@ -71,6 +71,8 @@ export default defineConfig({
           TEST_FAMILY: { className: 'FamilyDurableObject', useSQLite: true },
           // The old-runtime book gadget, runnable as a facet to read a migrated book.
           TEST_LEGACY_BOOK: { className: 'LegacyBookGadget', useSQLite: true },
+          // The current template's book gadget, likewise for the migrated destination.
+          TEST_NEW_BOOK: { className: 'NewBookGadget', useSQLite: true },
           // The migration's book-storage facet class, bound over a gadget's facet name.
           TEST_BOOK_DATA: { className: 'BookDataFacet', useSQLite: true },
           // The raw-SQL test facet (test-worker.ts) used to seed and fingerprint book tables.

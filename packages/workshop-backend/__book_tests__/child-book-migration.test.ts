@@ -243,6 +243,31 @@ it("plans, copies, and proves a legacy child book under the old runtime, idempot
   expect(legacy.state.progress).toEqual({ch1: true, ch2: false});
   expect(legacy.state.lastChapter).toBe("ch2");
 
+  // The destination is built from the current template, so the same copy must also read
+  // under it: its getState(chapterId) serves the imported conversation per chapter.
+  const current = await runInDurableObject(target, async (instance, ctx) => {
+    const name = (instance as any).impl.gadgetFacetName(targetGadgetId);
+    ctx.facets.abort(name, new Error("Switching to the current template runtime."));
+    try {
+      const facet = ctx.facets.get<any>(name, () => ({class: (ctx.exports as any).NewBookGadget, id: name}));
+      return {
+        files: await facet.getBookFiles(),
+        ch1: await facet.getState("ch1"),
+        ch2: await facet.getState("ch2"),
+      };
+    } finally {
+      ctx.facets.abort(name, new Error("Current-template read complete."));
+    }
+  });
+  expect(current.files["content/ch2.md"]).toBe("# 二章\n\n続き。\n");
+  expect(current.ch1.messages).toEqual([
+    {role: "user", content: "この章の意味を教えて"},
+    {role: "assistant", content: "この章ではね……"},
+  ]);
+  expect(current.ch2.messages).toEqual([{role: "user", content: "ありがとう、次の章は？"}]);
+  expect(current.ch1.progress).toEqual({ch1: true, ch2: false});
+  expect(current.ch2.lastChapter).toBe("ch2");
+
   // The source is untouched by all of this.
   expect(await storageFingerprint(child.overseer, child.gadgetId)).toBe(sourceBefore);
 
