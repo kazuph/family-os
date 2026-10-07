@@ -221,6 +221,13 @@ export function createRpcConnection(connect: () => RpcStub<PublicApi>): RpcConne
 
   currentStub = startConnection();
 
+  // A page loaded while already hidden (background tab, session restore, occluded window) never
+  // receives a `visibilitychange` event, so arm the idle timer from the initial state — otherwise
+  // the socket would stay open until the tab is first shown.
+  if (document.visibilityState === 'hidden') {
+    idleTimer = setTimeout(disconnectForIdle, IDLE_DISCONNECT_MS);
+  }
+
   return {
     subscribers,
     getState: () => ({ stub: currentStub, connectionLost }),

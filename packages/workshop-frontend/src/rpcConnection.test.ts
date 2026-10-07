@@ -197,6 +197,40 @@ describe('idle tab disconnect', () => {
     expect(notify).toHaveBeenCalledTimes(2)
   })
 
+  it('starts the idle timer when the page loads already hidden', async () => {
+    // No `visibilitychange` fires for a page loaded in the background — the timer must arm itself.
+    visibility = 'hidden'
+    const { conn, connect, stubs } = setup()
+
+    await vi.advanceTimersByTimeAsync(IDLE_DISCONNECT_MS)
+    expect(stubs[0].dispose).toHaveBeenCalledTimes(1)
+    expect(conn.getState().connectionLost).toBe(true)
+
+    // Still hidden later: no reconnect attempts.
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(connect).toHaveBeenCalledTimes(1)
+
+    // Visible for the first time: reconnects immediately through the normal publish path.
+    fireVisibility('visible')
+    expect(connect).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stubs[1].ping).toHaveBeenCalled()
+    expect(conn.getState().connectionLost).toBe(false)
+  })
+
+  it('cancels an initially-hidden idle timer when the tab is first shown', async () => {
+    visibility = 'hidden'
+    const { conn, connect, stubs } = setup()
+
+    await vi.advanceTimersByTimeAsync(IDLE_DISCONNECT_MS - 1000)
+    fireVisibility('visible')
+    await vi.advanceTimersByTimeAsync(IDLE_DISCONNECT_MS * 2)
+
+    expect(stubs[0].dispose).not.toHaveBeenCalled()
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(conn.getState().connectionLost).toBe(false)
+  })
+
   it('still probes a live socket on network-online', async () => {
     const { stubs } = setup()
 
