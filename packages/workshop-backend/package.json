@@ -15,6 +15,7 @@
     "test:book:storage": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run --config vitest.book.config.ts",
     "test:book:mcp": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && node scripts/book-tests/run-mcp.mjs",
     "test:book:migration": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run --config vitest.book-migration.config.ts",
+    "test:book:children": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run --config vitest.child-books.config.ts",
     "test:go:live": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run --config vitest.go-live.config.ts",
     "test:go:contract": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && node scripts/go-tests/run-contract.mjs"
   },
