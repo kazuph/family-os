@@ -1134,6 +1134,12 @@
             "BrowserVerificationLimiterDurableObject"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "BookDataFacet"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [
