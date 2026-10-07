@@ -9378,10 +9378,21 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       message: "Upgrade book code to the current book template",
       timestamp: new Date(),
     });
-    gadget.commitId = commitId;
-    this.impl.storage.gadgets.put(gadget);
+    // A chat merge (or another upgrade) can fast-forward the book's head across the awaits
+    // above; re-read the record and advance it only when the head still sits where we read it,
+    // so an interleaved commit is never overwritten. From here on everything is synchronous,
+    // so the check and the write land atomically -- the same convention the chat merge uses
+    // for its toCommit heads. The orphan commit stays in git storage, as content-addressed
+    // garbage does.
+    let fresh = this.impl.storage.gadgets.get(gadget.id);
+    if (fresh?.type !== "gadget" || fresh.commitId !== gadget.commitId) {
+      throw new Error(
+          "The book's code changed while the upgrade was being prepared; run it again.");
+    }
+    fresh.commitId = commitId;
+    this.impl.storage.gadgets.put(fresh);
     // Reload the gadget's code so the next facet call runs the upgraded server.js/client.js.
-    this.impl.bumpVersion([gadget.id]);
+    this.impl.bumpVersion([fresh.id]);
     return commitId;
   }
 

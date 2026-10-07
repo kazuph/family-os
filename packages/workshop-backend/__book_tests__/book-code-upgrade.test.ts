@@ -321,6 +321,53 @@ it("plans, upgrades, and preserves both old book kinds, idempotently", async () 
   expect(await overseerHead(anim)).toBe(headBefore);
 });
 
+// A head that moved mid-upgrade is never overwritten -- the lost update a chat merge's
+// fast-forward could cause if it landed between upgradeBookCode's reads and its write. The
+// interleave advances the record's commitId while the upgrade is parked on its first await,
+// which is the only ordering the check-before-write has to catch.
+it("fails instead of overwriting a head that moved mid-upgrade", async () => {
+  const template = await templateCode();
+  const book = await seedBook(ADMIN, "混んでいる本",
+      genericOldClient(template.clientJs), LEGACY_SERVER);
+  const ownerId = exports.UserDurableObject.getByName(ADMIN).id.toString();
+
+  const {movedHead, upgradeError} = await runInDurableObject(book.overseer, async (instance) => {
+    const impl = (instance as any).impl;
+    // The interleaved commit, parented on the same head the upgrade is about to read.
+    const baseHead = impl.storage.gadgets.get(book.gadgetId).commitId;
+    const baseFiles = await impl.gitStore.readCommitFiles(baseHead);
+    baseFiles.set("client.js", "// interleaved chat-merge edit\n" + baseFiles.get("client.js"));
+    const movedHead = await impl.gitStore.writeFilesAsCommit(baseFiles, {
+      parents: [baseHead],
+      author: {name: "Test", email: "test@workshop.example"},
+      message: "interleaved merge",
+      timestamp: new Date(),
+    });
+
+    // upgradeBookCode runs synchronously until its first await, so it is guaranteed parked
+    // when the merge-shaped fast-forward below lands.
+    const upgrade = (instance as any).upgradeBookCode(ownerId,
+        {serverJs: template.serverJs, clientJs: template.clientJs}, book.gadgetId);
+    const record = impl.storage.gadgets.get(book.gadgetId);
+    record.commitId = movedHead;
+    impl.storage.gadgets.put(record);
+
+    const upgradeError = await upgrade.then(() => null, (e: unknown) => String(e));
+    return {movedHead, upgradeError};
+  });
+  expect(upgradeError).toContain("code changed");
+
+  // The interleaved head won: no silent overwrite.
+  expect(await overseerHead(book)).toBe(movedHead);
+
+  // And nothing is corrupted: running the upgrade again parents on the interleaved head.
+  const retried = await runInDurableObject(book.overseer, async (instance) =>
+    (instance as any).upgradeBookCode(ownerId,
+        {serverJs: template.serverJs, clientJs: template.clientJs}, book.gadgetId));
+  expect(await overseerHead(book)).toBe(retried);
+  expect(await commitParents(book.overseer, retried!)).toContain(movedHead);
+});
+
 async function overseerHead(book: {overseer: DurableObjectStub; gadgetId: number}) {
   return runInDurableObject(book.overseer, async (instance) =>
     (instance as any).impl.storage.gadgets.get(book.gadgetId).commitId);
