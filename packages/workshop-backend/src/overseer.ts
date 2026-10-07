@@ -9319,7 +9319,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       } catch (error) {
         if (String(error).includes(`does not implement the method "deleteBookFiles"`)) {
           throw new Error("This book's gadget predates deleteBookFiles; update its server code " +
-              "to the current book template before deleting files.");
+              "to the current book template before deleting files.", { cause: error });
         }
         throw error;
       }
