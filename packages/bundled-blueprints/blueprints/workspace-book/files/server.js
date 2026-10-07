@@ -36,8 +36,13 @@ export class Gadget extends DurableObject {
     return this.getBookFiles();
   }
 
-  getState() {
-    const messages = [...this.sql.exec("SELECT role, content FROM messages ORDER BY id")];
+  deleteBookFiles(paths) {
+    for (const path of paths) this.sql.exec("DELETE FROM book_files WHERE path = ?", path);
+    return this.getBookFiles();
+  }
+
+  getState(chapterId) {
+    const messages = chapterId === undefined ? [] : [...this.sql.exec("SELECT role, content FROM messages WHERE chapter_id = ? ORDER BY id", chapterId)];
     const progress = Object.fromEntries([...this.sql.exec("SELECT chapter_id, completed FROM progress")].map((row) => [row.chapter_id, row.completed === 1]));
     const last = [...this.sql.exec("SELECT value FROM settings WHERE key = 'lastChapter'")][0];
     return { messages, progress, lastChapter: last?.value };
@@ -49,14 +54,17 @@ export class Gadget extends DurableObject {
     return Object.fromEntries([...this.sql.exec("SELECT chapter_id, completed FROM progress")].map((row) => [row.chapter_id, row.completed === 1]));
   }
 
-  async askTutor({ message, chapterId, chapterText }) {
+  async askTutor({ message, chapterId }) {
     if (!this.env.AI) throw new Error("本のAIモデルが未接続です。ConnectionsでAIモデルを追加し、接続名をAIにしてください。");
+    const files = this.getBookFiles();
+    const chapter = JSON.parse(files["content/toc.json"]).parts.flatMap((part) => part.chapters).find((item) => item.id === chapterId);
+    const chapterText = chapter ? files[`content/${chapter.file}`] ?? "" : "";
     const createdAt = Date.now();
     this.sql.exec("INSERT INTO messages (role, content, chapter_id, created_at) VALUES ('user', ?, ?, ?)", message, chapterId, createdAt);
     this.sql.exec("INSERT INTO settings (key, value) VALUES ('lastChapter', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", chapterId);
-    const prompt = `[現在の章]\n${chapterText}\n\n[これまでの会話]\n${[...this.sql.exec("SELECT role, content FROM messages ORDER BY id DESC LIMIT 12")].reverse().map((item) => `${item.role === "user" ? "読者" : "澪"}: ${item.content}`).join("\n")}\n\n[読者の質問]\n${message}`;
+    const prompt = `[現在の章]\n${chapterText}\n\n[これまでの会話]\n${[...this.sql.exec("SELECT role, content FROM messages WHERE chapter_id = ? ORDER BY id DESC LIMIT 12", chapterId)].reverse().map((item) => `${item.role === "user" ? "読者" : "澪"}: ${item.content}`).join("\n")}\n\n[読者の質問]\n${message}`;
     const response = await this.env.AI.run({ prompt, systemPrompt: TUTOR_INSTRUCTIONS });
     this.sql.exec("INSERT INTO messages (role, content, chapter_id, created_at) VALUES ('assistant', ?, ?, ?)", response, chapterId, Date.now());
-    return this.getState();
+    return this.getState(chapterId);
   }
 }

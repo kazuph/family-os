@@ -946,6 +946,10 @@ export default {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
           return owned.workspace.putBookMcpFiles(owned.ownerId, files, gadgetId);
         },
+        async deleteFiles(ownerEmail, workspaceId, paths, gadgetId) {
+          let owned = await ownedWorkspace(ownerEmail, workspaceId);
+          return owned.workspace.deleteBookMcpFiles(owned.ownerId, paths, gadgetId);
+        },
         async readProgress(ownerEmail, workspaceId, gadgetId) {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
           return owned.workspace.readBookMcpProgress(owned.ownerId, gadgetId);

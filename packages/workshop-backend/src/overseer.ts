@@ -9305,6 +9305,29 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return files.map(({ path, content }) => ({ path, content }));
   }
 
+  /**
+   * Delete manuscript files (e.g. chapters dropped from the table of contents) from a book the
+   * caller owns. Books whose gadget code predates the facet's `deleteBookFiles` method fail with
+   * an update-required error rather than a raw RPC "method not implemented" error.
+   */
+  async deleteBookMcpFiles(ownerId: string, paths: string[], gadgetId?: WorkpieceId)
+      : Promise<string[]> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    for (let path of paths) validateBookFilePath(path);
+    await this.#withBookMcpFacet(ownerId, gadget, async facet => {
+      try {
+        await facet.deleteBookFiles(paths);
+      } catch (error) {
+        if (String(error).includes(`does not implement the method "deleteBookFiles"`)) {
+          throw new Error("This book's gadget predates deleteBookFiles; update its server code " +
+              "to the current book template before deleting files.", { cause: error });
+        }
+        throw error;
+      }
+    });
+    return paths;
+  }
+
   async readBookMcpProgress(ownerId: string, gadgetId?: WorkpieceId): Promise<unknown> {
     let gadget = this.getOwnedBook(ownerId, gadgetId);
     let state = await this.#withBookMcpFacet(ownerId, gadget,
