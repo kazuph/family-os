@@ -19,7 +19,8 @@
 //   - the final version; and
 //   - every persisted pinned version -- each live legacy chat's anchor (see
 //     legacyChatBaseVersion) and each blueprint's exported codeVersion -- resolved to the last
-//     code version at or below it, so the pinned state is exactly some commit's tree.
+//     code version at or below it (or the oldest complete snapshot when the fork pruned its
+//     prefix), so the pinned state is exactly some commit's tree.
 // Versions where a gadget's flattened files are unchanged from its previous synthesized commit
 // are skipped for that gadget, so a gadget untouched by most of the log gets a short chain.
 // Every permanent gadget's chain is additionally rooted at a version-0 empty-tree commit, so
@@ -222,13 +223,20 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   }
   let logVersions = new Set(log.map(entry => entry.version));
   let finalVersion = log[log.length - 1]?.version ?? 0;
+  // A retained snapshot starts after the fork pruned older code. Those historical states
+  // cannot be recovered; pin older references to the earliest complete state we still have.
+  // A full log starting at version 1 still has its genuine version-0 empty state.
+  let retainedVersion = log[0]?.version ?? 0;
+  let replacedChatIds: number[] = [];
+  let replacedBlueprintIds: string[] = [];
 
-  // The last code version at or below `version`, or 0 if none. Anchors and blueprint pins may
+  // The last code version at or below `version`, clamped to a retained snapshot if the
+  // prefix was pruned, or 0 for a complete log. Anchors and blueprint pins may
   // name versions with no code entry (legacy merges of creation-only batches recorded the shared
   // change counter, which also counted non-code changes), and the doc state at such a version is
   // the state at the last code entry before it -- that's the version whose tree must exist.
   let floorLogVersion = (version: number): number => {
-    let found = 0;
+    let found = retainedVersion > 1 ? retainedVersion : 0;
     for (let entry of log) {
       if (entry.version > version) break;
       found = entry.version;
@@ -272,8 +280,9 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     let checkpoint = meta.compactedTo === undefined
         ? undefined : storage.chatCompactions.get(chatKey(meta.id, meta.compactedTo));
     let anchor = legacyChatBaseVersion(checkpoint, messages);
-    if (anchor !== "current" && anchor > 0 && updates[0]?.version > anchor) {
-      throw new Error(`Legacy chat ${meta.id} precedes retained code; migration left source data intact.`);
+    if (meta.codeBase === undefined && anchor !== "current" &&
+        retainedVersion > 1 && anchor < retainedVersion) {
+      replacedChatIds.push(meta.id);
     }
     let resolved = floorLogVersion(anchor === "current" ? finalVersion : anchor);
     if (resolved > 0) points.add(resolved);
@@ -314,9 +323,6 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     if (record.codeVersion === undefined || record.commitId !== undefined) continue;
     let gadgetId = record.gadgetId ?? defaultGadgetId;
     if (gadgetId === undefined) continue;  // unresolvable; left as-is below
-    if (record.codeVersion > 0 && updates[0]?.version > record.codeVersion) {
-      throw new Error(`Legacy blueprint ${record.id} precedes retained code; migration left source data intact.`);
-    }
     track(gadgetId);
     let resolved = floorLogVersion(record.codeVersion);
     if (resolved > 0) points.add(resolved);
@@ -438,9 +444,25 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
       });
       continue;
     }
+    if (retainedVersion > 1 && record.codeVersion < retainedVersion) {
+      replacedBlueprintIds.push(record.id);
+    }
     record.commitId = floor.commitId;
     delete record.codeVersion;
     storage.blueprints.put(record);
+  }
+
+  if (replacedChatIds.length > 0) {
+    logger.warn("legacy chat anchors replaced with earliest retained code", {
+      event: "storage.migration.git.chat.anchor.replaced",
+      size: replacedChatIds.length, chatIds: replacedChatIds,
+    });
+  }
+  if (replacedBlueprintIds.length > 0) {
+    logger.warn("legacy blueprint versions replaced with earliest retained code", {
+      event: "storage.migration.git.blueprint.version.replaced",
+      size: replacedBlueprintIds.length, blueprintIds: replacedBlueprintIds,
+    });
   }
 
   return { commits };

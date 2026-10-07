@@ -15,13 +15,17 @@
 // constructor trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
+import { applyCodeChange } from "@gadgets/workshop-shared/code-change";
+import type { CodeContent } from "@gadgets/workshop-shared/code-change";
+import type { StoredChatMessage } from "../src/storage-schema/overseer-storage";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
-import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
+import { HISTORY_COMMIT_GAP_MS, migrateCodeLogToGit } from "../src/storage-schema/overseer-git-migration";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import {
-  LegacyWorkspace, MINUTE, T0, USER, expectHeadsMatchDoc, readDocFiles, setFile,
+  LegacyWorkspace, MINUTE, T0, USER, captureEdit, expectHeadsMatchDoc, readDocFiles, setFile,
 } from "./legacy-workspace";
 import { makePreIndexActionStorage, putAction } from "./fixtures.js";
 
@@ -68,6 +72,110 @@ async function seedLegacyWorkspace(
 }
 
 describe("git-storage migration via the Overseer constructor", () => {
+  it.each(["snapshot", "partitioned snapshot"])(
+      "converts pruned chat and blueprint anchors from a complete %s without losing history",
+      async snapshotKind => {
+    const name = `git-migration-pruned-${snapshotKind}`;
+    let originalMessages: unknown[] = [];
+    let sourceRows: unknown;
+    let retainedFiles: Map<string, string>;
+    await seedLegacyWorkspace(name, (ws, impl) => {
+      ws.addGadget(1, "APP");
+      impl.storage.defaultGadgetId.put(1);
+      ws.edit(T0 + MINUTE, doc => setFile(doc, "", "app.js", "accepted\n")); // v2
+      const chatDoc = ws.docAt(2);
+      ws.addChat(2);
+      ws.addMessage(2, USER, {type: "message", text: "preserve question"});
+      ws.addMessage(2, USER, {
+        type: "changes", observedCodeVersion: 2,
+        update: captureEdit(chatDoc, doc => doc.getMap<Y.Text>("").get("app.js")!
+            .insert("accepted\n".length, "proposal\n")),
+      });
+      ws.addMessage(2, USER, {type: "message", text: "preserve response"});
+      ws.addDraft(2, captureEdit(chatDoc, doc => doc.getMap<Y.Text>("").get("app.js")!
+          .insert("accepted\nproposal\n".length, "draft\n")));
+      // Explicit zero anchors are pruned too, unlike version 0 in a complete log.
+      ws.addChat(3);
+      ws.addMessage(3, USER, {type: "changes", observedCodeVersion: 0});
+      ws.edit(T0 + 2 * MINUTE, doc => setFile(doc, "", "retained.js", "retained\n")); // v3
+      const retainedDoc = ws.docAt(3);
+      retainedFiles = readDocFiles(retainedDoc, "");
+      const update = Y.encodeStateAsUpdateV2(retainedDoc);
+      const timestamp = new Date(T0 + 2 * MINUTE);
+      if (snapshotKind === "snapshot") {
+        impl.storage.snapshots.put({version: 3, timestamp, update});
+      } else {
+        const boundary = Math.floor(update.length / 2);
+        for (const [index, part] of [update.slice(0, boundary), update.slice(boundary)].entries()) {
+          impl.storage.snapshotParts.put({key: `retained-${index}`, version: 3,
+            timestamp, index, partCount: 2, update: part});
+        }
+      }
+      ws.edit(T0 + 3 * MINUTE, doc => setFile(doc, "", "tip.js", "tip\n")); // v4
+      for (const row of impl.storage.code.list()) {
+        if (row.version <= 3) impl.storage.code.deleteRecord(row);
+      }
+      const metadata = {title: "Blueprint", description: "", author: USER,
+        created: new Date(T0), version: 1, lastUpdated: new Date(T0), bindings: {}};
+      for (const version of [0, 2]) {
+        impl.storage.blueprints.put({id: `pruned-${version}`, metadata, codeVersion: version});
+      }
+      originalMessages = [...impl.storage.chats.list()];
+      sourceRows = {code: [...impl.storage.code.list()], snapshots: [...impl.storage.snapshots.list()],
+        parts: [...impl.storage.snapshotParts.list()]};
+    });
+    await abortAllDurableObjects();
+    let convertedRows: unknown;
+    let gitRows: unknown;
+    await inOverseer(name, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      const boundaries = [...impl.storage.chats.list()].filter((msg: StoredChatMessage) =>
+        msg.type === "changes" && msg.conversionBoundary);
+      expect(boundaries).toHaveLength(2);
+      expect([...impl.storage.chats.list()].filter((msg: any) => !msg.conversionBoundary))
+          .toEqual(originalMessages);
+      expect([...impl.storage.chatDraftUpdates.list()]).toEqual([]);
+      const boundary = boundaries.find((msg: StoredChatMessage) => msg.chatId === 2)!;
+      expect(await impl.gitStore.readCommitFiles(boundary.pins![0].baseCommit)).toEqual(retainedFiles!);
+      const base: CodeContent = new Map([[1, retainedFiles!]]);
+      const content = applyCodeChange(base, boundary.change);
+      expect(content.get(1)).toEqual(new Map([
+        ["app.js", "accepted\nproposal\ndraft\n"], ["retained.js", "retained\n"],
+      ]));
+      expect(boundaries.find((msg: StoredChatMessage) => msg.chatId === 3)!.change).toBeUndefined();
+      for (const version of [0, 2]) {
+        const blueprint = impl.storage.blueprints.get(`pruned-${version}`)!;
+        expect(blueprint.codeVersion).toBeUndefined();
+        expect(await impl.gitStore.readCommitFiles(blueprint.commitId)).toEqual(retainedFiles!);
+      }
+      expect({code: [...impl.storage.code.list()], snapshots: [...impl.storage.snapshots.list()],
+        parts: [...impl.storage.snapshotParts.list()]}).toEqual(sourceRows);
+      convertedRows = [...impl.storage.chats.list()];
+      gitRows = [...impl.storage.gitObjects.list()];
+    });
+    await abortAllDurableObjects();
+    await inOverseer(name, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect([...impl.storage.chats.list()]).toEqual(convertedRows);
+      expect([...impl.storage.gitObjects.list()]).toEqual(gitRows);
+    });
+  });
+
+  it("refuses an incomplete retained snapshot without modifying real SQLite source rows", async () => {
+    await inOverseer("git-migration-incomplete-snapshot", async impl => {
+      const ws = new LegacyWorkspace(impl.storage);
+      ws.addGadget(1, "APP");
+      ws.edit(T0 + MINUTE, doc => setFile(doc, "", "app.js", "accepted\n"));
+      ws.storage.code.deleteRecord(ws.storage.code.get(1)!);
+      const update = Y.encodeStateAsUpdateV2(ws.docAt(2));
+      ws.storage.snapshotParts.put({key: "incomplete", version: 2, timestamp: new Date(T0),
+        index: 0, partCount: 2, update: update.slice(0, Math.floor(update.length / 2))});
+      const before = [...impl.ctx.storage.kv.list()];
+      await expect(migrateCodeLogToGit(ws.host(1))).rejects.toThrow(/incomplete or inconsistent parts/);
+      expect([...impl.ctx.storage.kv.list()]).toEqual(before);
+    });
+  });
+
   it("migrates a single-gadget workspace, preserving content across the batching gap",
       async () => {
     let ws = await seedLegacyWorkspace("git-migration-single", (ws, impl) => {
