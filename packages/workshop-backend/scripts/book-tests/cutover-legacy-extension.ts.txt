@@ -1,0 +1,39 @@
+// Added only to the isolated f41f7db4 fixture, never to the production entrypoint.
+import { readBlueprintKvRecord, readBlueprintContent } from './blueprint-archive';
+
+export async function createCutoverChildBook(ctx: ExecutionContext, env: Cloudflare.Env,
+    username: string, adultUserId: string) {
+  const admins = typeof env.ADMINS === 'string' ? JSON.parse(env.ADMINS) : env.ADMINS;
+  if (!Array.isArray(admins) || !admins.includes(username)) throw new Error('Fixture administrator required');
+  const family = ctx.exports.FamilyDurableObject.getByName('');
+  const deviceId = 'isolated-cutover-device';
+  const loginIat = Math.floor(Date.now() / 1000);
+  const passcode = '654321';
+  const configured = await family.setPasscode(deviceId, loginIat, adultUserId, passcode);
+  if (!configured.ok) throw new Error('Fixture passcode creation refused');
+  const selected = await family.selectAdult(deviceId, loginIat, passcode);
+  if (!selected.ok) throw new Error('Fixture adult selection refused');
+  const created = await family.createChild(deviceId, loginIat, adultUserId, 'Preserved child');
+  if (!created.ok) throw new Error('Fixture child creation refused');
+  const child = created.value.childProfiles[0];
+  const childUser = ctx.exports.UserDurableObject.getByName(child.id);
+  const workspaceId = ctx.exports.OverseerDurableObject.newUniqueId().toString();
+  const record = await readBlueprintKvRecord(env, 'format.book');
+  if (!record) throw new Error('Legacy book blueprint missing');
+  const code = await readBlueprintContent(env, 'format.book', record.metadata.version);
+  if (!code) throw new Error('Legacy book code missing');
+  await childUser.newGadget(workspaceId, 'Preserved child book');
+  const workspaceDo = ctx.exports.OverseerDurableObject.get(
+    ctx.exports.OverseerDurableObject.idFromString(workspaceId));
+  using workspace = await workspaceDo.open(childUser.id.toString(), child.id, () => {});
+  await workspaceDo.initializeFromBlueprint(code, 'Preserved child book', record.metadata.output);
+  const gadgetId = (await workspace.getMetadata()).defaultGadgetId!;
+  await workspaceDo.putBookMcpFiles(childUser.id.toString(), [
+    {path:'content/toc.json', content:JSON.stringify({title:'Preserved child book',parts:[{title:'Part',chapters:[{id:'child',title:'Child chapter',file:'child.md'}]}]})},
+    {path:'content/child.md', content:'# Child chapter\n\nA child-owned manuscript remains with its original owner.'},
+  ], gadgetId);
+  using gadget = await workspace.getGadget(gadgetId);
+  using book = await gadget.connectToGadget();
+  await book.setChapterComplete('child', true);
+  return {profileId:child.id, ownerId:childUser.id.toString(), workspaceId, gadgetId};
+}
