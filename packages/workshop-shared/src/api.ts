@@ -1307,7 +1307,102 @@ export interface AdminApi {
    * testGatewayProvider(), whose quick request is capped at a few tokens.
    */
   testGatewayModel(modelId: string): Promise<GatewayModelTest>;
+
+  // --- Existing book code upgrades ---
+  //
+  // A book keeps a copy of its gadget code (server.js/client.js) from the template it was
+  // created with, so template fixes do not reach existing books. These calls upgrade the code
+  // of the books in the calling admin's own workspaces to the currently installed book
+  // template. Book data -- manuscript files, tutor conversation, progress, settings -- is
+  // never read or written.
+
+  /**
+   * List every book in the calling admin's workspaces with its current code kind (generic
+   * template, the specialized illustration-animation variant, or already current) and what an
+   * upgrade would change, writing nothing. The report is what an admin reviews before running
+   * upgradeBookCode().
+   */
+  planBookCodeUpgrade(): Promise<BookCodeUpgradeReport>;
+
+  /**
+   * Upgrade every book in the calling admin's workspaces: one new commit per book on its
+   * current head, replacing server.js with the installed template's and client.js likewise --
+   * except a book whose client.js carries the illustration animations, which keeps its own
+   * animation payload (implementations, registry, and shared drawing constants) spliced into
+   * the new application code. Already-current books are reported `unchanged` and written to
+   * nothing; books whose code is unrecognizable are `skipped`, never clobbered.
+   */
+  upgradeBookCode(): Promise<BookCodeUpgradeReport>;
 }
+
+/**
+ * How a book's committed code relates to the currently installed book template, as reported in
+ * a BookCodeUpgradeEntry.
+ */
+export type BookCodeKind =
+  /** client.js carries the bundled illustration animations; an upgrade preserves them. */
+  | "anim"
+  /** client.js has no animation payload; an upgrade adopts the new template client.js. */
+  | "generic"
+  /** server.js and client.js already match the upgrade target; nothing to change. */
+  | "current"
+  /** Not a recognizable book code layout; left untouched. */
+  | "unknown";
+
+/** What happened to one book in a plan or run. */
+export type BookCodeUpgradeEntryStatus =
+  /** Upgrade planned; nothing written (dry run). */
+  | "wouldUpgrade"
+  /** Code commit written in this run. */
+  | "upgraded"
+  /** Already current, or became current on a rerun; nothing was written. */
+  | "unchanged"
+  /** Unrecognizable code; deliberately not touched. */
+  | "skipped"
+  /** The book could not be read or upgraded; `error` says why. */
+  | "error";
+
+/** One row of a book-code upgrade report: a book and its outcome. */
+export type BookCodeUpgradeEntry = {
+  /** Workspace holding the book. */
+  workspaceId: string;
+  /** The workspace's title -- what the admin sees as the book's name. */
+  workspaceTitle: string;
+  /** The book gadget's id inside that workspace. */
+  gadgetId: number;
+  /** The vintage of the book's current code. */
+  kind: BookCodeKind;
+  /** The book's outcome in this plan or run. */
+  status: BookCodeUpgradeEntryStatus;
+  /** What an upgrade changes (or would change), file by file. */
+  changes: string[];
+  /** The book's new head commit, set once a real run writes it. */
+  headCommitId?: string;
+  /** Why status is `error`. */
+  error?: string;
+};
+
+/** The result of planBookCodeUpgrade() (dryRun) or upgradeBookCode(). */
+export type BookCodeUpgradeReport = {
+  /** True for a plan (nothing was written); false for an actual run. */
+  dryRun: boolean;
+  /** When the scan ran. */
+  generatedAt: string;
+  /** Books found across the admin's workspaces. */
+  bookCount: number;
+  /** Entries by status. */
+  wouldUpgradeCount: number;
+  /** Entries by status. */
+  upgradedCount: number;
+  /** Entries by status. */
+  unchangedCount: number;
+  /** Entries by status. */
+  skippedCount: number;
+  /** Entries by status. */
+  errorCount: number;
+  /** One entry per book, in scan order. */
+  entries: BookCodeUpgradeEntry[];
+};
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
 export type AdminFormatPatch = {
