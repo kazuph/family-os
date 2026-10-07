@@ -1,0 +1,6 @@
+  var ACCENT = "#2b5797";
+  var INK = "#1f2933";
+  var SOFT = "#e8eef8";
+  var WARM = "#c2410c";
+  var ease = /* @__PURE__ */ __name((x) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2, "ease");
+
