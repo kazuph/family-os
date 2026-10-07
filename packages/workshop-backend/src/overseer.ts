@@ -8875,16 +8875,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // The standard authenticated admin can build a registered child's book while retaining
     // the child owner and the administrator's real caller identity. This grants no share link
     // and never rewrites the child's User DO or collaborator graph.
-    let admins: unknown = (this.env as Cloudflare.Env & {ADMINS?: string | string[]}).ADMINS;
-    if (typeof admins === "string") admins = JSON.parse(admins);
     let childBookAdmin = false;
-    if (!isOwner && Array.isArray(admins) && admins.includes(profileId)
-        && this.impl.users.idFromName(profileId).toString() === userId
-        && [...this.impl.storage.gadgets.list()].some(gadget =>
-          gadget.type === "gadget" && gadget.output?.id === "book" && !gadget.pending)) {
-      let children = await this.ctx.exports.FamilyDurableObject.getByName("").listChildren();
-      childBookAdmin = children.some(child => child.userId === this.impl.ownerId
-          && this.impl.users.idFromName(child.id).toString() === child.userId);
+    if (!isOwner) {
+      let admins: unknown = (this.env as Cloudflare.Env & {ADMINS?: string | string[]})?.ADMINS;
+      if (typeof admins === "string") admins = JSON.parse(admins);
+      if (Array.isArray(admins) && admins.includes(profileId)
+          && this.impl.users.idFromName(profileId).toString() === userId
+          && [...this.impl.storage.gadgets.list()].some(gadget =>
+            gadget.type === "gadget" && gadget.output?.id === "book" && !gadget.pending)) {
+        let children = await this.ctx.exports.FamilyDurableObject.getByName("").listChildren();
+        childBookAdmin = children.some(child => child.userId === this.impl.ownerId
+            && this.impl.users.idFromName(child.id).toString() === child.userId);
+      }
     }
 
     // Cache the owner's profileId in memory when the owner opens.
