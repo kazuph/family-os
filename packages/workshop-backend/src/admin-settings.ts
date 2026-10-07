@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, ChildBookMigrationReport, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -15,6 +15,7 @@ import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeMod
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
+import { planChildBookMigration, runChildBookMigration, type ChildBookMigrationContext } from './child-books.js';
 import { UserDurableObject } from './user.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -825,6 +826,63 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     vendors.sort((a, b) => Number(b.autoProvisions) - Number(a.autoProvisions));
     return vendors;
   }
+
+  // --- Legacy child books (child-books.ts) ---
+  //
+  // This DO orchestrates the migration because it is the deployment's singleton: the ledger that
+  // makes reruns idempotent is its own storage, and admin-only reach comes from the AdminApi
+  // capability boundary in server.ts, not from any check here.
+
+  /**
+   * Dry-run the legacy child-book migration: list each registered child's book, its ledger state
+   * and the size of its copy, writing nothing.
+   */
+  async planChildBookMigration(adminUserId: string): Promise<ChildBookMigrationReport> {
+    return planChildBookMigration(this.#childBookMigration(adminUserId));
+  }
+
+  /**
+   * Run the migration for real, copying each child's book into a fresh `format.book` workspace in
+   * the admin's account. Serialized per instance -- the ledger it writes is this object's own
+   * storage, and two concurrent runs would race over the same records.
+   */
+  migrateChildBooks(adminUserId: string): Promise<ChildBookMigrationReport> {
+    let run = this.#childBookMigrationTail.then(async () => {
+      // The destination template must be installed before the run plans any copies.
+      await this.ensureBundledBlueprintsInstalled();
+      let context = this.#childBookMigration(adminUserId);
+      let report = await runChildBookMigration(context);
+      logger.info("child-book migration ran", {
+        event: "child-books.migration",
+        durableObjectId: context.adminUserId,
+        size: report.bookCount,
+        failureCount: report.errorCount,
+      });
+      return report;
+    });
+    // The queue itself must survive a failed run, or every later call would chain onto the
+    // rejection. The caller still gets the error through `run`.
+    this.#childBookMigrationTail = run.catch(() => {});
+    return run;
+  }
+
+  // Only one real run at a time; dry runs are read-only and never join the queue.
+  #childBookMigrationTail: Promise<unknown> = Promise.resolve();
+
+  #childBookMigration(adminUserId: string): ChildBookMigrationContext {
+    let adminUser = this.users.get(this.users.idFromName(adminUserId));
+    return {
+      env: this.env,
+      config: this.#config(),
+      adminName: adminUserId,
+      adminUserId: adminUser.id.toString(),
+      adminUser,
+      users: this.users,
+      overseers: this.ctx.exports.OverseerDurableObject,
+      family: this.ctx.exports.FamilyDurableObject.getByName(""),
+      ledger: this.storage.childBookMigrations,
+    };
+  }
 }
 
 // Capability for managing deployment-wide admin settings, obtained via
@@ -973,5 +1031,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   testGatewayModel(modelId: string): Promise<GatewayModelTest> {
     return this.admin.testGatewayModel(modelId, this.adminUserId);
+  }
+
+  planChildBookMigration(): Promise<ChildBookMigrationReport> {
+    return this.admin.planChildBookMigration(this.adminUserId);
+  }
+
+  migrateChildBooks(): Promise<ChildBookMigrationReport> {
+    return this.admin.migrateChildBooks(this.adminUserId);
   }
 }

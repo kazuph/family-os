@@ -1307,7 +1307,124 @@ export interface AdminApi {
    * testGatewayProvider(), whose quick request is capped at a few tokens.
    */
   testGatewayModel(modelId: string): Promise<GatewayModelTest>;
+
+  // --- Legacy child books ---
+  //
+  // The previous Family OS kept per-child accounts (see FamilyDurableObject), and child sign-in
+  // was never restored on this deployment: those books exist but nobody can open them. These two
+  // calls copy each one into a new `format.book` workspace in the calling admin's account.
+
+  /**
+   * List every registered child's book and where it would be copied to, without writing anything:
+   * no workspaces are created and no source is opened for writing. The report is what an admin
+   * reviews before running migrateChildBooks().
+   */
+  planChildBookMigration(): Promise<ChildBookMigrationReport>;
+
+  /**
+   * Copy every legacy child's book into this admin's account: one fresh `format.book` workspace
+   * per source book, carrying its manuscript files, reading progress, last-opened chapter and the
+   * whole tutor conversation (order, role, chapter id and timestamp preserved). Source accounts,
+   * workspaces and gadget data are read only and never modified.
+   *
+   * Idempotent: a completed book is recorded in the migration ledger and a rerun reports it
+   * `alreadyMigrated` instead of making a second copy, while a book whose copy was interrupted
+   * is resumed into the destination its record already chose.
+   */
+  migrateChildBooks(): Promise<ChildBookMigrationReport>;
 }
+
+/** One legacy child book discovered for migration: where it lives now. */
+export type ChildBookMigrationSource = {
+  /** The child registry entry's account name. */
+  childId: string;
+  /** The child's display name. */
+  childName: string;
+  /** The child's user id. */
+  childUserId: string;
+  /** Workspace holding the source book. */
+  workspaceId: string;
+  /** The book gadget's id inside that workspace. */
+  gadgetId: number;
+  /** The source workspace's title. */
+  title: string;
+};
+
+/** Where one book was (or would be) copied to: a workspace in the admin's account. */
+export type ChildBookMigrationTarget = {
+  /** Set once a destination workspace is chosen or created; absent on a fresh dry run. */
+  workspaceId?: string;
+  /** The copied book gadget's id; absent until the copy exists. */
+  gadgetId?: number;
+  /** The destination workspace's title. */
+  title: string;
+};
+
+/** What happened to one source book in a plan or run. */
+export type ChildBookMigrationEntryStatus =
+    /** Copy planned; nothing written. */
+    | "wouldCopy"
+    /** Copy completed in this run. */
+    | "migrated"
+    /** A completed copy is recorded in the migration ledger; nothing was re-copied. */
+    | "alreadyMigrated"
+    /** The ledger says this source was already copied into a *different* admin's account. */
+    | "conflict"
+    /** The book could not be read, planned or copied; `error` says why. */
+    | "error";
+
+/** One row of a child-book migration report: a source book and its outcome. */
+export type ChildBookMigrationEntry = {
+  source: ChildBookMigrationSource;
+  destination?: ChildBookMigrationTarget;
+  status: ChildBookMigrationEntryStatus;
+  /** Manuscript files the copy holds (or would hold). */
+  fileCount?: number;
+  /** Conversation messages the copy holds (or would hold). */
+  messageCount?: number;
+  /** Chapter progress rows the copy holds (or would hold). */
+  progressCount?: number;
+  /** The chapter the reader was last on, when the source records one. */
+  lastChapter?: string;
+  /** Why status is `error`. */
+  error?: string;
+};
+
+/** A child the registry listed but whose books could not be considered. */
+export type ChildBookMigrationSkippedChild = {
+  /** The child registry entry's account name. */
+  childId: string;
+  /** The child's display name. */
+  childName: string;
+  /** Why the child was skipped. */
+  reason: string;
+};
+
+/** The result of planChildBookMigration() (dryRun) or migrateChildBooks(). */
+export type ChildBookMigrationReport = {
+  /** True for a plan (nothing was written); false for an actual run. */
+  dryRun: boolean;
+  /** When the scan ran. */
+  generatedAt: string;
+  /** Registered children found. */
+  childCount: number;
+  /** Source books found across those children. */
+  bookCount: number;
+  /** Entries by status. */
+  wouldCopyCount: number;
+  /** Entries by status. */
+  migratedCount: number;
+  /** Entries by status. */
+  alreadyMigratedCount: number;
+  /** Entries by status. */
+  conflictCount: number;
+  /** Entries by status. */
+  errorCount: number;
+  /** Children whose registry entry was unusable (see `reason`). */
+  skippedChildren: ChildBookMigrationSkippedChild[];
+  /** One entry per source book, in scan order. */
+  entries: ChildBookMigrationEntry[];
+};
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
 export type AdminFormatPatch = {
