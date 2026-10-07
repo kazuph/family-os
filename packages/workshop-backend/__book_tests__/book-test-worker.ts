@@ -33,7 +33,8 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
 // The pool discovers entrypoints from explicit exports, rather than following export-star.
 export { UserDurableObject, AdminSettings, GatekeeperLoopback, GatekeeperHookLoopback,
   CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback, AgentSelfLoopback,
-  PendingLogin, UserDirectoryDurableObject, ExternalMessageGateway, LanguageModelGatekeeper } from "../src/server.js";
+  PendingLogin, UserDirectoryDurableObject, ExternalMessageGateway, LanguageModelGatekeeper,
+  FamilyDurableObject, BrowserVerificationLimiterDurableObject } from "../src/server.js";
 
 /** Local-only SQLite transfer facet; never exported by the deployment entrypoint. */
 export class BookOfflineCopyFacet extends BookGadget {

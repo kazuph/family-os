@@ -176,6 +176,32 @@ export function migrateToMultiGadget(host: OverseerMigrationHost): void {
   });
 }
 
+/** Rejects legacy move proxies before conversion can replace their source-host routing. */
+export function assertLegacyWorkspaceIsLocal(storage: OverseerStorage, workspaceId: string): void {
+  let version = storage.version.get();
+  if (version !== 1 && version !== 2) return;
+  let moved = [...storage.gadgets.list()].filter(record =>
+      "movedFrom" in record || "movePending" in record || "move" in record);
+  if (moved.length) {
+    throw new Error(`Legacy workspace ${workspaceId} contains ${moved.length} moved or pending gadgets (${moved.map(record => record.id).join(", ")}); source storage and capabilities retained, conversion requires source-host handling.`);
+  }
+}
+
+/**
+ * The deployed Family fork used version 2 for Yjs plus action indexes. Its durable code
+ * references, unlike upstream version 2, have neither gadget heads nor chat code bases.
+ * Leave converted workspaces alone, including a retry after the Git tail was persisted.
+ */
+export function needsGitStorageMigration(storage: OverseerStorage): boolean {
+  let version = storage.version.get();
+  if (version === 1) return true;
+  if (version !== 2) return false;
+  if (Array.from(storage.gadgets.list()).some(gadget => "commitId" in gadget)
+      || Array.from(storage.chatMeta.list()).some(chat => chat.codeBase !== undefined)) return false;
+  return [...storage.code.list({limit: 1})].length > 0
+      || [...storage.snapshotParts.list({limit: 1})].length > 0;
+}
+
 /**
  * Version 1 -> 2: runs the git-storage migration (see overseer-git-migration.ts) and stamps
  * schema version 2. The version stamp is written last: storage writes persist in order, so a

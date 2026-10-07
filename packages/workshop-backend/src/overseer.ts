@@ -29,7 +29,7 @@ import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/u
 import { GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
-  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToGitStorage, migrateToMultiGadget,
+  OVERSEER_STORAGE_VERSION, assertLegacyWorkspaceIsLocal, needsGitStorageMigration, migrateToActionIndexes, migrateToGitStorage, migrateToMultiGadget,
   migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import * as Y from "yjs";
@@ -1060,6 +1060,7 @@ class OverseerImpl implements AgentHooks {
     // deliveries, and [restore]()-based persistent callbacks. This migration is fully
     // synchronous, so nothing can observe pre-migration state; the git-storage migration below
     // is the asynchronous one, shielded by blockConcurrencyWhile.
+    assertLegacyWorkspaceIsLocal(this.storage, ctx.id.toString());
     migrateToMultiGadget(this);
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
@@ -1078,7 +1079,7 @@ class OverseerImpl implements AgentHooks {
       remove: () => this.markOutputsDirty(),
     });
 
-    if (this.storage.version.get() === 1) {
+    if (needsGitStorageMigration(this.storage)) {
       // The workspace predates git-backed code storage (version 2, see the `version` singleton):
       // synthesize commits from the legacy code log before anything else runs. This migration
       // awaits (git object writes, the owner-identity fetch), which a constructor cannot, so it
@@ -8871,6 +8872,22 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     let isOwner = (userId == this.impl.ownerId);
+    // The standard authenticated admin can build a registered child's book while retaining
+    // the child owner and the administrator's real caller identity. This grants no share link
+    // and never rewrites the child's User DO or collaborator graph.
+    let childBookAdmin = false;
+    if (!isOwner) {
+      let admins: unknown = (this.env as Cloudflare.Env & {ADMINS?: string | string[]})?.ADMINS;
+      if (typeof admins === "string") admins = JSON.parse(admins);
+      if (Array.isArray(admins) && admins.includes(profileId)
+          && this.impl.users.idFromName(profileId).toString() === userId
+          && [...this.impl.storage.gadgets.list()].some(gadget =>
+            gadget.type === "gadget" && gadget.output?.id === "book" && !gadget.pending)) {
+        let children = await this.ctx.exports.FamilyDurableObject.getByName("").listChildren();
+        childBookAdmin = children.some(child => child.userId === this.impl.ownerId
+            && this.impl.users.idFromName(child.id).toString() === child.userId);
+      }
+    }
 
     // Cache the owner's profileId in memory when the owner opens.
     if (isOwner) {
@@ -8897,14 +8914,14 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // Refresh the owner's outputs index. Pushes are best-effort, and workspaces predating the
     // index have never pushed at all, so re-syncing on open is what corrects both.
-    if (isOwner) {
+    if (isOwner || childBookAdmin) {
       this.impl.markOutputsDirty();
     }
 
     // The caller's effective role. The owner always has "build".
     let role: CollaboratorRole = "build";
 
-    if (!isOwner) {
+    if (!isOwner && !childBookAdmin) {
       let sharing = await this.impl.getSharingManager();
 
       // If a share key was provided, redeem it. The owner already has full access and should not

@@ -33,6 +33,7 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
+import type { CodeSnapshotPart } from "../code-snapshot-parts";
 
 // =======================================================================================
 // Workpieces
@@ -880,7 +881,7 @@ type ChatDraftUpdateRecord = {
  * leaving it as the internal record type of the retired log, whose one remaining reader is the
  * git-storage migration's replay (overseer-git-migration.ts).
  */
-type CodeUpdate = {
+export type CodeUpdate = {
   /** Version number of the code AFTER this update has been applied. */
   version: number;
 
@@ -1125,6 +1126,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       snapshots: collection<CodeUpdate>()({
         primaryKey: "version"
       }),
+
+      // Retained fork snapshots; migration reads them without rewriting the source rows.
+      snapshotParts: collection<CodeSnapshotPart>()({primaryKey: "key"}),
 
       // The workspace's git object store: real git loose objects (blobs, trees, commits) keyed
       // by 40-hex SHA-1 oid. Mainline gadget code lives here as commits, with each
