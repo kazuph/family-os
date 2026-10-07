@@ -1,4 +1,5 @@
 import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp.js";
+import type { BookDataSnapshot } from "./book-data.js";
 import { consultProAdvisor as consultProAdvisorImpl, type ProAdvisorInput } from "./pro-advisor.js";
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
@@ -9309,6 +9310,52 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let state = await this.#withBookMcpFacet(ownerId, gadget,
         facet => facet.getState() as Promise<{progress?: unknown}>);
     return state?.progress ?? {};
+  }
+
+  // The two methods below are the child-book migration's read and write ends
+  // (child-books.ts). A gadget's SQLite lives on the facet bound under the gadget's facet
+  // name, so they rebind that name to BookDataFacet instead of starting the gadget's own code:
+  // reading the source never boots (or alters) it, and the destination gets its tables before
+  // its first open. The book schema they speak is the fixed contract the old Family OS runtime
+  // and the current template share -- see book-data.ts.
+
+  /**
+   * Read the book gadget's complete SQLite state -- manuscript files, reading progress,
+   * last-chapter position and the full tutor conversation -- verbatim. A pure read; caller is
+   * responsible for proving ownership context via ownerId.
+   */
+  async exportBookData(ownerId: string, gadgetId?: WorkpieceId): Promise<BookDataSnapshot> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    return await this.#withBookDataFacet(gadget, facet => facet.exportBookData());
+  }
+
+  /**
+   * Rebuild a book's state from an exported snapshot. Idempotent: writing the identical copy
+   * again is a no-op, while different data is refused so a retried migration can't clobber.
+   */
+  async importBookData(ownerId: string, snapshot: BookDataSnapshot, gadgetId?: WorkpieceId)
+      : Promise<void> {
+    let gadget = this.getOwnedBook(ownerId, gadgetId);
+    await this.#withBookDataFacet(gadget, facet => facet.importBookData(snapshot));
+  }
+
+  // Run `run` against the book's facet storage under the BookDataFacet class. The facet name
+  // is the storage key: facets.get returns whatever class currently holds it, so the name is
+  // aborted first (a live gadget restarts on next open; its data is untouched) and again on
+  // the way out so nothing is left bound to the wrong class.
+  async #withBookDataFacet<T>(gadget: GadgetRecord, run: (facet: any) => Promise<T>)
+      : Promise<T> {
+    let facetName = this.impl.gadgetFacetName(gadget.id);
+    this.ctx.facets.abort(facetName, new Error("Book migration is inspecting the book's storage."));
+    try {
+      let facet = this.ctx.facets.get<DurableObject>(facetName, () => ({
+        class: (this.ctx.exports as any).BookDataFacet,
+        id: facetName,
+      }));
+      return await run(facet as any);
+    } finally {
+      this.ctx.facets.abort(facetName, new Error("Book migration released the book's storage."));
+    }
   }
 
   async startGatekeeperSession(

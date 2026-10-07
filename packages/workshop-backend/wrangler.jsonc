@@ -80,6 +80,12 @@
         "FamilyDurableObject",
         "BrowserVerificationLimiterDurableObject"
       ]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": [
+        "BookDataFacet"
+      ]
     }
   ]
 }
