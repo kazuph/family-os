@@ -52,6 +52,34 @@ export { CodeModeTailLoopback } from "../src/server.js";
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
+/**
+ * The legacy Family OS book runtime (see __book_tests__/legacy-book-server.js), exported so a
+ * test can run it as a workspace facet and prove a migrated book still reads under the code that
+ * originally wrote it.
+ */
+export { Gadget as LegacyBookGadget } from "../__book_tests__/legacy-book-server.js";
+/**
+ * The current book template's own Gadget class, exported so a test can bind it over a migrated
+ * book's facet name and prove the copy reads under the runtime destinations actually ship with.
+ */
+export { Gadget as NewBookGadget } from "../../bundled-blueprints/blueprints/workspace-book/files/server.js";
+
+/**
+ * The migration's book-storage facet class, named explicitly for `ctx.exports` the same way as
+ * the callbacks above (the pool derives those from this module's own declarations).
+ */
+export { BookDataFacet } from "../src/book-data.js";
+
+/**
+ * A storage facet exposing the bound facet's own SQLite verbatim, so a test can seed and
+ * fingerprint a book's tables without depending on the code under test. Bound over a gadget's
+ * facet name (`ctx.facets.get(name, ...)`), it sees exactly the rows that gadget sees.
+ */
+export class TestSqlFacet extends DurableObject {
+  exec(query: string, bindings: SqlStorageValue[] = []) {
+    return [...this.ctx.storage.sql.exec(query, ...bindings)];
+  }
+}
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();

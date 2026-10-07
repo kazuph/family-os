@@ -77,4 +77,7 @@ export const migrations: DurableObjectMigration[] = [
   // Existing fork deployments keep these names through declarative production exports.
   // Fresh local/upstream deployments need the registry namespace for admin book discovery.
   { tag: "v4", new_sqlite_classes: ["FamilyDurableObject", "BrowserVerificationLimiterDurableObject"] },
+  // The child-book migration binds this class over a book gadget's facet name to reach the
+  // book's SQLite (book-data.ts). It is a facet class -- never bound under its own name.
+  { tag: "v5", new_sqlite_classes: ["BookDataFacet"] },
 ];

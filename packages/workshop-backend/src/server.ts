@@ -71,6 +71,10 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
 
+// The child-book migration's storage facet class (overseer.ts binds it over a book gadget's
+// facet name to reach the book's SQLite). Exported so ctx.exports can resolve it.
+export { BookDataFacet } from "./book-data";
+
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
   // Set these if using Cloudflare Access for authentication, otherwise username/password is used.
