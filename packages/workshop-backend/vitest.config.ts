@@ -86,19 +86,35 @@ export default defineConfig({
         }],
         bindings: {
           PUBLIC_BASE_URL: 'https://workshop.example/',
+          // The deployment admin the child-book migration test mints its capability for.
+          ADMINS: JSON.stringify(['admin']),
           ...(process.env.OPENCODE_GO_API_TOKEN
             ? { OPENCODE_GO_API_TOKEN: process.env.OPENCODE_GO_API_TOKEN } : {}),
         },
+        // Bundled-blueprint installs (and the child-book migration, which stamps destinations
+        // from format.book) read the blueprint record from KV and its archive from R2.
+        kvNamespaces: ['BLUEPRINTS'],
+        r2Buckets: ['BLUEPRINT_CONTENT'],
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
           TEST_USER: { className: 'UserDurableObject', useSQLite: true },
           TEST_PENDING_LOGIN: { className: 'PendingLogin', useSQLite: true },
+          // The deployment settings singleton the child-book migration runs through.
+          TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
+          // The legacy child registry the migration reads.
+          TEST_FAMILY: { className: 'FamilyDurableObject', useSQLite: true },
           // Never addressed by name: a binding is what puts the class in `ctx.exports`, from
           // which the overseer instantiates it (with props) as one of its own facets.
           TEST_AGENT_SPAWNER: { className: 'AgentSpawnerGatekeeper', useSQLite: true },
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
+          // The old-runtime book gadget, runnable as a facet to read a migrated book.
+          TEST_LEGACY_BOOK: { className: 'LegacyBookGadget', useSQLite: true },
+          // The migration's book-storage facet class, bound over a gadget's facet name.
+          TEST_BOOK_DATA: { className: 'BookDataFacet', useSQLite: true },
+          // The raw-SQL test facet (test-worker.ts) used to seed and fingerprint book tables.
+          TEST_SQL: { className: 'TestSqlFacet', useSQLite: true },
         },
       },
     }),
