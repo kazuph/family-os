@@ -9,8 +9,11 @@
 //   <base-url> is the deployment's origin, e.g. https://workshop.example.com
 //
 // Authentication (pick one, via environment):
-//   CF_ACCESS_JWT     a Cloudflare Access JWT (`cloudflared access token -app=<aud>`), sent as
-//                     cf-access-jwt-assertion -- for production behind Access
+//   CF_ACCESS_JWT     a Cloudflare Access JWT, sent as cf-access-token -- for production
+//                     behind Access. Get one with cloudflared:
+//                       cloudflared access login https://family-os.kazu-san.workers.dev
+//                       export CF_ACCESS_JWT="$(cloudflared access token \
+//                         -app=https://family-os.kazu-san.workers.dev)"
 //   WORKSHOP_TOKEN    an existing session token
 //   WORKSHOP_USERNAME + WORKSHOP_PASSWORD   logs in with username/password (local dev)
 //
@@ -29,9 +32,26 @@ const {newHttpBatchRpcSession} = require('capnweb');
 const apiUrl = new URL('/api', baseUrl);
 const headers = {'Origin': apiUrl.origin};
 if (process.env.CF_ACCESS_JWT) {
+  // cf-access-token is what the Access edge validates; once it passes, the edge itself injects
+  // cf-access-jwt-assertion downstream. The assertion header below is belt-and-suspenders for
+  // setups where the Worker sees it directly.
+  headers['cf-access-token'] = process.env.CF_ACCESS_JWT;
   headers['cf-access-jwt-assertion'] = process.env.CF_ACCESS_JWT;
 }
-const root = newHttpBatchRpcSession(new Request(apiUrl, {method: 'POST', headers}));
+
+// Probe before opening sessions: an unauthenticated request to an Access-protected origin never
+// reaches the Worker -- the edge bounces it to the hosted login page (a redirect, or an HTML
+// response). The real /api answers GET with a plain 400, so either shape here means Access
+// turned us away; fail with the fix, not a JSON parse error from capnweb.
+const probe = await fetch(apiUrl, {method: 'GET', headers, redirect: 'manual'});
+if ((probe.status >= 300 && probe.status < 400)
+    || (probe.headers.get('content-type') ?? '').includes('text/html')) {
+  throw new Error(`Cloudflare Access did not authenticate this request (the edge answered `
+      + `with a login redirect/page, not the API). Get a fresh token:\n`
+      + `  cloudflared access login ${apiUrl.origin}\n`
+      + `  export CF_ACCESS_JWT="$(cloudflared access token -app=${apiUrl.origin})"\n`
+      + `and run this script again.`);
+}
 
 // An HTTP batch session is exactly ONE request: every call has to be pipelined before the
 // first await lets the batch flush, and stubs handed back by an awaited call are dead (the
@@ -52,10 +72,18 @@ if (!process.env.CF_ACCESS_JWT && !token) {
   const {hashPassword} = await import('data:text/javascript;base64,'
       + Buffer.from(hashBundle.outputFiles[0].contents).toString('base64'));
   const hash = await hashPassword(process.env.WORKSHOP_USERNAME, process.env.WORKSHOP_PASSWORD);
-  const loginRoot = newHttpBatchRpcSession(new Request(apiUrl, {method: 'POST', headers}));
+  const loginRoot = newHttpBatchRpcSession(
+      new Request(apiUrl, {method: 'POST', headers, redirect: 'manual'}));
   token = await loginRoot.login(process.env.WORKSHOP_USERNAME, hash);
   if (!token) throw new Error('Login failed (unknown username or wrong password).');
 }
+
+// The main batch is opened only after the login await above: a session created earlier would
+// have flushed empty during the awaits, and every later call on it would fail with "Batch RPC
+// request ended". From here to the Promise.all there are no awaits, so authenticate(),
+// getAdminApi(), and the migration call pipeline into this one request.
+const root = newHttpBatchRpcSession(
+    new Request(apiUrl, {method: 'POST', headers, redirect: 'manual'}));
 
 const api = process.env.CF_ACCESS_JWT ? root.authenticateFromCfAccess() : root.authenticate(token);
 const admin = api.getAdminApi();
