@@ -58,6 +58,7 @@ export { AdminSettings };
 
 // Re-export the deployment-wide user directory Durable Object.
 export { UserDirectoryDurableObject };
+export { FamilyDurableObject, BrowserVerificationLimiterDurableObject } from "./legacy-family";
 
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl };
@@ -331,11 +332,38 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return retryOnDoReset(() => this.#user.listGadgets());
+    let own = await retryOnDoReset(() => this.#user.listGadgets());
+    if (!this.#isAdmin()) return own;
+    let children = await this.ctx.exports.FamilyDurableObject.getByName("").listChildren();
+    for (let child of children) {
+      if (this.users.idFromName(child.id).toString() !== child.userId) continue;
+      let user = this.users.get(this.users.idFromString(child.userId));
+      let owner = await user.whoami();
+      for (let workspace of await user.listGadgets()) {
+        if (workspace.owner || own.some(existing => existing.id === workspace.id)) continue;
+        let books = await this.overseers.get(this.overseers.idFromString(workspace.id))
+            .getBookMcpWorkspaces(child.userId);
+        if (books.length) own.push({...workspace, owner, role: "build"});
+      }
+    }
+    return own;
   }
 
-  listOutputs(): Promise<ListOutputsResult> {
-    return this.#user.listOutputs();
+  async listOutputs(): Promise<ListOutputsResult> {
+    let result = await this.#user.listOutputs();
+    if (!this.#isAdmin()) return result;
+    let children = await this.ctx.exports.FamilyDurableObject.getByName("").listChildren();
+    for (let child of children) {
+      if (this.users.idFromName(child.id).toString() !== child.userId) continue;
+      let user = this.users.get(this.users.idFromString(child.userId));
+      let owner = await user.whoami();
+      let childResult = await user.listOutputs();
+      result.outputs.push(...childResult.outputs.filter(output => output.output?.id === "book" && !output.owner
+              && !result.outputs.some(existing => existing.workspaceId === output.workspaceId && existing.workpieceId === output.workpieceId))
+          .map(output => ({...output, owner, role: "build" as const})));
+      result.catchingUp ||= childResult.catchingUp;
+    }
+    return result;
   }
 
   async listOutputFormats(): Promise<OutputFormatOffer[]> {

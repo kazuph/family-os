@@ -65,12 +65,13 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import {
-  chatKey, chatKeyPrefix, type CompactionCheckpoint, type GadgetRecord, type OverseerStorage,
+  chatKey, chatKeyPrefix, type CompactionCheckpoint, type GadgetRecord, type OverseerStorage, type CodeUpdate,
   type StoredChatMessage,
 } from "./overseer-storage";
 import { chatChangeStatuses } from "../agent-compaction";
 import { GitStore, filesEqual } from "../git-store";
 import { createWorkshopLogger } from "../observability";
+import { joinCodeSnapshotParts } from "../code-snapshot-parts";
 
 const logger = createWorkshopLogger("workshop.overseer.git-migration");
 
@@ -89,7 +90,7 @@ export interface GitMigrationHost {
   /** The workspace's storage. Only the listed collections are read or written. */
   storage: Pick<OverseerStorage,
       "code" | "gadgets" | "chats" | "chatMeta" | "chatCompactions" | "chatDraftUpdates" |
-      "nextChatSequences" | "blueprints">;
+      "nextChatSequences" | "blueprints"> & Partial<Pick<OverseerStorage, "snapshots" | "snapshotParts">>;
 
   /** The workspace's git object store, which receives the synthesized commits. */
   gitStore: GitStore;
@@ -198,11 +199,25 @@ export function legacyChatBaseVersion(
 export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ commits: number }> {
   let { storage, gitStore } = host;
 
+  // The fork compacts updates before a complete retained snapshot. Read that prefix into the
+  // migration only; the original snapshot parts and update rows remain rollback material.
+  let updates: CodeUpdate[] = [...storage.code.list()];
+  if (updates[0]?.version !== 1) {
+    let legacy = [...(storage.snapshots?.list({limit: 1}) ?? [])][0];
+    let firstPart = [...(storage.snapshotParts?.list({limit: 1}) ?? [])][0];
+    let partitioned = firstPart && joinCodeSnapshotParts(
+      [...storage.snapshotParts!.list()].filter(part => part.version === firstPart.version));
+    let snapshot = legacy && partitioned
+        ? (legacy.version < partitioned.version ? legacy : partitioned) : legacy ?? partitioned;
+    if (snapshot) updates = [snapshot, ...updates.filter(update => update.version > snapshot.version)];
+    else if (updates.length > 0) throw new Error("Legacy code prefix is missing; migration left source data intact.");
+  }
+
   // ---------------------------------------------------------------------------------------
   // Inventory the log and choose commit points.
 
   let log: { version: number, timestamp: Date }[] = [];
-  for (let entry of storage.code.list()) {
+  for (let entry of updates) {
     log.push({ version: entry.version, timestamp: entry.timestamp });
   }
   let logVersions = new Set(log.map(entry => entry.version));
@@ -257,6 +272,9 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     let checkpoint = meta.compactedTo === undefined
         ? undefined : storage.chatCompactions.get(chatKey(meta.id, meta.compactedTo));
     let anchor = legacyChatBaseVersion(checkpoint, messages);
+    if (anchor !== "current" && anchor > 0 && updates[0]?.version > anchor) {
+      throw new Error(`Legacy chat ${meta.id} precedes retained code; migration left source data intact.`);
+    }
     let resolved = floorLogVersion(anchor === "current" ? finalVersion : anchor);
     if (resolved > 0) points.add(resolved);
     if (meta.codeBase === undefined) {
@@ -296,6 +314,9 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     if (record.codeVersion === undefined || record.commitId !== undefined) continue;
     let gadgetId = record.gadgetId ?? defaultGadgetId;
     if (gadgetId === undefined) continue;  // unresolvable; left as-is below
+    if (record.codeVersion > 0 && updates[0]?.version > record.codeVersion) {
+      throw new Error(`Legacy blueprint ${record.id} precedes retained code; migration left source data intact.`);
+    }
     track(gadgetId);
     let resolved = floorLogVersion(record.codeVersion);
     if (resolved > 0) points.add(resolved);
@@ -336,7 +357,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   let anchorStates = new Map<number, Uint8Array>();
 
   let ydoc = new Y.Doc();
-  for (let entry of storage.code.list()) {
+  for (let entry of updates) {
     Y.applyUpdateV2(ydoc, entry.update);
     if (anchorVersions.has(entry.version)) {
       anchorStates.set(entry.version, Y.encodeStateAsUpdateV2(ydoc));
