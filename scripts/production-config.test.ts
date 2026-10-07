@@ -28,3 +28,16 @@ test("cutover retains storage and service bindings and never declares a Go secre
   assert.ok(backend.assets.run_worker_first.includes("/gatekeeper/context/*"));
   assert.deepEqual(productionConfigs["gatekeeper-context"].kv_namespaces,[{binding:"CONTEXT_COLLECTIONS",id:"51a16236b98147f0a566fe4f4f296646"}]);
 });
+
+test("cutover retains each deployed Worker's observability settings", () => {
+  assert.deepEqual(productionConfigs["workshop-backend"].observability, {
+    enabled: true, head_sampling_rate: 1, redact_query_string: false,
+    logs: {enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: false},
+    traces: {enabled: true, persist: true, head_sampling_rate: 0.5},
+  });
+  assert.deepEqual(productionConfigs["gatekeeper-context"].observability, {
+    enabled: true, head_sampling_rate: 1, redact_query_string: false,
+    logs: {enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: false},
+    traces: {enabled: false, persist: true, head_sampling_rate: 1},
+  });
+});

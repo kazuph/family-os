@@ -9,6 +9,12 @@ export const productionConfigs = {
     compatibility_date: "2026-09-04",
     compatibility_flags: ["allow_irrevocable_stub_storage", "enhanced_error_serialization", "global_fetch_strictly_public", "nodejs_compat"],
     keep_vars: true,
+    observability: {
+      enabled: true, head_sampling_rate: 1, redact_query_string: false,
+      logs: {enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: false},
+      traces: {enabled: true, persist: true, head_sampling_rate: 0.5},
+    },
+
     vars: {
       ADMINS: ["kazu.homma@gmail.com"],
       CF_ACCESS_ISS: "https://kazu-san.cloudflareaccess.com",
@@ -41,6 +47,12 @@ export const productionConfigs = {
     compatibility_date: "2026-09-04",
     compatibility_flags: ["nodejs_compat", "allow_irrevocable_stub_storage"],
     keep_vars: true,
+    observability: {
+      enabled: true, head_sampling_rate: 1, redact_query_string: false,
+      logs: {enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: false},
+      traces: {enabled: false, persist: true, head_sampling_rate: 1},
+    },
+
     vars: {BASE_URL: `${origin}/gatekeeper/context`},
     kv_namespaces: [{binding: "CONTEXT_COLLECTIONS", id: "51a16236b98147f0a566fe4f4f296646"}],
     exports: Object.fromEntries([
