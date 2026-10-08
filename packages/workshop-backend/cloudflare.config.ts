@@ -75,7 +75,6 @@ export const migrations: DurableObjectMigration[] = [
   { tag: "v2", new_sqlite_classes: ["PendingLogin"] },
   { tag: "v3", new_sqlite_classes: ["UserDirectoryDurableObject"] },
   // Existing fork deployments keep these names through declarative production exports.
-  // Fresh local/upstream deployments need the registry namespace for admin book discovery.
   { tag: "v4", new_sqlite_classes: ["FamilyDurableObject", "BrowserVerificationLimiterDurableObject"] },
   // Retained from the removed child-book migration; see legacy-family.ts.
   { tag: "v5", new_sqlite_classes: ["BookDataFacet"] },

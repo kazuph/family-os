@@ -41,7 +41,7 @@ export const productionConfigs = {
       "BookDataFacet",
     ].map(name => [name, sqlite])),
     assets: {directory: "../../../../workshop-frontend/dist", binding: "ASSETS", not_found_handling: "single-page-application",
-      run_worker_first: ["/api", "/api/*", "/mcp", "/gatekeeper/context", "/gatekeeper/context/*", "/blueprint-screenshot/*"]},
+      run_worker_first: ["/api", "/api/*", "/gatekeeper/context", "/gatekeeper/context/*", "/blueprint-screenshot/*"]},
   },
   "gatekeeper-context": {
     name: "family-os-context",

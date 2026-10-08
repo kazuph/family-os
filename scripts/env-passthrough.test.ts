@@ -78,14 +78,14 @@ const EXPECTED: Record<string, ExpectedArea> = {
   },
   "packages/workshop-backend": {
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
-    // Dedicated direct-script suites: their launchers start real local servers and explicitly
-    // pass these addresses to vitest. The cached `test` task never invokes those configs.
-    injected: ["BOOK_TEST_ACCESS_ISS", "GO_TEST_BASE_URL"],
-    // Migration captures and live credentials belong to directly invoked book/Go suites and
-    // capture tooling, not cached tasks. The base vitest config also optionally reads the token;
-    // the cached ordinary suite intentionally sees undefined and runs without that binding.
+    // The dedicated direct-script Go suite: its launcher starts a real local server and explicitly
+    // passes this address to vitest. The cached `test` task never invokes that config.
+    injected: ["GO_TEST_BASE_URL"],
+    // Live credentials belong to directly invoked Go suites, not cached tasks. The base vitest
+    // config also optionally reads the token; the cached ordinary suite intentionally sees
+    // undefined and runs without that binding.
     // Never declare the credential in cache.env: only an explicit direct invocation uses it.
-    external: ["LEGACY_BOOK_FIXTURE", "LEGACY_CONNECTED_BOOK_FIXTURE", "OPENCODE_GO_API_TOKEN"],
+    external: ["OPENCODE_GO_API_TOKEN"],
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.

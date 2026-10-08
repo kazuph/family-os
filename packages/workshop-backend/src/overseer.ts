@@ -1,8 +1,7 @@
-import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp.js";
 import { consultProAdvisor as consultProAdvisorImpl, type ProAdvisorInput } from "./pro-advisor.js";
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { readBookUiBundle } from './book-ui-bundle';
+import { readGadgetUiBundle } from './gadget-ui-bundle';
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -4140,12 +4139,7 @@ class OverseerImpl implements AgentHooks {
     // TODO: Bundle the UI? For now we just return client.js.
     this.checkChatExistsAndMaterializeChanges(chatId);
     let files = await this.readGadgetFiles(gadgetId, chatId);
-    let gadget = this.storage.gadgets.get(gadgetId);
-    if (gadget?.type === "gadget" && gadget.output?.id === "book") {
-      return readBookUiBundle(files);
-    }
-    let jsCode = files.get("client.js");
-    return jsCode !== undefined ? {jsCode} : null;
+    return readGadgetUiBundle(files);
   }
 
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
@@ -8872,22 +8866,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     let isOwner = (userId == this.impl.ownerId);
-    // The standard authenticated admin can build a registered child's book while retaining
-    // the child owner and the administrator's real caller identity. This grants no share link
-    // and never rewrites the child's User DO or collaborator graph.
-    let childBookAdmin = false;
-    if (!isOwner) {
-      let admins: unknown = (this.env as Cloudflare.Env & {ADMINS?: string | string[]})?.ADMINS;
-      if (typeof admins === "string") admins = JSON.parse(admins);
-      if (Array.isArray(admins) && admins.includes(profileId)
-          && this.impl.users.idFromName(profileId).toString() === userId
-          && [...this.impl.storage.gadgets.list()].some(gadget =>
-            gadget.type === "gadget" && gadget.output?.id === "book" && !gadget.pending)) {
-        let children = await this.ctx.exports.FamilyDurableObject.getByName("").listChildren();
-        childBookAdmin = children.some(child => child.userId === this.impl.ownerId
-            && this.impl.users.idFromName(child.id).toString() === child.userId);
-      }
-    }
 
     // Cache the owner's profileId in memory when the owner opens.
     if (isOwner) {
@@ -8914,14 +8892,14 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // Refresh the owner's outputs index. Pushes are best-effort, and workspaces predating the
     // index have never pushed at all, so re-syncing on open is what corrects both.
-    if (isOwner || childBookAdmin) {
+    if (isOwner) {
       this.impl.markOutputsDirty();
     }
 
     // The caller's effective role. The owner always has "build".
     let role: CollaboratorRole = "build";
 
-    if (!isOwner && !childBookAdmin) {
+    if (!isOwner) {
       let sharing = await this.impl.getSharingManager();
 
       // If a share key was provided, redeem it. The owner already has full access and should not
@@ -9225,90 +9203,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // (A write, so deliberately not retried -- a reset can't distinguish "never applied" from
     // "applied, response lost".)
     await owner().setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
-  }
-
-  private getOwnedBook(ownerId: string, gadgetId?: WorkpieceId): GadgetRecord {
-    if (this.impl.ownerId !== ownerId) throw new Error("The account does not own this workspace.");
-    let books = [...this.impl.storage.gadgets.list()].filter((candidate): candidate is GadgetRecord =>
-      candidate.type === "gadget" && candidate.output?.id === "book" && !candidate.pending);
-    if (gadgetId !== undefined) {
-      let gadget = this.impl.storage.gadgets.get(gadgetId);
-      if (!gadget || gadget.type !== "gadget" || !books.some(book => book.id === gadget.id)) {
-        throw new Error(`Gadget ${gadgetId} is not an available book in this workspace.`);
-      }
-      return gadget;
-    }
-    if (books.length === 0) throw new Error("The workspace is not a book.");
-    if (books.length > 1) {
-      throw new Error("This workspace contains multiple books; specify gadgetId.");
-    }
-    return books[0]!;
-  }
-
-  async getBookMcpWorkspace(ownerId: string): Promise<BookMcpWorkspace | null> {
-    if (this.impl.ownerId !== ownerId) return null;
-    let gadget = [...this.impl.storage.gadgets.list()].find(candidate =>
-      candidate.type === "gadget" && candidate.output?.id === "book" && !candidate.pending);
-    if (!gadget) return null;
-    return { workspaceId: this.ctx.id.toString(), title: this.impl.storage.title.get(), gadgetId: gadget.id };
-  }
-
-  async getBookMcpWorkspaces(ownerId: string): Promise<BookMcpWorkspace[]> {
-    if (this.impl.ownerId !== ownerId) return [];
-    return [...this.impl.storage.gadgets.list()]
-        .filter((gadget): gadget is GadgetRecord => gadget.type === "gadget" && gadget.output?.id === "book" && !gadget.pending)
-        .map(gadget => ({
-          workspaceId: this.ctx.id.toString(),
-          title: this.impl.storage.title.get(),
-          gadgetTitle: gadget.title,
-          gadgetId: gadget.id,
-        }));
-  }
-
-  async #withBookMcpFacet<T>(ownerId: string, gadget: GadgetRecord,
-                             run: (facet: any) => Promise<T>): Promise<T> {
-    let facet: any;
-    try {
-      facet = await this.impl.getGadgetFacet(gadget.id);
-      return await run(facet);
-    } finally {
-      facet?.[Symbol.dispose]?.();
-    }
-  }
-
-  async readBookMcpFiles(ownerId: string, paths?: string[], gadgetId?: WorkpieceId)
-      : Promise<BookMcpFile[]> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    let requested = paths ? new Set(paths) : undefined;
-    for (let path of requested ?? []) validateBookFilePath(path);
-    let stored = await this.#withBookMcpFacet(ownerId, gadget,
-        facet => facet.getBookFiles() as Promise<Record<string, string>>);
-    let files: BookMcpFile[] = [];
-    for (let [path, content] of Object.entries(stored)) {
-      try {
-        validateBookFilePath(path);
-      } catch {
-        continue;
-      }
-      if (!requested || requested.has(path)) files.push({ path, content });
-    }
-    files.sort((a, b) => a.path.localeCompare(b.path));
-    return files;
-  }
-
-  async putBookMcpFiles(ownerId: string, files: BookMcpFile[], gadgetId?: WorkpieceId)
-      : Promise<BookMcpFile[]> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    for (let file of files) validateBookFilePath(file.path);
-    await this.#withBookMcpFacet(ownerId, gadget, facet => facet.putBookFiles(files));
-    return files.map(({ path, content }) => ({ path, content }));
-  }
-
-  async readBookMcpProgress(ownerId: string, gadgetId?: WorkpieceId): Promise<unknown> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    let state = await this.#withBookMcpFacet(ownerId, gadget,
-        facet => facet.getState() as Promise<{progress?: unknown}>);
-    return state?.progress ?? {};
   }
 
   async startGatekeeperSession(
