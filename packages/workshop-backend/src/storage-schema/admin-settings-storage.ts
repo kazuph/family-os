@@ -127,43 +127,6 @@ export type FormatCuration = {
   overrides?: Partial<BlueprintOutput>;
 };
 
-/**
- * One legacy child book's migration record: which source book was copied, where its copy lives in
- * the administrator's account, and how far the copy got.
- *
- * Written the moment a destination workspace is chosen ("created"), then marked "copied" once
- * every book table row has been written to it. The record is never deleted: it is what makes a
- * rerun skip the source instead of minting a duplicate, and what later tooling needs to map a
- * child's original book to the admin's copy.
- */
-export type ChildBookMigrationRecord = {
-  /**
-   * What makes a source book unique: `${childUserId}/${sourceWorkspaceId}/${sourceGadgetId}`.
-   * The collection's primary key.
-   */
-  sourceKey: string;
-  /** User DO id of the administrator the copy belongs to. */
-  adminUserId: string;
-  /** The child registry entry's account name (the child user's DO name). */
-  childId: string;
-  /** The child's User DO id. */
-  childUserId: string;
-  /** The child's display name, for report readability. */
-  childName: string;
-  sourceWorkspaceId: string;
-  sourceGadgetId: number;
-  /** Destination workspace holding the copied book. Preallocated when the record is created. */
-  targetWorkspaceId: string;
-  /** The copied book's gadget id inside the destination workspace; set once it is created. */
-  targetGadgetId?: number;
-  /** Title the destination workspace was (or will be) created with. */
-  title: string;
-  /** "created": destination chosen, copy not yet confirmed. "copied": fully written. */
-  status: "created" | "copied";
-  /** ISO timestamp of the last state transition. */
-  migratedAt: string;
-};
-
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   signupsEnabled: true,
   userSearchEnabled: false,
@@ -193,13 +156,6 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // authoritative featured bit; this DO keeps the publishable deployment-wide copy.
       featuredBlueprints: collection<BlueprintPublicInfo>()({
         primaryKey: 'id',
-      }),
-
-      // Child-book migration ledger: one record per legacy child book ever copied into an admin's
-      // account. This is the idempotency anchor -- a rerun skips sources with a "copied" record
-      // instead of minting a duplicate workspace.
-      childBookMigrations: collection<ChildBookMigrationRecord>()({
-        primaryKey: 'sourceKey',
       }),
     },
     singletons: {

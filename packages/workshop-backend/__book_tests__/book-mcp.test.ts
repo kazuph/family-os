@@ -72,12 +72,6 @@ it('uses signed local Access assertions and real owner DOs for all book MCP boun
   expect((await call(tokens.owner,'book.put_files',{...args,files:[replacementToc]})).body.error).toBeUndefined();
   const custom = await call(tokens.owner,'book.read_files',args);
   expect(custom.body.result.structuredContent.value.map((f:any)=>f.path).toSorted()).toEqual(['content/signed.md','content/toc.json']);
-  console.log('mcp-stage:book-delete');
-  const deleted = await call(tokens.owner, 'book.delete_files', {...args, paths: [file.path]});
-  expect(deleted.body.result.structuredContent.value).toEqual([file.path]);
-  const afterDelete = await call(tokens.owner,'book.read_files',args);
-  expect(afterDelete.body.result.structuredContent.value.map((f:any)=>f.path)).toEqual(['content/toc.json']);
-  expect((await call(tokens.owner,'book.put_files',{...args,files:[file]})).body.error).toBeUndefined();
 
   expect((await call(tokens.owner, 'book.list')).body.result.structuredContent.value)
     .toContainEqual(expect.objectContaining(args));
@@ -110,8 +104,8 @@ it('uses signed local Access assertions and real owner DOs for all book MCP boun
     .body.result.structuredContent.value).toEqual([secondFile]);
   expect((await call(tokens.owner, 'book.read_files', {...args, paths: [file.path]}))
     .body.result.structuredContent.value).toEqual([file]);
-  for (const tool of ['book.read_files', 'book.put_files', 'book.delete_files', 'book.read_progress']) {
-    expect((await call(tokens.owner, tool, {workspaceId: book.workspaceId, files: [file], paths: [file.path]}))
+  for (const tool of ['book.read_files', 'book.put_files', 'book.read_progress']) {
+    expect((await call(tokens.owner, tool, {workspaceId: book.workspaceId, files: [file]}))
       .body.error.message).toContain('multiple books; specify gadgetId');
   }
   expect((await call(tokens.owner, 'book.list')).body.result.structuredContent.value
@@ -126,10 +120,6 @@ it('uses signed local Access assertions and real owner DOs for all book MCP boun
   expect(foreignWorkspace.body.error.message).toContain('does not own');
   const executable = await call(tokens.owner, 'book.put_files', {...args, files: [{path: 'server.js', content: 'export class Gadget {}'}]});
   expect(executable.body.error.message).toContain('cannot edit');
-  const deleteForeign = await call(tokens.stranger, 'book.delete_files', {...args, paths: [file.path]});
-  expect(deleteForeign.body.error.message).toContain('does not own');
-  const deleteExecutable = await call(tokens.owner, 'book.delete_files', {...args, paths: ['server.js']});
-  expect(deleteExecutable.body.error.message).toContain('cannot edit');
   expect((await call(tokens.service, 'book.read_files', args)).body.error.message).toContain('ownerEmail is required');
   console.log('mcp-stage:service-owner-boundary');
   const serviceRead = await call(tokens.service, 'book.read_files', {...args, ownerEmail: 'BookOwner@local.test', paths: [file.path]});

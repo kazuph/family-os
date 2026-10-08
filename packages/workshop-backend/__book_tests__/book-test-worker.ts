@@ -54,24 +54,3 @@ export class BookOfflineCopyFacet extends BookGadget {
     }
   }
 }
-
-/**
- * A book gadget's runtime class plus seeding/inspection helpers, exported so a test can place
- * one in the overseer's facet registry under a book's storage id: the helpers run against the
- * book's own SQLite tables (book_files, progress, messages, settings), which the facet's
- * public API cannot fully write -- messages have no setter, only askTutor() inserts them and
- * it needs a live model.
- */
-export class BookSeedFacet extends BookGadget {
-  seedMessages(rows: {role: string; content: string; chapterId: string; createdAt: number}[]) {
-    for (const row of rows) {
-      this.ctx.storage.sql.exec(
-          "INSERT INTO messages (role, content, chapter_id, created_at) VALUES (?, ?, ?, ?)",
-          row.role, row.content, row.chapterId, row.createdAt);
-    }
-  }
-  inspectTables() {
-    return Object.fromEntries(["book_files", "progress", "messages", "settings"].map(name =>
-      [name, [...this.ctx.storage.sql.exec("SELECT * FROM " + name)]]));
-  }
-}

@@ -37,8 +37,7 @@ export const productionConfigs = {
       "UserDurableObject", "OverseerDurableObject", "PendingLogin", "AdminSettings",
       "FamilyDurableObject", "LanguageModelGatekeeper", "AgentSpawnerGatekeeper",
       "BrowserVerificationLimiterDurableObject", "UserDirectoryDurableObject",
-      // The child-book migration's storage facet class (overseer.ts binds it over a book
-      // gadget's facet name); declared so ctx.exports resolves it like every other class.
+      // Retained so the deployed namespace is not dropped (see legacy-family.ts).
       "BookDataFacet",
     ].map(name => [name, sqlite])),
     assets: {directory: "../../../../workshop-frontend/dist", binding: "ASSETS", not_found_handling: "single-page-application",
