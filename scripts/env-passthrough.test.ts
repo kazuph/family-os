@@ -85,12 +85,7 @@ const EXPECTED: Record<string, ExpectedArea> = {
     // capture tooling, not cached tasks. The base vitest config also optionally reads the token;
     // the cached ordinary suite intentionally sees undefined and runs without that binding.
     // Never declare the credential in cache.env: only an explicit direct invocation uses it.
-    // scripts/book-code-upgrade.mjs is likewise invoked directly by the operator; its credentials
-    // (a CF Access JWT, a session token, or a login pair) never pass through a task.
-    external: [
-      "CF_ACCESS_JWT", "LEGACY_BOOK_FIXTURE", "LEGACY_CONNECTED_BOOK_FIXTURE",
-      "OPENCODE_GO_API_TOKEN", "WORKSHOP_PASSWORD", "WORKSHOP_TOKEN", "WORKSHOP_USERNAME",
-    ],
+    external: ["LEGACY_BOOK_FIXTURE", "LEGACY_CONNECTED_BOOK_FIXTURE", "OPENCODE_GO_API_TOKEN"],
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.

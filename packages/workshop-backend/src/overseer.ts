@@ -1,5 +1,4 @@
 import { validateBookFilePath, type BookMcpFile, type BookMcpWorkspace } from "./book-mcp.js";
-import type { BookDataSnapshot } from "./book-data.js";
 import { consultProAdvisor as consultProAdvisorImpl, type ProAdvisorInput } from "./pro-advisor.js";
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
@@ -9305,142 +9304,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return files.map(({ path, content }) => ({ path, content }));
   }
 
-  /**
-   * Delete manuscript files (e.g. chapters dropped from the table of contents) from a book the
-   * caller owns. Books whose gadget code predates the facet's `deleteBookFiles` method fail with
-   * an update-required error rather than a raw RPC "method not implemented" error.
-   */
-  async deleteBookMcpFiles(ownerId: string, paths: string[], gadgetId?: WorkpieceId)
-      : Promise<string[]> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    for (let path of paths) validateBookFilePath(path);
-    await this.#withBookMcpFacet(ownerId, gadget, async facet => {
-      try {
-        await facet.deleteBookFiles(paths);
-      } catch (error) {
-        if (String(error).includes(`does not implement the method "deleteBookFiles"`)) {
-          throw new Error("This book's gadget predates deleteBookFiles; update its server code " +
-              "to the current book template before deleting files.", { cause: error });
-        }
-        throw error;
-      }
-    });
-    return paths;
-  }
-
   async readBookMcpProgress(ownerId: string, gadgetId?: WorkpieceId): Promise<unknown> {
     let gadget = this.getOwnedBook(ownerId, gadgetId);
     let state = await this.#withBookMcpFacet(ownerId, gadget,
         facet => facet.getState() as Promise<{progress?: unknown}>);
     return state?.progress ?? {};
-  }
-
-  // The two methods below are the child-book migration's read and write ends
-  // (child-books.ts). A gadget's SQLite lives on the facet bound under the gadget's facet
-  // name, so they rebind that name to BookDataFacet instead of starting the gadget's own code:
-  // reading the source never boots (or alters) it, and the destination gets its tables before
-  // its first open. The book schema they speak is the fixed contract the old Family OS runtime
-  // and the current template share -- see book-data.ts.
-
-  /**
-   * Read the book gadget's complete SQLite state -- manuscript files, reading progress,
-   * last-chapter position and the full tutor conversation -- verbatim. A pure read; caller is
-   * responsible for proving ownership context via ownerId.
-   */
-  async exportBookData(ownerId: string, gadgetId?: WorkpieceId): Promise<BookDataSnapshot> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    return await this.#withBookDataFacet(gadget, facet => facet.exportBookData());
-  }
-
-  /**
-   * Rebuild a book's state from an exported snapshot. Idempotent: writing the identical copy
-   * again is a no-op, while different data is refused so a retried migration can't clobber.
-   */
-  async importBookData(ownerId: string, snapshot: BookDataSnapshot, gadgetId?: WorkpieceId)
-      : Promise<void> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    await this.#withBookDataFacet(gadget, facet => facet.importBookData(snapshot));
-  }
-
-  // Run `run` against the book's facet storage under the BookDataFacet class. The facet name
-  // is the storage key: facets.get returns whatever class currently holds it, so the name is
-  // aborted first (a live gadget restarts on next open; its data is untouched) and again on
-  // the way out so nothing is left bound to the wrong class.
-  async #withBookDataFacet<T>(gadget: GadgetRecord, run: (facet: any) => Promise<T>)
-      : Promise<T> {
-    let facetName = this.impl.gadgetFacetName(gadget.id);
-    this.ctx.facets.abort(facetName, new Error("Book migration is inspecting the book's storage."));
-    try {
-      let facet = this.ctx.facets.get<DurableObject>(facetName, () => ({
-        class: (this.ctx.exports as any).BookDataFacet,
-        id: facetName,
-      }));
-      return await run(facet as any);
-    } finally {
-      this.ctx.facets.abort(facetName, new Error("Book migration released the book's storage."));
-    }
-  }
-
-  /**
-   * Read the server.js and client.js committed on a book gadget's head, for the admin-only book
-   * code upgrade (book-code-upgrade.ts). Fields absent from the commit are left absent.
-   */
-  async readBookCode(ownerId: string, gadgetId?: WorkpieceId)
-      : Promise<{serverJs?: string; clientJs?: string}> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    let files = gadget.commitId === undefined ? new Map<string, string>()
-        : await this.impl.gitStore.readCommitFiles(gadget.commitId);
-    let code: {serverJs?: string; clientJs?: string} = {};
-    let serverJs = files.get("server.js");
-    let clientJs = files.get("client.js");
-    if (serverJs !== undefined) code.serverJs = serverJs;
-    if (clientJs !== undefined) code.clientJs = clientJs;
-    return code;
-  }
-
-  /**
-   * Replace a book gadget's server.js and client.js with a new commit on its current head, for
-   * the admin-only book code upgrade. Every other file in the commit -- and all workspace
-   * storage -- is left alone. Returns the new head commit oid, or null when the book's code
-   * already matches `code` (no commit is written then).
-   */
-  async upgradeBookCode(ownerId: string, code: {serverJs: string; clientJs: string},
-                        gadgetId?: WorkpieceId): Promise<string | null> {
-    let gadget = this.getOwnedBook(ownerId, gadgetId);
-    let files = gadget.commitId === undefined ? new Map<string, string>()
-        : new Map(await this.impl.gitStore.readCommitFiles(gadget.commitId));
-    if (files.get("server.js") === code.serverJs && files.get("client.js") === code.clientJs) {
-      return null;
-    }
-    files.set("server.js", code.serverJs);
-    files.set("client.js", code.clientJs);
-    // Fresh stub per call: a captured user-DO stub would be permanently broken by a reset (see
-    // initializeFromBlueprint, which the whoami() read below mirrors).
-    let owner = () => this.impl.wrapUserDo(
-        this.impl.users.get(this.impl.users.idFromString(ownerId)));
-    let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.impl.logger);
-    let commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
-      parents: gadget.commitId === undefined ? [] : [gadget.commitId],
-      author: commitIdentityForAuthor(ownerProfile),
-      message: "Upgrade book code to the current book template",
-      timestamp: new Date(),
-    });
-    // A chat merge (or another upgrade) can fast-forward the book's head across the awaits
-    // above; re-read the record and advance it only when the head still sits where we read it,
-    // so an interleaved commit is never overwritten. From here on everything is synchronous,
-    // so the check and the write land atomically -- the same convention the chat merge uses
-    // for its toCommit heads. The orphan commit stays in git storage, as content-addressed
-    // garbage does.
-    let fresh = this.impl.storage.gadgets.get(gadget.id);
-    if (fresh?.type !== "gadget" || fresh.commitId !== gadget.commitId) {
-      throw new Error(
-          "The book's code changed while the upgrade was being prepared; run it again.");
-    }
-    fresh.commitId = commitId;
-    this.impl.storage.gadgets.put(fresh);
-    // Reload the gadget's code so the next facet call runs the upgraded server.js/client.js.
-    this.impl.bumpVersion([fresh.id]);
-    return commitId;
   }
 
   async startGatekeeperSession(

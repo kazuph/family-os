@@ -26,7 +26,6 @@ export interface BookMcpStore {
   listBooks(ownerEmail: string): Promise<BookMcpWorkspace[]>;
   readFiles(ownerEmail: string, workspaceId: string, paths?: string[], gadgetId?: number): Promise<BookMcpFile[]>;
   putFiles(ownerEmail: string, workspaceId: string, files: BookMcpFile[], gadgetId?: number): Promise<BookMcpFile[]>;
-  deleteFiles(ownerEmail: string, workspaceId: string, paths: string[], gadgetId?: number): Promise<string[]>;
   readProgress(ownerEmail: string, workspaceId: string, gadgetId?: number): Promise<unknown>;
 }
 
@@ -124,18 +123,6 @@ const tools = [
             properties: { path: { type: "string" }, content: { type: "string" } },
           },
         },
-      },
-    },
-  },
-  {
-    name: "book.delete_files",
-    description: "Delete chapter manuscript files from an owned book workspace, e.g. the bodies "
-      + "of chapters dropped from the table of contents.",
-    inputSchema: {
-      type: "object", additionalProperties: false, required: ["workspaceId", "paths"],
-      properties: {
-        ownerEmail: ownerEmailProperty(), workspaceId: { type: "string" }, gadgetId: gadgetIdProperty(),
-        paths: { type: "array", minItems: 1, items: { type: "string" } },
       },
     },
   },
@@ -282,13 +269,6 @@ export async function handleBookMcpRequest(
         }
         for (let path of paths ?? []) validateBookFilePath(path as string);
         value = await store.readFiles(ownerEmail, workspaceId, paths as string[] | undefined, gadgetId);
-      } else if (name === "book.delete_files") {
-        let paths = args.paths;
-        if (!Array.isArray(paths) || paths.length === 0 || paths.some(path => typeof path !== "string")) {
-          throw new Error("paths must be a non-empty array of strings.");
-        }
-        for (let path of paths) validateBookFilePath(path as string);
-        value = await store.deleteFiles(ownerEmail, workspaceId, paths as string[], gadgetId);
       } else if (name === "book.put_files") {
         value = await store.putFiles(ownerEmail, workspaceId, parseFiles(args.files), gadgetId);
       } else if (name === "book.read_progress") {

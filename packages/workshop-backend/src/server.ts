@@ -58,7 +58,7 @@ export { AdminSettings };
 
 // Re-export the deployment-wide user directory Durable Object.
 export { UserDirectoryDurableObject };
-export { FamilyDurableObject, BrowserVerificationLimiterDurableObject } from "./legacy-family";
+export { FamilyDurableObject, BrowserVerificationLimiterDurableObject, BookDataFacet } from "./legacy-family";
 
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl };
@@ -70,10 +70,6 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
-
-// The child-book migration's storage facet class (overseer.ts binds it over a book gadget's
-// facet name to reach the book's SQLite). Exported so ctx.exports can resolve it.
-export { BookDataFacet } from "./book-data";
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
@@ -945,10 +941,6 @@ export default {
         async putFiles(ownerEmail, workspaceId, files, gadgetId) {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
           return owned.workspace.putBookMcpFiles(owned.ownerId, files, gadgetId);
-        },
-        async deleteFiles(ownerEmail, workspaceId, paths, gadgetId) {
-          let owned = await ownedWorkspace(ownerEmail, workspaceId);
-          return owned.workspace.deleteBookMcpFiles(owned.ownerId, paths, gadgetId);
         },
         async readProgress(ownerEmail, workspaceId, gadgetId) {
           let owned = await ownedWorkspace(ownerEmail, workspaceId);
