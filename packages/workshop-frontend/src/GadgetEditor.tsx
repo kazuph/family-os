@@ -1953,7 +1953,6 @@ export default function GadgetEditor() {
                 <GadgetUI
                   key={selectedGadgetId}
                   gadget={selectedGadgetStub}
-                  isBook={selectedGadgetSummary?.output?.id === 'book'}
                   height="100%"
                   reloadTrigger={uiReloadTrigger}
                   isVisible={activeTab === 'app' && !previewMode}
@@ -2050,7 +2049,6 @@ export default function GadgetEditor() {
             <GadgetUI
               key={selectedGadgetId}
               gadget={selectedGadgetStub}
-              isBook={selectedGadgetSummary?.output?.id === 'book'}
               height="100%"
               reloadTrigger={uiReloadTrigger}
               isVisible={true}
